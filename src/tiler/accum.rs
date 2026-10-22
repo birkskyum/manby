@@ -15,13 +15,27 @@ use tippecanoe::serial::{KeyPool, SerialVal};
 /// the value's string.
 #[derive(Clone, Copy, Debug)]
 pub struct Acc {
-    /// Which full value.
+    /// Which full value, with `BEHIND` when its string is behind.
     i: u32,
+    /// For a mean or a count, the count that goes after the number, or 0.
+    count: u32,
     v: f64,
-    /// For a mean or a count, the count that goes after the number.
-    count: Option<usize>,
-    /// Whether the string is behind.
-    dirty: bool,
+}
+
+const BEHIND: u32 = 1 << 31;
+
+impl Acc {
+    fn index(&self) -> usize {
+        (self.i & !BEHIND) as usize
+    }
+}
+
+/// Pushes onto a feature's short list, which most features keep at one.
+pub fn push_one<T>(v: &mut Vec<T>, x: T) {
+    if v.capacity() == 0 {
+        v.reserve_exact(1);
+    }
+    v.push(x);
 }
 
 /// `serial_val::to_double`: `atof`, which stops at the NUL before a count.
@@ -47,7 +61,7 @@ fn get_count(s: &str) -> usize {
 }
 
 fn find(accs: &[Acc], i: usize) -> Option<usize> {
-    accs.iter().position(|a| a.i as usize == i)
+    accs.iter().position(|a| a.index() == i)
 }
 
 /// Accumulates `val`, whose `to_double` is `num`, for `key` onto the full
@@ -84,8 +98,8 @@ pub fn preserve(
                 std::process::exit(tippecanoe::errors::EXIT_IMPOSSIBLE);
             }
         };
-        full_keys.push(key_pool.pool(key));
-        full_values.push(v);
+        push_one(full_keys, key_pool.pool(key));
+        push_one(full_values, v);
         return;
     };
 
@@ -104,9 +118,9 @@ pub fn preserve(
         Some(a) => accs[a].v,
         None => to_double(&full_values[i].s),
     };
-    let existing_count = |accs: &[Acc]| match a.and_then(|a| accs[a].count) {
-        Some(c) => c,
-        None => get_count(&full_values[i].s),
+    let existing_count = |accs: &[Acc]| match a.map(|a| accs[a].count) {
+        Some(c) if c != 0 => c as usize,
+        _ => get_count(&full_values[i].s),
     };
     let (v, count, dirty) = match op {
         AttributeOp::Sum => (existing + num, None, true),
@@ -119,12 +133,14 @@ pub fn preserve(
             };
             if !better {
                 if a.is_none() {
-                    accs.push(Acc {
-                        i: i as u32,
-                        v: existing,
-                        count: None,
-                        dirty: false,
-                    });
+                    push_one(
+                        accs,
+                        Acc {
+                            i: i as u32,
+                            count: 0,
+                            v: existing,
+                        },
+                    );
                 }
                 return;
             }
@@ -151,28 +167,27 @@ pub fn preserve(
         AttributeOp::Concat | AttributeOp::Comma => unreachable!(),
     };
     let acc = Acc {
-        i: i as u32,
+        i: i as u32 | if dirty { BEHIND } else { 0 },
+        count: count.map_or(0, |c| c as u32),
         // as the string would read back, which has no negative zero
         v: if dirty { v + 0.0 } else { v },
-        count,
-        dirty,
     };
     match a {
         Some(a) => accs[a] = acc,
-        None => accs.push(acc),
+        None => push_one(accs, acc),
     }
 }
 
 /// Writes out the strings of the accumulated numbers.
 pub fn settle(full_values: &mut [SerialVal], accs: &mut Vec<Acc>) {
     for a in accs.drain(..) {
-        if !a.dirty {
+        if a.i & BEHIND == 0 {
             continue;
         }
-        let fv = &mut full_values[a.i as usize];
+        let fv = &mut full_values[a.index()];
         match a.count {
-            Some(c) => fv.set_double_count(a.v, c),
-            None => *fv = SerialVal::from_double(a.v),
+            0 => *fv = SerialVal::from_double(a.v),
+            c => fv.set_double_count(a.v, c as usize),
         }
         debug_assert_eq!(fv.type_, MVT_DOUBLE);
     }

@@ -236,8 +236,8 @@ fn promote_attribute(
         ax.materialize(p);
         let list = p.attrs.as_mut().unwrap();
         let a = list.remove(i);
-        p.full_keys.push(key_pool.pool(key));
-        p.full_values.push(ax.sval(&a));
+        accum::push_one(&mut p.full_keys, key_pool.pool(key));
+        accum::push_one(&mut p.full_values, ax.sval(&a));
     }
 }
 

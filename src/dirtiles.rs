@@ -9,7 +9,7 @@ use std::process::exit;
 
 use rusqlite::Connection;
 
-use crate::cstd::{atoi, errno, perror, set_errno, strerror};
+use crate::cstd::{atoi, errno, perror_io, strerror};
 use crate::errors::{
     EXIT_CLOSE, EXIT_EXISTS, EXIT_JSON, EXIT_OPEN, EXIT_SQLITE, EXIT_UNLINK, EXIT_WRITE,
 };
@@ -63,12 +63,6 @@ impl Ord for Zxy {
             .then(self.x.cmp(&o.x))
             .then(o.y.cmp(&self.y))
     }
-}
-
-/// `perror(s)` for a failure that Rust reported as an `io::Error`.
-fn perror_io(s: &str, e: &std::io::Error) {
-    set_errno(e.raw_os_error().unwrap_or(0));
-    perror(s);
 }
 
 /// `std::to_string(double)`, which formats like `%f`.

@@ -774,7 +774,14 @@ mod tests {
 
     #[test]
     fn long_option_arguments() {
-        let mut argv = args(&["prog", "--out=a", "--output", "b", "--smallest=3", "--output"]);
+        let mut argv = args(&[
+            "prog",
+            "--out=a",
+            "--output",
+            "b",
+            "--smallest=3",
+            "--output",
+        ]);
         let mut g = Getopt::new();
         let mut index = 0;
         assert_eq!(

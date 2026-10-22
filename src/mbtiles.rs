@@ -1184,15 +1184,15 @@ pub fn add_to_tilestats(tilestats: &mut BTreeMap<String, Tilestat>, attrib: &str
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::Write;
 
     /// The generator of the C++ harness that made the expected values.
-    struct Rng(u64);
+    pub(crate) struct Rng(pub(crate) u64);
 
     impl Rng {
-        fn next(&mut self) -> u64 {
+        pub(crate) fn next(&mut self) -> u64 {
             self.0 = self
                 .0
                 .wrapping_mul(6364136223846793005)
@@ -1255,7 +1255,7 @@ mod tests {
             }
         }
 
-        fn rmap(&mut self, which: i32) -> BTreeMap<String, LayermapEntry> {
+        pub(crate) fn rmap(&mut self, which: i32) -> BTreeMap<String, LayermapEntry> {
             let mut lm: BTreeMap<String, LayermapEntry> = BTreeMap::new();
             for l in 0..7 {
                 let name = if l == 5 {
@@ -1385,13 +1385,148 @@ mod tests {
         let _ = std::fs::remove_file(dbname);
     }
 
-    fn fnv(s: &[u8]) -> u64 {
+    pub(crate) fn fnv(s: &[u8]) -> u64 {
         let mut h: u64 = 14695981039346656037;
         for &c in s {
             h ^= c as u64;
             h = h.wrapping_mul(1099511628211);
         }
         h
+    }
+
+    /// The four `Metadata` of the C++ harness, made from the merged layermap.
+    pub(crate) fn make_all(merged: &BTreeMap<String, LayermapEntry>) -> Vec<Metadata> {
+        let mut strategies = vec![Strategy::default(); 4];
+        strategies[1].dropped_by_rate = 5;
+        strategies[1].tile_size = 123456;
+        strategies[2].coalesced_as_needed = 7;
+        strategies[2].detail_reduced = 1;
+        strategies[2].tiny_polygons = 3;
+        strategies[2].feature_count = 50000;
+        strategies[3].dropped_by_gamma = 2;
+        strategies[3].dropped_as_needed = 9;
+        strategies[3].truncated_zooms = 4;
+
+        let mut descs: BTreeMap<String, String> = BTreeMap::new();
+        descs.insert(
+            "attr3".to_string(),
+            "describe \"attr3\" \u{20ac}".to_string(),
+        );
+
+        let m1 = make_metadata(
+            "tileset 'one'",
+            0,
+            14,
+            37.1234567,
+            -122.4567891,
+            38.7654321,
+            -121.0000005,
+            -85.0511287798,
+            -180.0,
+            85.0511287798,
+            180.0,
+            37.5000005,
+            -122.0000004,
+            Some("\u{a9} OSM \"quotes\" 'single'"),
+            merged,
+            true,
+            None,
+            true,
+            &descs,
+            "tippecanoe",
+            "tippecanoe -o x 'q'",
+            &strategies,
+            14,
+            2.5,
+            1,
+        );
+
+        let m2 = make_metadata(
+            "two",
+            3,
+            12,
+            -1e-7,
+            0.0000005,
+            1.5e-6,
+            -0.0000004,
+            1.0,
+            2.0,
+            3.0,
+            4.0,
+            0.4999995,
+            -0.4999995,
+            None,
+            merged,
+            false,
+            Some("desc"),
+            false,
+            &descs,
+            "tile-join",
+            "",
+            &[Strategy::default(); 2],
+            12,
+            f64::INFINITY,
+            3,
+        );
+
+        let empty: BTreeMap<String, LayermapEntry> = BTreeMap::new();
+        let m3 = make_metadata(
+            "three",
+            0,
+            0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Some(""),
+            &empty,
+            true,
+            Some(""),
+            true,
+            &BTreeMap::new(),
+            "tippecanoe",
+            "cmd",
+            &[],
+            2,
+            2.5,
+            1,
+        );
+
+        let m4 = make_metadata(
+            "four",
+            0,
+            5,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            None,
+            merged,
+            true,
+            None,
+            true,
+            &BTreeMap::new(),
+            "tippecanoe",
+            "cmd",
+            &[],
+            5,
+            1.0 / 3.0,
+            1,
+        );
+
+        vec![m1, m2, m3, m4]
     }
 
     /// Builds layermaps with `add_to_tilestats`, merges them, makes metadata
@@ -1451,139 +1586,10 @@ mod tests {
             }
         }
 
-        let mut strategies = vec![Strategy::default(); 4];
-        strategies[1].dropped_by_rate = 5;
-        strategies[1].tile_size = 123456;
-        strategies[2].coalesced_as_needed = 7;
-        strategies[2].detail_reduced = 1;
-        strategies[2].tiny_polygons = 3;
-        strategies[2].feature_count = 50000;
-        strategies[3].dropped_by_gamma = 2;
-        strategies[3].dropped_as_needed = 9;
-        strategies[3].truncated_zooms = 4;
-
-        let mut descs: BTreeMap<String, String> = BTreeMap::new();
-        descs.insert(
-            "attr3".to_string(),
-            "describe \"attr3\" \u{20ac}".to_string(),
-        );
-
-        let m1 = make_metadata(
-            "tileset 'one'",
-            0,
-            14,
-            37.1234567,
-            -122.4567891,
-            38.7654321,
-            -121.0000005,
-            -85.0511287798,
-            -180.0,
-            85.0511287798,
-            180.0,
-            37.5000005,
-            -122.0000004,
-            Some("\u{a9} OSM \"quotes\" 'single'"),
-            &merged,
-            true,
-            None,
-            true,
-            &descs,
-            "tippecanoe",
-            "tippecanoe -o x 'q'",
-            &strategies,
-            14,
-            2.5,
-            1,
-        );
-        dump(&mut out, "m1", &m1, &dbname);
-
-        let m2 = make_metadata(
-            "two",
-            3,
-            12,
-            -1e-7,
-            0.0000005,
-            1.5e-6,
-            -0.0000004,
-            1.0,
-            2.0,
-            3.0,
-            4.0,
-            0.4999995,
-            -0.4999995,
-            None,
-            &merged,
-            false,
-            Some("desc"),
-            false,
-            &descs,
-            "tile-join",
-            "",
-            &[Strategy::default(); 2],
-            12,
-            f64::INFINITY,
-            3,
-        );
-        dump(&mut out, "m2", &m2, &dbname);
-
-        let empty: BTreeMap<String, LayermapEntry> = BTreeMap::new();
-        let m3 = make_metadata(
-            "three",
-            0,
-            0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            Some(""),
-            &empty,
-            true,
-            Some(""),
-            true,
-            &BTreeMap::new(),
-            "tippecanoe",
-            "cmd",
-            &[],
-            2,
-            2.5,
-            1,
-        );
-        dump(&mut out, "m3", &m3, &dbname);
-
-        let m4 = make_metadata(
-            "four",
-            0,
-            5,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            None,
-            &merged,
-            true,
-            None,
-            true,
-            &BTreeMap::new(),
-            "tippecanoe",
-            "cmd",
-            &[],
-            5,
-            1.0 / 3.0,
-            1,
-        );
-        dump(&mut out, "m4", &m4, &dbname);
+        let ms = make_all(&merged);
+        for (i, m) in ms.iter().enumerate() {
+            dump(&mut out, &format!("m{}", i + 1), m, &dbname);
+        }
 
         if (out.len(), fnv(&out)) != (821378, 817193661739305252) {
             let path = dir.join("tippecanoe-rs-metadata.out");

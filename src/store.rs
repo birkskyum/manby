@@ -13,15 +13,21 @@ use tippecanoe::serial::SerialVal;
 /// One input feature.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Feature {
-    /// Position of the feature on the space-filling curve, tippecanoe's `index`.
+    /// tippecanoe's serialized `index`: the position of the feature on the
+    /// space-filling curve if an option needs it (dropping or coalescing the
+    /// densest, gamma, clustering, ...), otherwise 0, as the tiling reads it.
     pub index: u64,
+    /// The position on the space-filling curve that features are sorted by,
+    /// tippecanoe's `struct index` `ix`, whether or not `index` keeps it.
+    pub ix: u64,
     /// Input sequence number, tippecanoe's `seq`, which keeps the order of
     /// features with the same index deterministic.
     pub seq: u64,
     pub label_point: u64,
     pub extent: i64,
     pub id: u64,
-    /// World coordinates: min x, min y, max x, max y.
+    /// World coordinates: min x, min y, max x, max y, of the geometry as the
+    /// tiling reads it back at zoom 0 (`decode_geometry`).
     pub bbox: [i64; 4],
     /// The feature's vertices are `geometry[geom_start..geom_start + geom_len]`.
     pub geom_start: u64,
@@ -58,7 +64,8 @@ pub struct Layer {
 #[derive(Default)]
 pub struct FeatureStore {
     pub features: Vec<Feature>,
-    /// World coordinates (2^32 per side at zoom 0), with tippecanoe's move and line ops.
+    /// World coordinates (2^32 per side at zoom 0), with tippecanoe's move and
+    /// line ops, as `decode_geometry` returns them at zoom 0.
     pub geometry: Vec<Draw>,
     pub attrs: Vec<Attr>,
     /// Interned attribute keys.
@@ -68,6 +75,15 @@ pub struct FeatureStore {
     pub layers: Vec<Layer>,
     /// Bounds of the input in world coordinates, as tippecanoe's `file_bbox`.
     pub bbox: [i64; 4],
+    /// tippecanoe's `file_bbox1` and `file_bbox2`: the bounds on the -180 to
+    /// 180 and the 0 to 360 world planes, for the antimeridian-aware bounds.
+    pub bbox1: [i64; 4],
+    pub bbox2: [i64; 4],
+    /// What `-zg` needs from reading: tippecanoe's `dist_sum`, `dist_count`
+    /// and `area_sum`.
+    pub dist_sum: f64,
+    pub dist_count: usize,
+    pub area_sum: f64,
 }
 
 impl FeatureStore {

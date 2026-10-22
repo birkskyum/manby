@@ -150,6 +150,7 @@ impl Builder {
             feature_minzoom,
             tippecanoe_minzoom: -1,
             tippecanoe_maxzoom: -1,
+            segment: 0,
         });
     }
 

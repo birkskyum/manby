@@ -347,6 +347,7 @@ fn main() {
             feature_minzoom: sf.feature_minzoom,
             tippecanoe_minzoom: sf.tippecanoe_minzoom as i8,
             tippecanoe_maxzoom: sf.tippecanoe_maxzoom as i8,
+            segment: sf.segment as u16,
         });
     }
     eprintln!(

@@ -24,8 +24,9 @@ pub mod geobuf;
 pub mod geojson;
 pub mod json;
 pub mod serialize;
+pub mod serialized;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Write};
 
 use rayon::prelude::*;
@@ -64,6 +65,8 @@ struct Unit {
     /// Whether the unit is one of tippecanoe's parallel segments, whose
     /// `-zg` sums are added up separately, rather than its serial stream.
     segment: bool,
+    /// The reader, tippecanoe's segment number, that reads the unit.
+    reader: u16,
 }
 
 /// A chunk that the unit's parse confirmed, with where it sits.
@@ -323,6 +326,8 @@ struct Parts {
     chunks: Vec<Accepted>,
     /// Per accepted chunk: the `seq` of its first feature.
     seq_base: Vec<i64>,
+    /// Per accepted chunk: the segment that read it.
+    segment: Vec<u16>,
     dist_sum: f64,
     dist_count: usize,
     area_sum: f64,
@@ -339,6 +344,7 @@ fn add_chunks(parts: &mut Parts, units: &[Unit], chunks: Vec<Accepted>, unit_off
         let u = a.unit - unit_offset;
         let unit = &units[u];
         parts.seq_base.push(unit.seq_base + rank_in_unit[u]);
+        parts.segment.push(unit.reader);
         rank_in_unit[u] += a.chunk.features.len() as i64;
 
         parts.dist_count += a.chunk.dist_count;
@@ -455,6 +461,7 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
     let mut parts = Parts {
         chunks: Vec::new(),
         seq_base: Vec::new(),
+        segment: Vec::new(),
         dist_sum: 0.0,
         dist_count: 0,
         area_sum: 0.0,
@@ -568,6 +575,7 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
             chunk.area_terms.clear();
             let n = chunk.features.len() as i64;
             parts.seq_base.push(overall_offset);
+            parts.segment.push(0);
             parts.chunks.push(Accepted {
                 chunk,
                 unit: usize::MAX,
@@ -605,6 +613,7 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
                     end: segs[i + 1],
                     seq_base: segs[i] as i64 + overall_offset,
                     segment: true,
+                    reader: i as u16,
                 })
                 .collect();
             overall_offset += len as i64;
@@ -633,6 +642,7 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
                             end: segs[i + 1],
                             seq_base: (segs[i] - cs) as i64 + initial_offset,
                             segment: true,
+                            reader: i as u16,
                         });
                     }
                     initial_offset += (ce - cs) as i64;
@@ -645,6 +655,7 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
                     end: bytes.len(),
                     seq_base: overall_offset,
                     segment: false,
+                    reader: 0,
                 }];
                 (units, b'\n', Data::Owned(bytes))
             }
@@ -763,6 +774,7 @@ fn read_fgb(
             let (a, _, i) = ranges[k + j];
             let base = batch_base + (a - size_start) as i64;
             parts.seq_base.push(base);
+            parts.segment.push(i as u16);
             last_end = base + chunk.features.len() as i64;
             for t in &chunk.dist_terms {
                 seg_dist[i] += t;
@@ -878,6 +890,7 @@ fn read_geobuf(
         for (i, (chunk, _)) in chunks[k..k + n].iter().enumerate() {
             let base = l0 + jobs[k + i].1 as i64;
             parts.seq_base.push(base);
+            parts.segment.push(i as u16);
             last_end = base + chunk.features.len() as i64;
             for t in &chunk.dist_terms {
                 seg_dist[i] += t;
@@ -1037,6 +1050,26 @@ fn merge(
         l.entry.tilestats = st.into_iter().map(|(k, v)| (k, v.to_tilestat())).collect();
     }
 
+    let cpus = options.tippecanoe_cpus.max(1);
+    let segment_layers = layer_numbers(
+        &chunks,
+        &parts.segment,
+        layer_source,
+        &layer_ids,
+        layers.len(),
+        cpus,
+    );
+    // Features go to the layer that tippecanoe's tiling names their number
+    // after, while their counts stay in their own layer's statistics.
+    if let Some(renamed) = renamed_layers(&segment_layers, &layers) {
+        for (ci, m) in layer_remap.iter_mut().enumerate() {
+            let r = &renamed[parts.segment[ci] as usize];
+            for id in m.iter_mut() {
+                *id = r[*id as usize];
+            }
+        }
+    }
+
     let (keys, key_remap) = merge_tables(&chunks.iter().map(|c| &c.keys).collect::<Vec<_>>());
     let (values, value_remap) = merge_tables(&chunks.iter().map(|c| &c.values).collect::<Vec<_>>());
 
@@ -1055,6 +1088,7 @@ fn merge(
         .enumerate()
         .flat_map_iter(|(ci, c)| {
             let seq_base = parts.seq_base[ci];
+            let segment = parts.segment[ci];
             let lr = &layer_remap[ci];
             let mut out: Vec<Feature> = c
                 .features
@@ -1064,6 +1098,7 @@ fn merge(
                     layer: lr[f.layer as usize],
                     geom_start: f.geom_start + geom_off[ci],
                     attr_start: f.attr_start + attr_off[ci],
+                    segment,
                     ..*f
                 })
                 .collect();
@@ -1117,7 +1152,19 @@ fn merge(
         (Vec::new(), Vec::new())
     };
 
-    FeatureStore {
+    let mut initial_x = vec![0u32; cpus];
+    let mut initial_y = vec![0u32; cpus];
+    let mut initialized = vec![false; cpus];
+    for (ci, c) in chunks.iter().enumerate() {
+        let s = parts.segment[ci] as usize;
+        if let (false, Some((x, y))) = (initialized[s], c.initial) {
+            initial_x[s] = x;
+            initial_y[s] = y;
+            initialized[s] = true;
+        }
+    }
+
+    let mut store = FeatureStore {
         features,
         geometry,
         attrs,
@@ -1141,7 +1188,94 @@ fn merge(
         area_sum: parts.area_sum,
         shared_nodes,
         shared_nodes_bloom,
+        initial_x,
+        initial_y,
+        segment_layers,
+        ..Default::default()
+    };
+
+    if options
+        .additional
+        .get(tippecanoe::options::A_VARIABLE_DEPTH_PYRAMID)
+    {
+        let mut spans = Vec::with_capacity(chunks.len());
+        let (mut f, mut a) = (0usize, 0usize);
+        for (ci, c) in chunks.iter().enumerate() {
+            spans.push(serialized::Span {
+                segment: parts.segment[ci] as usize,
+                features: f..f + c.features.len(),
+                attrs: a..a + c.attrs.len(),
+            });
+            f += c.features.len();
+            a += c.attrs.len();
+        }
+        serialized::layout(
+            &mut store,
+            &spans,
+            cpus,
+            tippecanoe::platform::calc_memsize() / cpus / 10,
+            options.geometry_scale,
+        );
     }
+    store
+}
+
+/// tippecanoe's layer numbers, `numbers[segment][layer]`: each reader starts
+/// with the source layers, numbered by their first source, and numbers the
+/// layers it reads after those in the order it reads them. -1 for a layer
+/// that the segment does not have.
+fn layer_numbers(
+    chunks: &[&Chunk],
+    segment: &[u16],
+    seeds: &BTreeMap<String, usize>,
+    layer_ids: &BTreeMap<String, u32>,
+    layers: usize,
+    segments: usize,
+) -> Vec<Vec<i64>> {
+    let mut start = vec![-1i64; layers];
+    for (name, &n) in seeds {
+        start[layer_ids[name] as usize] = n as i64;
+    }
+    let mut numbers = vec![start; segments];
+    let mut count = vec![seeds.len() as i64; segments];
+    for (ci, c) in chunks.iter().enumerate() {
+        let s = segment[ci] as usize;
+        for l in &c.layers[seeds.len()..] {
+            let id = layer_ids[&l.name] as usize;
+            if numbers[s][id] < 0 {
+                numbers[s][id] = count[s];
+                count[s] += 1;
+            }
+        }
+    }
+    numbers
+}
+
+/// tippecanoe's tiling names a segment's layer number after the last of the
+/// layers with that number in name order. Numbers are shared when sources
+/// repeat a layer name and features name new layers. For each segment, the
+/// layer that each layer's features end up in, if any segment renames any.
+fn renamed_layers(numbers: &[Vec<i64>], layers: &[Layer]) -> Option<Vec<Vec<u32>>> {
+    let mut out: Option<Vec<Vec<u32>>> = None;
+    for (s, nums) in numbers.iter().enumerate() {
+        let mut last: HashMap<i64, usize> = HashMap::new();
+        for (l, &n) in nums.iter().enumerate() {
+            if n >= 0 {
+                let e = last.entry(n).or_insert(l);
+                if layers[l].name > layers[*e].name {
+                    *e = l;
+                }
+            }
+        }
+        for (l, &n) in nums.iter().enumerate() {
+            if n >= 0 && last[&n] != l {
+                let o = out
+                    .get_or_insert_with(|| vec![(0..layers.len() as u32).collect(); numbers.len()]);
+                o[s][l] = last[&n] as u32;
+            }
+        }
+    }
+    out
 }
 
 /// The nodes that tippecanoe keeps through simplification with
@@ -1218,6 +1352,7 @@ mod tests {
             end: data.len(),
             seq_base: 0,
             segment: false,
+            reader: 0,
         };
         assert_eq!(
             split_unit(data, &unit, b'\n', 6),

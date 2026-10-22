@@ -87,6 +87,11 @@ struct Feat {
     geometry: Vec<(i8, i64, i64)>,
     bbox: [i64; 4],
     attrs: Vec<(String, i32, String)>,
+    /// What -at needs: the reading segment, the layer number and the string
+    /// pool offsets that the segment serialized.
+    segment: u16,
+    layer_number: i64,
+    pool: Vec<(i64, i64)>,
 }
 
 struct Reference {
@@ -98,6 +103,9 @@ struct Reference {
     bbox: [i64; 4],
     bbox1: [i64; 4],
     bbox2: [i64; 4],
+    initial_x: Vec<u32>,
+    initial_y: Vec<u32>,
+    geom_bytes: u64,
 }
 
 fn cstring_at(pool: &[u8], off: usize) -> String {
@@ -278,6 +286,7 @@ fn reference(o: &Options) -> Reference {
         .collect();
 
     let mut features = Vec::new();
+    let mut geom_bytes = 0u64;
     let mut bbox = [u32::MAX as i64, u32::MAX as i64, 0, 0];
     let mut bbox1: [i64; 4] = [0xFFFFFFFF, 0xFFFFFFFF, 0, 0];
     let mut bbox2: [i64; 4] = [0x1FFFFFFFF, 0xFFFFFFFF, 0x100000000, 0];
@@ -299,6 +308,7 @@ fn reference(o: &Options) -> Reference {
         // SAFETY: the reader's descriptors, which nothing else closes.
         let geomf = unsafe { File::from_raw_fd(r.geomfd) };
         let indexf = unsafe { File::from_raw_fd(r.indexfd) };
+        geom_bytes += r.geompos.load(Ordering::Relaxed) as u64;
         let mut geom = vec![0u8; r.geompos.load(Ordering::Relaxed) as usize];
         geomf.read_exact_at(&mut geom, 0).unwrap();
         let mut index = vec![0u8; r.indexpos.load(Ordering::Relaxed) as usize];
@@ -354,7 +364,16 @@ fn reference(o: &Options) -> Reference {
                 geometry: sf.geometry.iter().map(|d| (d.op, d.x, d.y)).collect(),
                 bbox: sf.bbox,
                 attrs,
+                segment: seg as u16,
+                layer_number: sf.layer,
+                pool: sf
+                    .keys
+                    .iter()
+                    .copied()
+                    .zip(sf.values.iter().copied())
+                    .collect(),
             });
+            assert_eq!(sf.segment as usize, seg);
             assert_eq!(x.t() as i8, sf.t);
             assert_eq!(x.seq(), sf.seq as u64 & ((1 << 46) - 1));
         }
@@ -372,6 +391,9 @@ fn reference(o: &Options) -> Reference {
         bbox,
         bbox1,
         bbox2,
+        initial_x: ix,
+        initial_y: iy,
+        geom_bytes,
     }
 }
 
@@ -405,6 +427,13 @@ fn store_features(s: &FeatureStore) -> Vec<Feat> {
                     (s.keys[a.key as usize].clone(), v.type_, v.s.clone())
                 })
                 .collect(),
+            segment: f.segment,
+            layer_number: s.segment_layers[f.segment as usize][f.layer as usize],
+            pool: s.pool_offsets
+                [f.attr_start as usize..f.attr_start as usize + f.attr_len as usize]
+                .iter()
+                .map(|p| (p.key, p.value))
+                .collect(),
         })
         .collect();
     out.sort_by_key(|f| f.seq);
@@ -424,6 +453,9 @@ fn compare(
     o.tippecanoe_cpus = cpus;
     o.chunk_bytes = chunk_bytes;
     o.threads = threads;
+    // what -at needs from reading is compared too
+    o.additional
+        .set(tippecanoe::options::A_VARIABLE_DEPTH_PYRAMID, true);
     o.resolve().map_err(|e| format!("resolve: {}", e.message))?;
     set_tippecanoe_globals(&o, o.cluster_maxzoom);
     tippecanoe::globals::QUIET.store(1, Ordering::Relaxed);
@@ -481,6 +513,20 @@ fn compare(
         return Err(format!(
             "sums differ: {} {} {} vs {} {} {}",
             store.dist_sum, store.dist_count, store.area_sum, r.dist_sum, r.dist_count, r.area_sum
+        ));
+    }
+    // tippecanoe has room for twice as many segments as it uses
+    let (rx, ry) = (&r.initial_x[..cpus], &r.initial_y[..cpus]);
+    if store.initial_x != rx || store.initial_y != ry {
+        return Err(format!(
+            "initial points differ: {:?} {:?} vs {:?} {:?}",
+            store.initial_x, store.initial_y, rx, ry
+        ));
+    }
+    if store.serialized_bytes != r.geom_bytes {
+        return Err(format!(
+            "serialized bytes differ: {} vs {}",
+            store.serialized_bytes, r.geom_bytes
         ));
     }
     if store.bbox != r.bbox || store.bbox1 != r.bbox1 || store.bbox2 != r.bbox2 {
@@ -646,6 +692,10 @@ fn store_dump(s: &FeatureStore) -> String {
         "{:?} {:?} {:?} {} {} {}\n",
         s.bbox, s.bbox1, s.bbox2, s.dist_sum, s.dist_count, s.area_sum
     );
+    out += &format!(
+        "{:?} {:?} {:?} {:?} {}\n",
+        s.initial_x, s.initial_y, s.segment_layers, s.pool_offsets, s.serialized_bytes
+    );
     out
 }
 
@@ -665,6 +715,7 @@ fn deterministic_store() {
         "-zg",
         "-P -zg --drop-densest-as-needed",
         "-z5 -ai --calculate-feature-index",
+        "-P -z5 -at",
     ] {
         let mut argv = vec![
             "tippecanoe".to_string(),
@@ -685,8 +736,8 @@ fn deterministic_store() {
             o.resolve().unwrap();
             set_tippecanoe_globals(&o, o.cluster_maxzoom);
             let mut store = manby::ingest::read_inputs(&o).unwrap();
-            manby::order::order(&mut store, &o).unwrap();
-            let dump = store_dump(&store);
+            let plan = manby::order::order(&mut store, &o).unwrap();
+            let dump = store_dump(&store) + &format!("{:?}", plan);
             match &first {
                 None => first = Some(dump),
                 Some(f) => assert!(
@@ -698,5 +749,93 @@ fn deterministic_store() {
                 ),
             }
         }
+    }
+}
+
+/// manby's replay of the string pool against tippecanoe-rs's `addpool`:
+/// random strings with repeats, a memory limit that the pool runs past, and
+/// strings in the order of their hashes, which makes the search tree too
+/// deep.
+#[test]
+fn string_pool() {
+    let _lock = GLOBALS.lock().unwrap_or_else(|e| e.into_inner());
+    use manby::ingest::serialized::{Pool, Table};
+    use tippecanoe::globals::{CPUS, MEMSIZE};
+
+    let mut x: u64 = 1;
+    let mut random: Vec<(String, i8, Table)> = Vec::new();
+    for i in 0..400_000u64 {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        let s = match i % 4 {
+            0 => format!("{}", x % 1000),
+            1 => format!("v{}", x),
+            2 => format!("k{}", x % 50),
+            _ => format!("{}", i),
+        };
+        let table = if i % 2 == 0 { Table::Key } else { Table::Value };
+        random.push((s, (x % 3) as i8, table));
+    }
+    let mut sorted: Vec<(u64, String)> = (0..20_000)
+        .map(|i| format!("s{}", i))
+        .map(|s| (tippecanoe::text::fnv1a_cstr(s.as_bytes(), 0), s))
+        .filter(|(h, _)| *h < 1 << 62)
+        .collect();
+    sorted.sort();
+    let mut sorted: Vec<(String, i8, Table)> = sorted
+        .into_iter()
+        .map(|(_, s)| (s, 0, Table::Value))
+        .collect();
+    let again = sorted.clone();
+    sorted.extend(again);
+
+    for (strings, limit, fills) in [
+        (&random, usize::MAX / 20, false),
+        (&random, 3_000_000, true),
+        (&sorted, usize::MAX / 20, false),
+    ] {
+        CPUS.store(1, Ordering::Relaxed);
+        MEMSIZE.store(limit * 10, Ordering::Relaxed);
+        let (pool_fd, _) = tmpfd("pool");
+        let (tree_fd, _) = tmpfd("tree");
+        let mut pf = tippecanoe::memfile::memfile_open(pool_fd).unwrap();
+        let mut tf = tippecanoe::memfile::memfile_open(tree_fd).unwrap();
+        let mut in_memory = false;
+        tippecanoe::memfile::memfile_write(&mut tf, &[0u8; 32], &mut in_memory);
+        let mut dedup = [vec![-1isize; 655536], vec![-1isize; 655536]];
+
+        let mut mine = Pool::new(limit);
+        let mut deep = 0;
+        for (i, (s, type_, table)) in strings.iter().enumerate() {
+            let (pool_before, tree_before) = (pf.off, tf.off);
+            let want = tippecanoe::pool::addpool(
+                &mut pf,
+                &mut tf,
+                s.as_bytes(),
+                *type_,
+                &mut dedup[*table as usize],
+            );
+            if pf.fp.is_none() && pf.off > pool_before && tf.off == tree_before {
+                deep += 1;
+            }
+            assert_eq!(
+                mine.add(s.as_bytes(), *type_, *table),
+                want,
+                "string {} ({})",
+                i,
+                s
+            );
+        }
+        assert_eq!(pf.fp.is_some(), fills);
+        if std::ptr::eq(strings, &sorted) {
+            assert!(
+                deep > 1000,
+                "only {} strings went past the depth limit",
+                deep
+            );
+        }
+        let _ = tippecanoe::memfile::memfile_close(pf);
+        let _ = tippecanoe::memfile::memfile_close(tf);
     }
 }

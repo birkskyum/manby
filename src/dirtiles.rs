@@ -9,12 +9,12 @@ use std::process::exit;
 
 use rusqlite::Connection;
 
-use crate::cstd::{atoi, errno, perror, set_errno, strerror};
+use crate::cstd::{atoi, errno, perror_io, strerror};
 use crate::errors::{
     EXIT_CLOSE, EXIT_EXISTS, EXIT_JSON, EXIT_OPEN, EXIT_SQLITE, EXIT_UNLINK, EXIT_WRITE,
 };
 use crate::jsonpull::{JsonPull, JsonType};
-use crate::mbtiles::{Metadata, c_str, sqlite3_exec, sqlite3_mprintf, sqlite3_open};
+use crate::mbtiles::{Metadata, c_str_bytes, sqlite3_exec, sqlite3_mprintf, sqlite3_open};
 use crate::write_json::JsonWriter;
 
 /// `zxy`. Ordered by zoom, then x, then y reversed (for TMS). The extension
@@ -63,12 +63,6 @@ impl Ord for Zxy {
             .then(self.x.cmp(&o.x))
             .then(o.y.cmp(&self.y))
     }
-}
-
-/// `perror(s)` for a failure that Rust reported as an `io::Error`.
-fn perror_io(s: &str, e: &std::io::Error) {
-    set_errno(e.raw_os_error().unwrap_or(0));
-    perror(s);
 }
 
 /// `std::to_string(double)`, which formats like `%f`.
@@ -342,8 +336,8 @@ pub fn dirmeta2tmp(fname: &str) -> Connection {
                     continue;
                 }
 
-                let k = c_str(key.string());
-                let v = c_str(value.string());
+                let k = c_str_bytes(key.raw_string_bytes());
+                let v = c_str_bytes(value.raw_string_bytes());
                 let sql = sqlite3_mprintf!(
                     c"INSERT INTO metadata (name, value) VALUES (%Q, %Q);",
                     k.as_ptr(),

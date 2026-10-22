@@ -700,3 +700,233 @@ pub fn get_tile(
 
     (0, 0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Expected values come from a harness built against the C++ pmtiles.hpp.
+
+    fn hex(s: &[u8]) -> String {
+        s.iter().map(|c| format!("{:02x}", c)).collect()
+    }
+
+    fn fnv(s: &[u8]) -> u64 {
+        let mut h: u64 = 14695981039346656037;
+        for &c in s {
+            h ^= c as u64;
+            h = h.wrapping_mul(1099511628211);
+        }
+        h
+    }
+
+    fn ident(s: &[u8], _: u8) -> Vec<u8> {
+        s.to_vec()
+    }
+
+    #[test]
+    fn tile_ids() {
+        let cases: [(u8, u32, u32, u64); 13] = [
+            (0, 0, 0, 0),
+            (1, 0, 0, 1),
+            (1, 0, 1, 2),
+            (1, 1, 1, 3),
+            (1, 1, 0, 4),
+            (2, 1, 3, 11),
+            (3, 3, 0, 26),
+            (12, 3423, 1763, 19078479),
+            (20, 0, 0, 366503875925),
+            (20, 1048575, 1048575, 1099511627775),
+            (31, 0, 0, 1537228672809129301),
+            (31, 2147483647, 2147483647, 4611686018427387903),
+            (24, 1234567, 7654321, 162123754297963),
+        ];
+        for (z, x, y, id) in cases {
+            assert_eq!(zxy_to_tileid(z, x, y), id, "{}/{}/{}", z, x, y);
+            assert_eq!(tileid_to_zxy(id), Zxy { z, x, y });
+        }
+
+        let ids: [(u64, u8, u32, u32); 4] = [
+            (20, 2, 3, 0),
+            (21, 3, 0, 0),
+            (1000000000000, 20, 560065, 880768),
+            (6148914691236517204, 31, 2147483647, 0),
+        ];
+        for (id, z, x, y) in ids {
+            assert_eq!(tileid_to_zxy(id), Zxy { z, x, y });
+        }
+    }
+
+    #[test]
+    fn directory_bytes() {
+        let e = vec![
+            EntryV3::new(0, 0, 100, 1),
+            EntryV3::new(1, 100, 50, 2),
+            EntryV3::new(5, 150, 10, 1),
+            EntryV3::new(6, 0, 100, 1),
+            EntryV3::new(300, 5000000000, 70000, 0),
+        ];
+        let s = serialize_directory(&e);
+        assert_eq!(
+            hex(&s),
+            "0500010401a602010201010064320a64f0a2040100000181e497d012"
+        );
+        assert_eq!(deserialize_directory(&s), e);
+    }
+
+    #[test]
+    fn header_bytes_round_trip() {
+        let h = HeaderV3 {
+            root_dir_offset: 127,
+            root_dir_bytes: 300,
+            json_metadata_offset: 427,
+            json_metadata_bytes: 999,
+            leaf_dirs_offset: 1426,
+            leaf_dirs_bytes: 5,
+            tile_data_offset: 1431,
+            tile_data_bytes: 123456789012,
+            addressed_tiles_count: 77,
+            tile_entries_count: 66,
+            tile_contents_count: 55,
+            clustered: true,
+            internal_compression: 2,
+            tile_compression: 1,
+            tile_type: 1,
+            min_zoom: 0,
+            max_zoom: 14,
+            min_lon_e7: -1224194160,
+            min_lat_e7: -377749290,
+            max_lon_e7: 1800000000,
+            max_lat_e7: 850511287,
+            center_zoom: 14,
+            center_lon_e7: -1224194165,
+            center_lat_e7: 377749295,
+        };
+        let s = h.serialize();
+        assert_eq!(
+            hex(&s),
+            "504d54696c6573037f000000000000002c01000000000000ab01000000000000e703000000000000920500000000000005000000000000009705000000000000141a99be1c0000004d000000000000004200000000000000370000000000000001020101000e904708b7d6007ce900d2496bb7c5b1320e8b4708b72fff8316"
+        );
+        assert_eq!(deserialize_header(&s), h);
+        assert_eq!(header_bytes(&s[..10]).len(), 127);
+    }
+
+    /// The same pseudo-random directory as the C++ harness.
+    fn big_directory() -> Vec<EntryV3> {
+        let mut big = Vec::new();
+        let mut off: u64 = 0;
+        let mut seed: u64 = 12345;
+        let mut id: u64 = 0;
+        for _ in 0..100000 {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            id += 1 + (seed >> 60);
+            let len = (100 + ((seed >> 33) % 5000)) as u32;
+            let run = 1 + if (seed >> 20) % 3 == 0 {
+                ((seed >> 40) % 4) as u32
+            } else {
+                0
+            };
+            if (seed >> 50) % 7 == 0 && off > 0 {
+                big.push(EntryV3::new(id, off / 2, len, run));
+            } else {
+                big.push(EntryV3::new(id, off, len, run));
+                off += len as u64;
+            }
+            id += run as u64 - 1;
+        }
+        big
+    }
+
+    #[test]
+    fn root_and_leaves() {
+        let big = big_directory();
+
+        let (root, leaves, n) = make_root_leaves(&ident, COMPRESSION_NONE, &big);
+        assert_eq!((root.len(), fnv(&root)), (198, 11552917384240794451));
+        assert_eq!((leaves.len(), fnv(&leaves)), (579196, 822824438446663591));
+        assert_eq!(n, 25);
+
+        let (root, leaves, n) = make_root_leaves(&ident, COMPRESSION_NONE, &big[..1000]);
+        assert_eq!((root.len(), fnv(&root)), (5554, 6839974644432021041));
+        assert_eq!((leaves.len(), n), (0, 0));
+    }
+
+    #[test]
+    fn find_tiles() {
+        let big = big_directory();
+        let probes: [(u64, u64, u64, u32, u32); 10] = [
+            (0, 0, 0, 0, 0),
+            (1, 0, 0, 0, 0),
+            (2, 2, 0, 3364, 1),
+            (3, 0, 0, 0, 0),
+            (4467, 4467, 1078950, 2867, 1),
+            (4468, 0, 0, 0, 0),
+            (900304, 900304, 222152809, 2871, 1),
+            (900309, 0, 0, 0, 0),
+            (111489, 111488, 27224666, 679, 2),
+            // The C++ narrows the difference to int, so this finds tile 115.
+            (4294967411, 115, 24904, 3459, 1),
+        ];
+        for (p, tile_id, offset, length, run_length) in probes {
+            assert_eq!(
+                find_tile(&big, p),
+                EntryV3::new(tile_id, offset, length, run_length),
+                "probe {}",
+                p
+            );
+        }
+
+        let far = vec![
+            EntryV3::new(10, 0, 1, 1),
+            EntryV3::new(10 + 4294967296, 1, 2, 1),
+            EntryV3::new(20 + 4294967296, 3, 4, 1),
+        ];
+        let fp: [(u64, EntryV3); 4] = [
+            (10, far[1]),
+            (10 + 4294967296, far[1]),
+            (20 + 4294967296, far[2]),
+            (20, far[2]),
+        ];
+        for (p, e) in fp {
+            assert_eq!(find_tile(&far, p), e, "probe {}", p);
+        }
+    }
+
+    #[test]
+    fn archive_round_trip() {
+        // A directory with leaves, read back through entries_tms and get_tile.
+        let big = big_directory();
+        let (root, leaves, _) = make_root_leaves(&ident, COMPRESSION_NONE, &big);
+        let h = HeaderV3 {
+            root_dir_offset: 127,
+            root_dir_bytes: root.len() as u64,
+            json_metadata_offset: 127 + root.len() as u64,
+            json_metadata_bytes: 0,
+            leaf_dirs_offset: 127 + root.len() as u64,
+            leaf_dirs_bytes: leaves.len() as u64,
+            tile_data_offset: 1 << 40,
+            internal_compression: COMPRESSION_NONE,
+            ..Default::default()
+        };
+        let mut archive = h.serialize();
+        archive.extend_from_slice(&root);
+        archive.extend_from_slice(&leaves);
+
+        let entries = entries_tms(&ident, &archive);
+        let addressed: u64 = big.iter().map(|e| e.run_length as u64).sum();
+        assert_eq!(entries.len() as u64, addressed);
+        for w in entries.windows(2) {
+            assert_eq!(colmajor_cmp(&w[0], &w[1]), std::cmp::Ordering::Less);
+        }
+
+        for e in big.iter().step_by(997) {
+            let zxy = tileid_to_zxy(e.tile_id);
+            assert_eq!(
+                get_tile(&ident, &archive, zxy.z, zxy.x, zxy.y),
+                ((1 << 40) + e.offset, e.length)
+            );
+        }
+    }
+}

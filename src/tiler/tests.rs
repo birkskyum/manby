@@ -406,6 +406,26 @@ fn points_cluster_and_accumulate() {
     check(&store, &o);
 }
 
+/// With --cluster-distance and --cluster-densest-as-needed, a tile too big
+/// for its concatenated strings retries with no gaps sampled, and
+/// choose_mingap indexes an empty list. tippecanoe-rs panics there; manby
+/// fails the run rather than waiting for the task forever.
+#[test]
+fn cluster_distance_concat_too_big_fails() {
+    let _g = GLOBALS.lock().unwrap_or_else(|e| e.into_inner());
+    let store = points(8000, 17, 18, 8);
+    let mut o = options(8);
+    o.cluster_distance = 20;
+    flag(&mut o, A_CLUSTER_DENSEST_AS_NEEDED);
+    o.attribute_accum
+        .insert("kind".to_string(), AttributeOp::Concat);
+    o.max_tile_size = 2000;
+    set_globals(&o);
+    let sink = MemorySink::default();
+    let r = tile_with(&store, &TileOptions { threads: 4, ..o }, &sink);
+    assert!(r.is_err());
+}
+
 #[test]
 fn points_cluster_densest_and_gamma() {
     let store = points(20000, 19, 18, 9);

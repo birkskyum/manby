@@ -134,6 +134,7 @@ impl Builder {
         let seq = self.store.features.len() as u64;
         self.store.features.push(Feature {
             index,
+            ix: index,
             seq,
             label_point: index,
             extent,

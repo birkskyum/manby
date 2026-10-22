@@ -214,11 +214,13 @@ dependencies = [
 name = "manby"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "libc",
  "libdeflater",
  "memmap2",
  "mimalloc",
  "rayon",
+ "rusqlite",
  "tippecanoe",
  "xxhash-rust",
 ]

@@ -1,9 +1,939 @@
 //! Reading input files into a `FeatureStore`, in parallel. See DESIGN.md.
+//!
+//! tippecanoe reads an input in one of three ways, and they number the
+//! features (tippecanoe's `seq`, which `--generate-ids` makes into ids)
+//! differently:
+//!
+//! - With `-P`, or if the input starts with a record separator, a file it can
+//!   map is split into `CPUS` segments at separators, each parsed on its own
+//!   and numbered from its byte offset.
+//! - The same from a pipe or a gzipped file goes in chunks of more than 10 MB,
+//!   each split into segments the same way.
+//! - Otherwise the input is parsed as one stream and numbered from 0.
+//!
+//! Each of those parses, a "unit" here, is split further into byte ranges at
+//! line or record boundaries, which are parsed in parallel as if each started
+//! a parse of its own. A range that ends inside a JSON value, or that takes a
+//! bare geometry the unit's parse would have refused, is read again as part
+//! of the unit, so the result is always what the unit's own parse gives.
 
-use crate::options::Options;
-use crate::store::FeatureStore;
+pub mod chunk;
+pub mod geojson;
+pub mod json;
+pub mod serialize;
+
+use std::collections::{BTreeMap, HashSet};
+use std::io::{Read, Write};
+
+use rayon::prelude::*;
+use tippecanoe::errors::*;
+
+use chunk::{Chunk, Interner, Message, MessageKind, SHARDS, Stat};
+use serialize::Config;
+
+use crate::Error;
+use crate::options::{Options, Source, os_message};
+use crate::store::{Attr, Feature, FeatureStore, Layer};
+
+/// The bytes of one input, mapped or read into memory.
+enum Data {
+    Map(memmap2::Mmap),
+    Owned(Vec<u8>),
+}
+
+impl std::ops::Deref for Data {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            Data::Map(m) => m,
+            Data::Owned(v) => v,
+        }
+    }
+}
+
+/// One parse that tippecanoe makes of part of an input.
+#[derive(Clone, Copy, Debug)]
+struct Unit {
+    start: usize,
+    end: usize,
+    /// The `seq` of the unit's first feature.
+    seq_base: i64,
+    /// Whether the unit is one of tippecanoe's parallel segments, whose
+    /// `-zg` sums are added up separately, rather than its serial stream.
+    segment: bool,
+}
+
+/// A chunk that the unit's parse confirmed, with where it sits.
+struct Accepted {
+    chunk: Chunk,
+    unit: usize,
+    /// Lines of the unit before the chunk, for numbering its messages.
+    line_offset: i32,
+}
+
+/// The name tippecanoe gives a layer from its file name.
+fn layer_name_from_file(src: &str, l: usize) -> String {
+    let src = src.split('\0').next().unwrap_or("").as_bytes();
+    // Find the last component of the pathname
+    let mut use_ = 0;
+    for ocp in 0..src.len() {
+        if src[ocp] == b'/' && ocp + 1 < src.len() {
+            use_ = ocp + 1;
+        }
+    }
+    let mut trunc: Vec<u8> = src[use_..].to_vec();
+
+    let trim: [&[u8]; 7] = [
+        b".json",
+        b".geojson",
+        b".geobuf",
+        b".mbtiles",
+        b".pmtiles",
+        b".csv",
+        b".gz",
+    ];
+
+    // Trim .json or .mbtiles from the name
+    let mut again = true;
+    while again {
+        again = false;
+        for t in trim.iter() {
+            if trunc.len() > t.len() && trunc.ends_with(t) {
+                trunc.truncate(trunc.len() - t.len());
+                again = true;
+            }
+        }
+    }
+
+    // Trim out characters that can't be part of selector
+    let out: Vec<u8> = trunc
+        .into_iter()
+        .filter(|&c| c.is_ascii_alphabetic() || c.is_ascii_digit() || c == b'_' || (c & 0x80) != 0)
+        .collect();
+
+    let name = String::from_utf8_lossy(&out).into_owned();
+    if name.is_empty() || !tippecanoe::text::check_utf8(&out).is_empty() {
+        format!("unknown{}", l)
+    } else {
+        name
+    }
+}
+
+/// The layer name tippecanoe gives source `l` when none is given: from its
+/// file name, or for standard input from the tileset name.
+pub fn layer_name_for(file: &str, tileset_name: &str, l: usize) -> String {
+    if file.is_empty() {
+        layer_name_from_file(tileset_name, l)
+    } else {
+        layer_name_from_file(file, l)
+    }
+}
+
+/// Prints the messages of a chunk with the lines numbered within its unit.
+fn print_messages(
+    out: &mut Vec<u8>,
+    fname: &str,
+    messages: &[Message],
+    line_offset: i32,
+    once: &mut HashSet<&'static str>,
+) {
+    for m in messages {
+        if let MessageKind::Once(k) = m.kind
+            && !once.insert(k)
+        {
+            continue;
+        }
+        write_parts(out, fname, &m.parts, line_offset);
+    }
+}
+
+fn write_parts(out: &mut Vec<u8>, fname: &str, parts: &[(Option<i32>, Vec<u8>)], off: i32) {
+    for (line, text) in parts {
+        if let Some(line) = line {
+            out.extend_from_slice(format!("{}:{}: ", fname, line + off).as_bytes());
+        }
+        out.extend_from_slice(text);
+        out.push(b'\n');
+    }
+}
+
+fn count_lines(data: &[u8]) -> i32 {
+    data.iter().filter(|&&c| c == b'\n').count() as i32
+}
+
+/// Splits a unit into ranges of about `target` bytes, each starting at a separator.
+fn split_unit(data: &[u8], unit: &Unit, sep: u8, target: usize) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut start = unit.start;
+    while start < unit.end {
+        let mut end = (start + target).min(unit.end);
+        while end < unit.end && data[end] != sep {
+            end += 1;
+        }
+        out.push((start, end));
+        start = end;
+    }
+    if out.is_empty() {
+        out.push((unit.start, unit.end));
+    }
+    out
+}
+
+/// tippecanoe's segments of `data[start..end]` for a parallel read.
+fn segments(data: &[u8], start: usize, end: usize, cpus: usize, sep: u8) -> Vec<usize> {
+    let len = end - start;
+    let mut segs = vec![start; cpus + 1];
+    segs[cpus] = end;
+    for (i, s) in segs.iter_mut().enumerate().take(cpus).skip(1) {
+        let mut p = len * i / cpus;
+        while p < len && data[start + p] != sep {
+            p += 1;
+        }
+        *s = start + p;
+    }
+    segs
+}
+
+/// The chunks of tippecanoe's streaming parallel read: each ends at the
+/// first 2000-byte read boundary past 10 MB that ends in a separator.
+fn stream_chunks(data: &[u8], sep: u8) -> Vec<(usize, usize)> {
+    const READ_BUF: usize = 2000;
+    const PARSE_MIN: usize = 10000000;
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut p = READ_BUF;
+    while p < data.len() {
+        if p - start > PARSE_MIN && data[p - 1] == sep {
+            out.push((start, p));
+            start = p;
+        }
+        p += READ_BUF;
+    }
+    if start < data.len() {
+        out.push((start, data.len()));
+    }
+    out
+}
+
+fn parse_range(
+    data: &[u8],
+    range: (usize, usize),
+    reading: &geojson::Reading<'_>,
+    layers: &[String],
+    found_features: i64,
+) -> Chunk {
+    let mut chunk = Chunk::new(layers);
+    let input = &data[range.0..range.1];
+    geojson::parse(input, reading, &mut chunk, found_features);
+    chunk
+}
+
+/// Parses the units of one input in parallel and confirms the chunks in the
+/// order of each unit's own parse.
+#[allow(clippy::too_many_arguments)]
+fn read_units(
+    data: &[u8],
+    units: &[Unit],
+    sep: u8,
+    reading: &geojson::Reading<'_>,
+    layers: &[String],
+    threads: usize,
+) -> Vec<Accepted> {
+    let total: usize = units.iter().map(|u| u.end - u.start).sum();
+    let target = match reading.cfg.o.chunk_bytes {
+        0 => (total / (threads * 8).max(1)).clamp(1 << 18, 1 << 24),
+        n => n,
+    };
+
+    let ranges: Vec<(usize, (usize, usize))> = units
+        .iter()
+        .enumerate()
+        .flat_map(|(u, unit)| {
+            split_unit(data, unit, sep, target)
+                .into_iter()
+                .map(move |r| (u, r))
+        })
+        .collect();
+
+    let chunks: Vec<Chunk> = ranges
+        .par_iter()
+        .map(|&(_, r)| parse_range(data, r, reading, layers, 0))
+        .collect();
+
+    let mut accepted = Vec::new();
+    let mut chunks = chunks.into_iter();
+    let mut i = 0;
+    while i < ranges.len() {
+        let u = ranges[i].0;
+        let unit = &units[u];
+        let mut found_features: i64 = 0;
+        let mut line_offset: i32 = 0;
+        let mut stopped = false;
+
+        while i < ranges.len() && ranges[i].0 == u {
+            let range = ranges[i].1;
+            let mut chunk = chunks.next().unwrap();
+            i += 1;
+            if stopped {
+                continue;
+            }
+
+            let last = i == ranges.len() || ranges[i].0 != u;
+            if chunk.bare_before_feature && found_features > 0 {
+                chunk = parse_range(data, range, reading, layers, found_features);
+            }
+            let unclean = chunk.error.is_some() && (chunk.cut_short || chunk.error_at_end);
+            if !last && unclean {
+                // The unit's parse reads on into the next range, so read the
+                // rest of the unit as one range.
+                let rest = (range.0, unit.end);
+                let chunk = parse_range(data, rest, reading, layers, found_features);
+                accepted.push(Accepted {
+                    chunk,
+                    unit: u,
+                    line_offset,
+                });
+                stopped = true;
+                continue;
+            }
+
+            found_features += chunk.found_features;
+            let ends = chunk.error.is_some() || chunk.fatal.is_some();
+            accepted.push(Accepted {
+                chunk,
+                unit: u,
+                line_offset,
+            });
+            line_offset += count_lines(&data[range.0..range.1]);
+            if ends {
+                // tippecanoe stops reading this unit at its error.
+                stopped = true;
+            }
+        }
+    }
+
+    accepted
+}
+
+/// Everything read so far, before it is merged into the store.
+struct Parts {
+    chunks: Vec<Accepted>,
+    /// Per accepted chunk: the `seq` of its first feature.
+    seq_base: Vec<i64>,
+    dist_sum: f64,
+    dist_count: usize,
+    area_sum: f64,
+}
+
+/// Adds the accepted chunks of one input to `parts`, numbering their features
+/// as tippecanoe does and adding up the `-zg` sums in tippecanoe's order.
+fn add_chunks(parts: &mut Parts, units: &[Unit], chunks: Vec<Accepted>, unit_offset: usize) {
+    let mut rank_in_unit: Vec<i64> = vec![0; units.len()];
+    let mut unit_sums: Vec<(f64, f64)> = vec![(0.0, 0.0); units.len()];
+    let mut segment_units: Vec<usize> = Vec::new();
+
+    for a in chunks {
+        let u = a.unit - unit_offset;
+        let unit = &units[u];
+        parts.seq_base.push(unit.seq_base + rank_in_unit[u]);
+        rank_in_unit[u] += a.chunk.features.len() as i64;
+
+        parts.dist_count += a.chunk.dist_count;
+        if unit.segment {
+            let s = &mut unit_sums[u];
+            for t in &a.chunk.dist_terms {
+                s.0 += t;
+            }
+            for t in &a.chunk.area_terms {
+                s.1 += t;
+            }
+            if segment_units.last() != Some(&u) {
+                segment_units.push(u);
+            }
+        } else {
+            for t in &a.chunk.dist_terms {
+                parts.dist_sum += t;
+            }
+            for t in &a.chunk.area_terms {
+                parts.area_sum += t;
+            }
+        }
+        parts.chunks.push(Accepted { unit: a.unit, ..a });
+    }
+
+    // tippecanoe adds each segment's sums once the segments are joined, in
+    // segment order, including the segments that found nothing.
+    for (u, unit) in units.iter().enumerate() {
+        if unit.segment {
+            parts.dist_sum += unit_sums[u].0;
+            parts.area_sum += unit_sums[u].1;
+        }
+    }
+}
+
+/// Reads all of standard input, or a file that cannot be mapped.
+fn read_all(r: &mut dyn Read, fname: &str, gz: bool) -> crate::Result<Vec<u8>> {
+    let mut raw = Vec::new();
+    r.read_to_end(&mut raw)
+        .map_err(|e| Error::new(EXIT_READ, format!("{}: {}", fname, os_message(&e))))?;
+    if gz && raw.len() >= 2 && raw[0] == 0x1F && raw[1] == 0x8B {
+        let mut out = Vec::new();
+        let mut d = flate2::read::MultiGzDecoder::new(&raw[..]);
+        d.read_to_end(&mut out).map_err(|_| {
+            Error::new(
+                EXIT_READ,
+                format!("{}: Error reading compressed data", fname),
+            )
+        })?;
+        return Ok(out);
+    }
+    // zlib reads data that is not gzipped as it is
+    Ok(raw)
+}
+
+/// Opens a source: the mapped file, or None if tippecanoe would read it as a stream.
+fn open_source(src: &Source) -> Result<(Option<std::fs::File>, Option<memmap2::Mmap>), Error> {
+    if src.file.is_empty() {
+        return Ok((None, None));
+    }
+    let f = std::fs::File::open(&src.file)
+        .map_err(|e| Error::new(EXIT_OPEN, format!("{}: {}", src.file, os_message(&e))))?;
+    let is_gz = src.file.len() > 3 && src.file.ends_with(".gz");
+    let mut map = None;
+    if !is_gz
+        && let Ok(md) = f.metadata()
+        && md.len() > 0
+    {
+        // SAFETY: the input is not changed while it is being read.
+        map = unsafe { memmap2::Mmap::map(&f) }.ok();
+    }
+    Ok((Some(f), map))
+}
 
 /// Reads every input named in `options` into one store, in input order.
 pub fn read_inputs(options: &Options) -> crate::Result<FeatureStore> {
-    todo!("ingest::read_inputs")
+    let threads = options.thread_count();
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .map_err(|e| Error::new(EXIT_PTHREAD, e.to_string()))?;
+    pool.install(|| read_inputs1(options, threads))
+}
+
+fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore> {
+    let cfg = Config::new(options);
+    let mut sources = options.all_sources();
+    let fname = options.tileset_name();
+    let cpus = options.tippecanoe_cpus.max(1);
+    let mut stderr: Vec<u8> = Vec::new();
+
+    for (l, s) in sources.iter_mut().enumerate() {
+        if s.layer.is_empty() {
+            s.layer = layer_name_for(&s.file, &fname, l);
+            if !options.quiet {
+                stderr.extend_from_slice(
+                    format!("For layer {}, using name \"{}\"\n", l, s.layer).as_bytes(),
+                );
+            }
+        }
+    }
+
+    // The layers every reader starts with: one per source layer name, with
+    // the description of the first source that names it.
+    let mut layer_names: Vec<String> = Vec::new();
+    let mut layer_source: BTreeMap<String, usize> = BTreeMap::new();
+    for (l, s) in sources.iter().enumerate() {
+        if !layer_source.contains_key(&s.layer) {
+            layer_source.insert(s.layer.clone(), l);
+            layer_names.push(s.layer.clone());
+        }
+    }
+
+    let mut parts = Parts {
+        chunks: Vec::new(),
+        seq_base: Vec::new(),
+        dist_sum: 0.0,
+        dist_count: 0,
+        area_sum: 0.0,
+    };
+    let mut once: HashSet<&'static str> = HashSet::new();
+    let mut overall_offset: i64 = 0;
+    let mut unit_count = 0;
+
+    for source in 0..sources.len() {
+        let src = &sources[source];
+        let reading_name = if src.file.is_empty() {
+            "standard input".to_string()
+        } else {
+            src.file.clone()
+        };
+        let layer = layer_source[&src.layer];
+
+        let format = src.format.as_str();
+        let file = src.file.as_str();
+        if format == "fgb"
+            || (file.len() > 4 && file.ends_with(".fgb"))
+            || format == "geobuf"
+            || (file.len() > 7 && file.ends_with(".geobuf"))
+            || format == "csv"
+            || (file.len() > 4 && file.ends_with(".csv"))
+        {
+            flush(&mut stderr);
+            return Err(Error::new(
+                EXIT_ARGS,
+                format!("{}: manby reads only GeoJSON so far", reading_name),
+            ));
+        }
+
+        let (file, map) = match open_source(src) {
+            Ok(fm) => fm,
+            Err(e) => {
+                // tippecanoe reports it and goes on to the next input
+                stderr.extend_from_slice(e.message.as_bytes());
+                stderr.push(b'\n');
+                continue;
+            }
+        };
+
+        let mut read_parallel_this: u8 = if options.read_parallel { b'\n' } else { 0 };
+        let mut data: Option<Data> = None;
+        if let Some(m) = map {
+            if m[0] == 0x1E {
+                read_parallel_this = 0x1E;
+            }
+            if read_parallel_this != 0 {
+                data = Some(Data::Map(m));
+            }
+        }
+
+        let reading = geojson::Reading {
+            cfg: &cfg,
+            fname: &reading_name,
+            layer: layer as i32,
+            layername: &sources[layer].layer,
+        };
+
+        let (units, sep, data) = if let Some(data) = data {
+            // A mapped file read in parallel segments.
+            let len = data.len();
+            let segs = segments(&data, 0, len, cpus, read_parallel_this);
+            let units: Vec<Unit> = (0..cpus)
+                .map(|i| Unit {
+                    start: segs[i],
+                    end: segs[i + 1],
+                    seq_base: segs[i] as i64 + overall_offset,
+                    segment: true,
+                })
+                .collect();
+            overall_offset += len as i64;
+            (units, read_parallel_this, data)
+        } else {
+            let gz = {
+                let n = &sources[layer].file;
+                n.len() > 3 && n.ends_with(".gz")
+            };
+            let bytes = match file {
+                Some(mut f) => read_all(&mut f, &reading_name, gz)?,
+                None => read_all(&mut std::io::stdin().lock(), &reading_name, gz)?,
+            };
+            if bytes.first() == Some(&0x1E) {
+                read_parallel_this = 0x1E;
+            }
+            if read_parallel_this != 0 {
+                // Read in chunks, each parsed in parallel segments.
+                let mut units = Vec::new();
+                let mut initial_offset = overall_offset;
+                for (cs, ce) in stream_chunks(&bytes, read_parallel_this) {
+                    let segs = segments(&bytes, cs, ce, cpus, read_parallel_this);
+                    for i in 0..cpus {
+                        units.push(Unit {
+                            start: segs[i],
+                            end: segs[i + 1],
+                            seq_base: (segs[i] - cs) as i64 + initial_offset,
+                            segment: true,
+                        });
+                    }
+                    initial_offset += (ce - cs) as i64;
+                }
+                overall_offset += bytes.len() as i64;
+                (units, read_parallel_this, Data::Owned(bytes))
+            } else {
+                let units = vec![Unit {
+                    start: 0,
+                    end: bytes.len(),
+                    seq_base: overall_offset,
+                    segment: false,
+                }];
+                (units, b'\n', Data::Owned(bytes))
+            }
+        };
+
+        let accepted = read_units(&data, &units, sep, &reading, &layer_names, threads);
+
+        // Messages in the order of the input, and the first fatal error.
+        let mut fatal = None;
+        for a in &accepted {
+            print_messages(
+                &mut stderr,
+                &reading_name,
+                &a.chunk.messages,
+                a.line_offset,
+                &mut once,
+            );
+            if let Some((code, p)) = &a.chunk.fatal {
+                let mut m = Vec::new();
+                write_parts(&mut m, &reading_name, p, a.line_offset);
+                if m.last() == Some(&b'\n') {
+                    m.pop();
+                }
+                fatal = Some(Error::new(*code, String::from_utf8_lossy(&m)));
+                break;
+            }
+            if let Some(e) = &a.chunk.error {
+                write_parts(&mut stderr, &reading_name, &e.parts, a.line_offset);
+            }
+        }
+        flush(&mut stderr);
+        if let Some(e) = fatal {
+            return Err(e);
+        }
+
+        let serial_end = if units.len() == 1 && !units[0].segment {
+            Some(units[0].seq_base)
+        } else {
+            None
+        };
+        let base = unit_count;
+        let accepted: Vec<Accepted> = accepted
+            .into_iter()
+            .map(|a| Accepted {
+                unit: a.unit + base,
+                ..a
+            })
+            .collect();
+        let read_now: i64 = accepted.iter().map(|a| a.chunk.features.len() as i64).sum();
+        add_chunks(&mut parts, &units, accepted, base);
+        unit_count += units.len();
+
+        if let Some(start) = serial_end {
+            overall_offset = start + read_now;
+        }
+    }
+    flush(&mut stderr);
+
+    Ok(merge(parts, &sources, &layer_names, &layer_source, options))
+}
+
+fn flush(stderr: &mut Vec<u8>) {
+    if !stderr.is_empty() {
+        let _ = std::io::stderr().write_all(stderr);
+        stderr.clear();
+    }
+}
+
+/// The merged table's entries, and for each chunk its ids in it.
+type Merged = (Vec<(i32, Vec<u8>)>, Vec<Vec<u32>>);
+
+/// Interns the entries of every chunk's table in one table, in parallel by
+/// shard. Returns the table and, for each chunk, its ids in the table.
+fn merge_tables(tables: &[&Interner]) -> Merged {
+    let shards: Vec<(Interner, Vec<Vec<u32>>)> = (0..SHARDS)
+        .into_par_iter()
+        .map(|s| {
+            let mut table = Interner::default();
+            let mut ids: Vec<Vec<u32>> = Vec::with_capacity(tables.len());
+            for t in tables {
+                let mut out = Vec::new();
+                if let Some(list) = t.shards.get(s) {
+                    out.reserve(list.len());
+                    for &local in list {
+                        let (ty, b) = t.get(local);
+                        out.push(table.intern(ty, b));
+                    }
+                }
+                ids.push(out);
+            }
+            (table, ids)
+        })
+        .collect();
+
+    let mut base = Vec::with_capacity(SHARDS);
+    let mut n = 0u32;
+    for (t, _) in &shards {
+        base.push(n);
+        n += t.len() as u32;
+    }
+
+    let remap: Vec<Vec<u32>> = tables
+        .par_iter()
+        .enumerate()
+        .map(|(c, t)| {
+            let mut m = vec![0u32; t.len()];
+            for s in 0..SHARDS {
+                if let Some(list) = t.shards.get(s) {
+                    for (k, &local) in list.iter().enumerate() {
+                        m[local as usize] = base[s] + shards[s].1[c][k];
+                    }
+                }
+            }
+            m
+        })
+        .collect();
+
+    let entries: Vec<(i32, Vec<u8>)> = shards
+        .par_iter()
+        .flat_map_iter(|(t, _)| (0..t.len() as u32).map(|i| (t.get(i).0, t.get(i).1.to_vec())))
+        .collect();
+
+    (entries, remap)
+}
+
+fn merge(
+    parts: Parts,
+    sources: &[Source],
+    layer_names: &[String],
+    layer_source: &BTreeMap<String, usize>,
+    options: &Options,
+) -> FeatureStore {
+    let chunks: Vec<&Chunk> = parts.chunks.iter().map(|a| &a.chunk).collect();
+
+    // Layers, by name, in the order they first appear.
+    let mut layers: Vec<Layer> = Vec::new();
+    let mut layer_ids: BTreeMap<String, u32> = BTreeMap::new();
+    let mut stats: Vec<BTreeMap<String, Stat>> = Vec::new();
+    for name in layer_names {
+        layer_ids.insert(name.clone(), layers.len() as u32);
+        let mut entry = tippecanoe::mbtiles::LayermapEntry::new(layers.len());
+        entry.description = sources[layer_source[name]].description.clone();
+        layers.push(Layer {
+            name: name.clone(),
+            entry,
+        });
+        stats.push(BTreeMap::new());
+    }
+    let max_samples = options.max_tilestats_sample_values;
+    let mut layer_remap: Vec<Vec<u32>> = Vec::with_capacity(chunks.len());
+    for c in &chunks {
+        let mut m = Vec::with_capacity(c.layers.len());
+        for l in &c.layers {
+            let id = match layer_ids.get(&l.name) {
+                Some(&id) => id,
+                None => {
+                    let id = layers.len() as u32;
+                    layer_ids.insert(l.name.clone(), id);
+                    layers.push(Layer {
+                        name: l.name.clone(),
+                        entry: tippecanoe::mbtiles::LayermapEntry::new(id as usize),
+                    });
+                    stats.push(BTreeMap::new());
+                    id
+                }
+            };
+            let e = &mut layers[id as usize].entry;
+            e.points += l.points;
+            e.lines += l.lines;
+            e.polygons += l.polygons;
+            for (k, st) in &l.stats {
+                match stats[id as usize].get_mut(k) {
+                    Some(have) => have.merge(st.clone(), max_samples),
+                    None => {
+                        stats[id as usize].insert(k.clone(), st.clone());
+                    }
+                }
+            }
+            m.push(id);
+        }
+        layer_remap.push(m);
+    }
+    for (l, st) in layers.iter_mut().zip(stats) {
+        l.entry.tilestats = st.into_iter().map(|(k, v)| (k, v.to_tilestat())).collect();
+    }
+
+    let (keys, key_remap) = merge_tables(&chunks.iter().map(|c| &c.keys).collect::<Vec<_>>());
+    let (values, value_remap) = merge_tables(&chunks.iter().map(|c| &c.values).collect::<Vec<_>>());
+
+    let mut geom_off = Vec::with_capacity(chunks.len());
+    let mut attr_off = Vec::with_capacity(chunks.len());
+    let (mut g, mut a) = (0u64, 0u64);
+    for c in &chunks {
+        geom_off.push(g);
+        attr_off.push(a);
+        g += c.geometry.len() as u64;
+        a += c.attrs.len() as u64;
+    }
+
+    let features: Vec<Feature> = chunks
+        .par_iter()
+        .enumerate()
+        .flat_map_iter(|(ci, c)| {
+            let seq_base = parts.seq_base[ci];
+            let lr = &layer_remap[ci];
+            let mut out: Vec<Feature> = c
+                .features
+                .iter()
+                .map(|f| Feature {
+                    seq: (seq_base + f.seq as i64) as u64,
+                    layer: lr[f.layer as usize],
+                    geom_start: f.geom_start + geom_off[ci],
+                    attr_start: f.attr_start + attr_off[ci],
+                    ..*f
+                })
+                .collect();
+            for &i in &c.generate_ids {
+                let f = &mut out[i as usize];
+                f.id = f.seq + 1;
+            }
+            out.into_iter()
+        })
+        .collect();
+
+    let geometry = chunks
+        .par_iter()
+        .flat_map_iter(|c| c.geometry.iter().copied())
+        .collect();
+
+    let attrs = chunks
+        .par_iter()
+        .enumerate()
+        .flat_map_iter(|(ci, c)| {
+            let (kr, vr) = (&key_remap[ci], &value_remap[ci]);
+            c.attrs.iter().map(move |a| Attr {
+                key: kr[a.key as usize],
+                value: vr[a.value as usize],
+            })
+        })
+        .collect();
+
+    let mut bbox = [u32::MAX as i64, u32::MAX as i64, 0, 0];
+    let mut bbox1: [i64; 4] = [0xFFFFFFFF, 0xFFFFFFFF, 0, 0];
+    let mut bbox2: [i64; 4] = [0x1FFFFFFFF, 0xFFFFFFFF, 0x100000000, 0];
+    for c in &chunks {
+        for i in 0..2 {
+            bbox[i] = bbox[i].min(c.file_bbox[i]);
+            bbox1[i] = bbox1[i].min(c.file_bbox1[i]);
+            bbox2[i] = bbox2[i].min(c.file_bbox2[i]);
+        }
+        for i in 2..4 {
+            bbox[i] = bbox[i].max(c.file_bbox[i]);
+            bbox1[i] = bbox1[i].max(c.file_bbox1[i]);
+            bbox2[i] = bbox2[i].max(c.file_bbox2[i]);
+        }
+    }
+
+    let (shared_nodes, shared_nodes_bloom) = if options
+        .prevent
+        .get(tippecanoe::options::P_SIMPLIFY_SHARED_NODES)
+    {
+        shared_nodes(&chunks, options.geometry_scale)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
+    FeatureStore {
+        features,
+        geometry,
+        attrs,
+        keys: keys
+            .into_iter()
+            .map(|(_, b)| String::from_utf8(b).unwrap())
+            .collect(),
+        values: values
+            .into_par_iter()
+            .map(|(t, b)| tippecanoe::serial::SerialVal {
+                type_: t,
+                s: String::from_utf8(b).unwrap(),
+            })
+            .collect(),
+        layers,
+        bbox,
+        bbox1,
+        bbox2,
+        dist_sum: parts.dist_sum,
+        dist_count: parts.dist_count,
+        area_sum: parts.area_sum,
+        shared_nodes,
+        shared_nodes_bloom,
+    }
+}
+
+/// The nodes that tippecanoe keeps through simplification with
+/// `--no-simplification-of-shared-nodes`: the ones the readers marked, and the
+/// middle points of vertices whose neighbors differ between features. Sorted
+/// and without duplicates, with tippecanoe's bloom filter of them.
+fn shared_nodes(
+    chunks: &[&Chunk],
+    geometry_scale: i32,
+) -> (Vec<tippecanoe::serial::Node>, Vec<u8>) {
+    let mut vertices: Vec<tippecanoe::serial::Vertex> = chunks
+        .iter()
+        .flat_map(|c| c.vertices.iter().copied())
+        .collect();
+    vertices.par_sort_unstable();
+
+    let mut nodes: Vec<u64> = chunks
+        .iter()
+        .flat_map(|c| c.nodes.iter().copied())
+        .collect();
+    let zero = tippecanoe::geometry::Draw::new(tippecanoe::geometry::VT_MOVETO, 0, 0);
+    let mut prev = tippecanoe::serial::Vertex::new(zero, zero, zero);
+    for v in vertices {
+        if v.mid == prev.mid && (v.p1 != prev.p1 || v.p2 != prev.p2) {
+            let x = v.mid.x * (1i64 << geometry_scale);
+            let y = v.mid.y * (1i64 << geometry_scale);
+            nodes.push(tippecanoe::projection::encode_vertex(x as u32, y as u32));
+        }
+        prev = v;
+    }
+    nodes.par_sort_unstable();
+    nodes.dedup();
+    // tippecanoe starts its duplicate check from ULONG_MAX
+    if nodes.first() == Some(&u64::MAX) {
+        nodes.clear();
+    }
+
+    let mut bloom = vec![0u8; 34567891]; // circa 34MB, size nowhere near a power of 2
+    let bits = (bloom.len() * 8) as u64;
+    for &n in &nodes {
+        let bloom_ix = (n % bits) as usize;
+        bloom[bloom_ix >> 3] |= 1 << (bloom_ix & 7);
+    }
+
+    (
+        nodes
+            .into_iter()
+            .map(|index| tippecanoe::serial::Node { index })
+            .collect(),
+        bloom,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layer_names() {
+        assert_eq!(layer_name_from_file("tests/a/in.json", 0), "in");
+        assert_eq!(layer_name_from_file("x.geojson.gz", 0), "x");
+        assert_eq!(layer_name_from_file("a-b c.json", 3), "abc");
+        assert_eq!(layer_name_from_file("dir/", 2), "dir");
+        assert_eq!(layer_name_from_file("---.json", 2), "unknown2");
+    }
+
+    #[test]
+    fn segmentation() {
+        let data = b"aaaa\nbbbb\ncccc\ndddd\n";
+        let segs = segments(data, 0, data.len(), 4, b'\n');
+        assert_eq!(segs, vec![0, 9, 14, 19, 20]);
+        let unit = Unit {
+            start: 0,
+            end: data.len(),
+            seq_base: 0,
+            segment: false,
+        };
+        assert_eq!(
+            split_unit(data, &unit, b'\n', 6),
+            vec![(0, 9), (9, 19), (19, 20)]
+        );
+    }
 }

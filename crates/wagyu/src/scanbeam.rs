@@ -26,6 +26,7 @@ pub(crate) fn setup_scanbeam(minima_list: &[LocalMinimum], scanbeam: &mut Scanbe
     for lm in minima_list {
         scanbeam.push(lm.y);
     }
-    // std::sort on integers: any sort gives the same result.
+    // PORT: std::sort is not stable, but equal integers cannot be told apart, so any
+    // sort gives the same result.
     scanbeam.sort_unstable();
 }

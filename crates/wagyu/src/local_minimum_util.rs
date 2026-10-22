@@ -28,12 +28,16 @@ fn start_list_on_local_maximum(edges: &mut [Edge]) {
 
     while edge != edges.len() {
         let edge_is_horizontal = is_horizontal(&edges[edge]);
-        if !prev_edge_is_horizontal && !edge_is_horizontal && edges[edge].top == edges[prev_edge].top {
+        if !prev_edge_is_horizontal
+            && !edge_is_horizontal
+            && edges[edge].top == edges[prev_edge].top
+        {
             break;
         }
         if !edge_is_horizontal && prev_edge_is_horizontal {
             if y_decreasing_before_last_horizontal
-                && (edges[edge].top == edges[prev_edge].bot || edges[edge].top == edges[prev_edge].top)
+                && (edges[edge].top == edges[prev_edge].bot
+                    || edges[edge].top == edges[prev_edge].top)
             {
                 break;
             }
@@ -71,12 +75,16 @@ fn create_bound_towards_minimum(edges: &mut Vec<Edge>) -> Bound {
 
     while next_edge != edges.len() {
         let next_edge_is_horizontal = is_horizontal(&edges[next_edge]);
-        if !next_edge_is_horizontal && !edge_is_horizontal && edges[edge].bot == edges[next_edge].bot {
+        if !next_edge_is_horizontal
+            && !edge_is_horizontal
+            && edges[edge].bot == edges[next_edge].bot
+        {
             break;
         }
         if !next_edge_is_horizontal && edge_is_horizontal {
             if y_increasing_before_last_horizontal
-                && (edges[next_edge].bot == edges[edge].bot || edges[next_edge].bot == edges[edge].top)
+                && (edges[next_edge].bot == edges[edge].bot
+                    || edges[next_edge].bot == edges[edge].top)
             {
                 break;
             }
@@ -118,12 +126,16 @@ fn create_bound_towards_maximum(edges: &mut Vec<Edge>) -> Bound {
 
     while next_edge != edges.len() {
         let next_edge_is_horizontal = is_horizontal(&edges[next_edge]);
-        if !next_edge_is_horizontal && !edge_is_horizontal && edges[edge].top == edges[next_edge].top {
+        if !next_edge_is_horizontal
+            && !edge_is_horizontal
+            && edges[edge].top == edges[next_edge].top
+        {
             break;
         }
         if !next_edge_is_horizontal && edge_is_horizontal {
             if y_decreasing_before_last_horizontal
-                && (edges[next_edge].top == edges[edge].bot || edges[next_edge].top == edges[edge].top)
+                && (edges[next_edge].top == edges[edge].bot
+                    || edges[next_edge].top == edges[edge].top)
             {
                 break;
             }
@@ -184,7 +196,9 @@ fn move_horizontals_on_left_to_right(left_bound: &mut Bound, right_bound: &mut B
     }
     left_bound.edges[..edge_itr].reverse();
     let dist = edge_itr;
-    right_bound.edges.extend(left_bound.edges.drain(0..edge_itr));
+    right_bound
+        .edges
+        .extend(left_bound.edges.drain(0..edge_itr));
     let len = right_bound.edges.len();
     right_bound.edges[..len].rotate_right(dist);
 }
@@ -208,7 +222,9 @@ pub(crate) fn add_ring_to_local_minima_list(
         let mut lm_minimum_has_horizontal = false;
         let mut to_minimum = create_bound_towards_minimum(edges);
         if edges.is_empty() {
-            return Err(Error::new("Edges is empty after only creating a single bound."));
+            return Err(Error::new(
+                "Edges is empty after only creating a single bound.",
+            ));
         }
         let mut to_maximum = create_bound_towards_maximum(edges);
         fix_horizontals(&mut to_minimum);
@@ -232,18 +248,24 @@ pub(crate) fn add_ring_to_local_minima_list(
         if to_max_first_non_horizontal == to_maximum.edges.len()
             || to_min_first_non_horizontal == to_minimum.edges.len()
         {
-            return Err(Error::new("should not have a horizontal only bound for a ring"));
+            return Err(Error::new(
+                "should not have a horizontal only bound for a ring",
+            ));
         }
 
         if lm_minimum_has_horizontal {
-            if to_maximum.edges[to_max_first_non_horizontal].bot.x > to_minimum.edges[to_min_first_non_horizontal].bot.x {
+            if to_maximum.edges[to_max_first_non_horizontal].bot.x
+                > to_minimum.edges[to_min_first_non_horizontal].bot.x
+            {
                 minimum_is_left = true;
                 move_horizontals_on_left_to_right(&mut to_minimum, &mut to_maximum);
             } else {
                 minimum_is_left = false;
                 move_horizontals_on_left_to_right(&mut to_maximum, &mut to_minimum);
             }
-        } else if to_maximum.edges[to_max_first_non_horizontal].dx > to_minimum.edges[to_min_first_non_horizontal].dx {
+        } else if to_maximum.edges[to_max_first_non_horizontal].dx
+            > to_minimum.edges[to_min_first_non_horizontal].dx
+        {
             minimum_is_left = false;
         } else {
             minimum_is_left = true;

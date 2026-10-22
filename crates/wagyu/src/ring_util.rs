@@ -7,12 +7,19 @@ use crate::edge::{Edge, is_horizontal};
 use crate::geometry::{BoundingBox, Point, PointF64};
 use crate::point::{NIL, PointNode, PointPtr, RingPtr, pos_is, same_pos};
 use crate::ring::{
-    RingManager, area_from_point, create_new_point, create_new_point_before, create_new_ring, reverse_ring,
-    ring_is_hole, ring1_replaces_ring2,
+    RingManager, area_from_point, create_new_point, create_new_point_before, create_new_ring,
+    reverse_ring, ring_is_hole, ring1_replaces_ring2,
 };
-use crate::util::{greater_than_or_equal, llround, std_max, std_min, value_is_zero, values_are_equal};
+use crate::util::{
+    greater_than_or_equal, llround, std_max, std_min, value_is_zero, values_are_equal,
+};
 
-pub(crate) fn set_hole_state(bnd: BoundPtr, active_bounds: &ActiveBoundList, bnds: &[Bound], rings: &mut RingManager) {
+pub(crate) fn set_hole_state(
+    bnd: BoundPtr,
+    active_bounds: &ActiveBoundList,
+    bnds: &[Bound],
+    rings: &mut RingManager,
+) {
     let mut bnd_itr = active_bounds
         .iter()
         .rposition(|&b| b == bnd)
@@ -55,7 +62,11 @@ fn round_towards_min(val: f64) -> i64 {
     // 0.0 rounds to 0
     // -0.5 rounds to -1
     let half = val.floor() + 0.5;
-    if values_are_equal(val, half) { val.floor() as i64 } else { llround(val) }
+    if values_are_equal(val, half) {
+        val.floor() as i64
+    } else {
+        llround(val)
+    }
 }
 
 pub(crate) fn round_towards_max(val: f64) -> i64 {
@@ -63,13 +74,21 @@ pub(crate) fn round_towards_max(val: f64) -> i64 {
     // 0.0 rounds to 0
     // -0.5 rounds to 0
     let half = val.floor() + 0.5;
-    if values_are_equal(val, half) { val.ceil() as i64 } else { llround(val) }
+    if values_are_equal(val, half) {
+        val.ceil() as i64
+    } else {
+        llround(val)
+    }
 }
 
 #[inline]
 fn get_edge_min_x(edge: &Edge, current_y: i64) -> i64 {
     if is_horizontal(edge) {
-        if edge.bot.x < edge.top.x { edge.bot.x } else { edge.top.x }
+        if edge.bot.x < edge.top.x {
+            edge.bot.x
+        } else {
+            edge.top.x
+        }
     } else if edge.dx > 0.0 {
         if current_y == edge.top.y {
             edge.top.x
@@ -89,7 +108,11 @@ fn get_edge_min_x(edge: &Edge, current_y: i64) -> i64 {
 #[inline]
 fn get_edge_max_x(edge: &Edge, current_y: i64) -> i64 {
     if is_horizontal(edge) {
-        if edge.bot.x > edge.top.x { edge.bot.x } else { edge.top.x }
+        if edge.bot.x > edge.top.x {
+            edge.bot.x
+        } else {
+            edge.top.x
+        }
     } else if edge.dx < 0.0 {
         if current_y == edge.top.y {
             edge.top.x
@@ -184,9 +207,11 @@ fn hot_pixel_set_right_to_left(
 }
 
 pub(crate) fn sort_hot_pixels(rings: &mut RingManager) {
-    // hot_pixel_sorter is a strict total order, and std::unique drops the equal points,
-    // so any sort gives the same result as std::sort.
-    rings.hot_pixels.sort_unstable_by(|pt1, pt2| pt2.y.cmp(&pt1.y).then(pt1.x.cmp(&pt2.x)));
+    // PORT: std::sort is not stable, but hot_pixel_sorter is a strict total order on (y, x),
+    // so only identical points tie, and std::unique drops them. Any sort gives the same result.
+    rings
+        .hot_pixels
+        .sort_unstable_by(|pt1, pt2| pt2.y.cmp(&pt1.y).then(pt1.x.cmp(&pt2.x)));
     rings.hot_pixels.dedup();
 }
 
@@ -226,7 +251,16 @@ pub(crate) fn insert_hot_pixels_in_path(
             }
             let first_itr = itr;
             let add_end_point_itr = y != end_pt.y || add_end_point;
-            hot_pixel_set_right_to_left(y, start_x, end_x, &bnds[bnd], rings, first_itr, last_itr, add_end_point_itr);
+            hot_pixel_set_right_to_left(
+                y,
+                start_x,
+                end_x,
+                &bnds[bnd],
+                rings,
+                first_itr,
+                last_itr,
+                add_end_point_itr,
+            );
         }
     } else {
         while itr != rings.hot_pixels.len() {
@@ -244,7 +278,16 @@ pub(crate) fn insert_hot_pixels_in_path(
             }
             let last_itr = itr;
             let add_end_point_itr = y != end_pt.y || add_end_point;
-            hot_pixel_set_left_to_right(y, start_x, end_x, &bnds[bnd], rings, first_itr, last_itr, add_end_point_itr);
+            hot_pixel_set_left_to_right(
+                y,
+                start_x,
+                end_x,
+                &bnds[bnd],
+                rings,
+                first_itr,
+                last_itr,
+                add_end_point_itr,
+            );
         }
     }
     bnds[bnd].last_point = end_pt;
@@ -254,7 +297,13 @@ pub(crate) fn add_to_hot_pixels(pt: Point, rings: &mut RingManager) {
     rings.hot_pixels.push(pt);
 }
 
-fn add_first_point(bnd: BoundPtr, active_bounds: &ActiveBoundList, pt: Point, bnds: &mut [Bound], rings: &mut RingManager) {
+fn add_first_point(
+    bnd: BoundPtr,
+    active_bounds: &ActiveBoundList,
+    pt: Point,
+    bnds: &mut [Bound],
+    rings: &mut RingManager,
+) {
     let r = create_new_ring(rings);
     bnds[bnd].ring = r;
     let p = create_new_point(r, pt, rings);
@@ -263,7 +312,12 @@ fn add_first_point(bnd: BoundPtr, active_bounds: &ActiveBoundList, pt: Point, bn
     bnds[bnd].last_point = pt;
 }
 
-pub(crate) fn add_point_to_ring(bnd: BoundPtr, pt: Point, bnds: &mut [Bound], rings: &mut RingManager) {
+pub(crate) fn add_point_to_ring(
+    bnd: BoundPtr,
+    pt: Point,
+    bnds: &mut [Bound],
+    rings: &mut RingManager,
+) {
     debug_assert!(bnds[bnd].ring != NIL);
     // Handle hot pixels
     insert_hot_pixels_in_path(bnd, pt, bnds, rings, false);
@@ -285,7 +339,13 @@ pub(crate) fn add_point_to_ring(bnd: BoundPtr, pt: Point, bnds: &mut [Bound], ri
     }
 }
 
-pub(crate) fn add_point(bnd: BoundPtr, active_bounds: &ActiveBoundList, pt: Point, bnds: &mut [Bound], rings: &mut RingManager) {
+pub(crate) fn add_point(
+    bnd: BoundPtr,
+    active_bounds: &ActiveBoundList,
+    pt: Point,
+    bnds: &mut [Bound],
+    rings: &mut RingManager,
+) {
     if bnds[bnd].ring == NIL {
         add_first_point(bnd, active_bounds, pt, bnds, rings);
     } else {
@@ -397,10 +457,12 @@ fn get_bottom_point(pts: &[PointNode], mut pp: PointPtr) -> PointPtr {
 fn get_lower_most_ring(ring1: RingPtr, ring2: RingPtr, manager: &mut RingManager) -> RingPtr {
     // work out which polygon fragment has the correct hole state ...
     if manager.rings[ring1].bottom_point == NIL {
-        manager.rings[ring1].bottom_point = get_bottom_point(&manager.points, manager.rings[ring1].points);
+        manager.rings[ring1].bottom_point =
+            get_bottom_point(&manager.points, manager.rings[ring1].points);
     }
     if manager.rings[ring2].bottom_point == NIL {
-        manager.rings[ring2].bottom_point = get_bottom_point(&manager.points, manager.rings[ring2].points);
+        manager.rings[ring2].bottom_point =
+            get_bottom_point(&manager.points, manager.rings[ring2].points);
     }
     let pts = &manager.points;
     let pt1 = manager.rings[ring1].bottom_point;
@@ -446,7 +508,13 @@ pub(crate) fn update_points_ring(ring: RingPtr, manager: &mut RingManager) {
     }
 }
 
-fn append_ring(b1: BoundPtr, b2: BoundPtr, active_bounds: &ActiveBoundList, bnds: &mut [Bound], manager: &mut RingManager) {
+fn append_ring(
+    b1: BoundPtr,
+    b2: BoundPtr,
+    active_bounds: &ActiveBoundList,
+    bnds: &mut [Bound],
+    manager: &mut RingManager,
+) {
     // get the start and ends of both output polygons ...
     let out_rec1 = bnds[b1].ring;
     let out_rec2 = bnds[b2].ring;
@@ -584,7 +652,11 @@ use PointInPolygonResult::{InsidePolygon, OnPolygon, OutsidePolygon};
 fn toggle(result: PointInPolygonResult) -> PointInPolygonResult {
     // Switch between point outside polygon and point inside
     // polygon
-    if result == OutsidePolygon { InsidePolygon } else { OutsidePolygon }
+    if result == OutsidePolygon {
+        InsidePolygon
+    } else {
+        OutsidePolygon
+    }
 }
 
 fn point_in_polygon(pt: Point, mut op: PointPtr, pts: &[PointNode]) -> PointInPolygonResult {
@@ -602,7 +674,8 @@ fn point_in_polygon(pt: Point, mut op: PointPtr, pts: &[PointNode]) -> PointInPo
                 if n.x > pt.x {
                     result = toggle(result);
                 } else {
-                    let d = (o.x - pt.x) as f64 * (n.y - pt.y) as f64 - (n.x - pt.x) as f64 * (o.y - pt.y) as f64;
+                    let d = (o.x - pt.x) as f64 * (n.y - pt.y) as f64
+                        - (n.x - pt.x) as f64 * (o.y - pt.y) as f64;
                     if value_is_zero(d) {
                         return OnPolygon;
                     }
@@ -611,7 +684,8 @@ fn point_in_polygon(pt: Point, mut op: PointPtr, pts: &[PointNode]) -> PointInPo
                     }
                 }
             } else if n.x > pt.x {
-                let d = (o.x - pt.x) as f64 * (n.y - pt.y) as f64 - (n.x - pt.x) as f64 * (o.y - pt.y) as f64;
+                let d = (o.x - pt.x) as f64 * (n.y - pt.y) as f64
+                    - (n.x - pt.x) as f64 * (o.y - pt.y) as f64;
                 if value_is_zero(d) {
                     return OnPolygon;
                 }
@@ -705,7 +779,11 @@ fn centroid_of_points(edge: PointPtr, pts: &[PointNode]) -> PointF64 {
     }
 }
 
-fn inside_or_outside_special(first_pt: PointPtr, other_poly: PointPtr, manager: &mut RingManager) -> Result<PointInPolygonResult> {
+fn inside_or_outside_special(
+    first_pt: PointPtr,
+    other_poly: PointPtr,
+    manager: &mut RingManager,
+) -> Result<PointInPolygonResult> {
     // We are going to loop through all the points
     // of the original triangle. The goal is to find a convex edge
     // that with its next and previous forms a triangle with its centroid
@@ -725,14 +803,23 @@ fn inside_or_outside_special(first_pt: PointPtr, other_poly: PointPtr, manager: 
         }
     }
 
-    Err(Error::new("Could not find a point within the polygon to test"))
+    Err(Error::new(
+        "Could not find a point within the polygon to test",
+    ))
 }
 
 fn box2_contains_box1(box1: &BoundingBox, box2: &BoundingBox) -> bool {
-    box2.max.x >= box1.max.x && box2.max.y >= box1.max.y && box2.min.x <= box1.min.x && box2.min.y <= box1.min.y
+    box2.max.x >= box1.max.x
+        && box2.max.y >= box1.max.y
+        && box2.min.x <= box1.min.x
+        && box2.min.y <= box1.min.y
 }
 
-pub(crate) fn poly2_contains_poly1(ring1: RingPtr, ring2: RingPtr, manager: &mut RingManager) -> Result<bool> {
+pub(crate) fn poly2_contains_poly1(
+    ring1: RingPtr,
+    ring2: RingPtr,
+    manager: &mut RingManager,
+) -> Result<bool> {
     if !box2_contains_box1(&manager.rings[ring1].bbox, &manager.rings[ring2].bbox) {
         return Ok(false);
     }

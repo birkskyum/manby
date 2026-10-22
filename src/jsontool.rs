@@ -427,41 +427,42 @@ fn join_csv(g: &mut Globals, j: JsonRef<'_>) -> Vec<JoinedEntry> {
     joined
 }
 
-/// `json_print_one` for a string.
-fn print_string(val: &mut String, s: &str) {
-    val.push('"');
+/// `json_print_one` for a string, byte by byte, so that bytes that are not
+/// UTF-8 pass through as they do in the C++.
+fn print_string(val: &mut Vec<u8>, s: &[u8]) {
+    val.push(b'"');
 
-    for c in s.chars() {
-        if c == '\\' || c == '"' {
-            val.push('\\');
+    for &c in s {
+        if c == b'\\' || c == b'"' {
+            val.push(b'\\');
             val.push(c);
-        } else if (c as u32) < (' ' as u32) {
-            val.push_str(&format!("\\u{:04x}", c as u32));
+        } else if c < b' ' {
+            val.extend_from_slice(format!("\\u{:04x}", c).as_bytes());
         } else {
             val.push(c);
         }
     }
 
-    val.push('"');
+    val.push(b'"');
 }
 
-/// `json_stringify(o)` after the `joined` entries have been appended to the hash `properties`.
-fn stringify_joined(o: JsonRef<'_>, properties: Option<JsonId>, joined: &[JoinedEntry]) -> String {
-    let mut val = String::new();
+/// `json_stringify(o)` after the `joined` entries have been appended to the
+/// hash `properties`. Strings are written from their input bytes, since
+/// `JsonRef::stringify` can only return UTF-8.
+fn stringify_joined(o: JsonRef<'_>, properties: Option<JsonId>, joined: &[JoinedEntry]) -> Vec<u8> {
+    let mut val = Vec::new();
     json_print(&mut val, o, properties, joined);
     val
 }
 
 fn json_print(
-    val: &mut String,
+    val: &mut Vec<u8>,
     o: JsonRef<'_>,
     properties: Option<JsonId>,
     joined: &[JoinedEntry],
 ) {
-    if joined.is_empty() {
-        val.push_str(&o.stringify());
-    } else if o.type_() == JsonType::Hash {
-        val.push('{');
+    if o.type_() == JsonType::Hash {
+        val.push(b'{');
 
         let entries = o.entries();
         let extra: &[JoinedEntry] = if properties == Some(o.id()) {
@@ -472,36 +473,38 @@ fn json_print(
         let n = entries.len() + extra.len();
         for (i, (k, v)) in entries.iter().enumerate() {
             json_print(val, *k, properties, joined);
-            val.push(':');
+            val.push(b':');
             json_print(val, *v, properties, joined);
             if i + 1 < n {
-                val.push(',');
+                val.push(b',');
             }
         }
         for (i, e) in extra.iter().enumerate() {
-            print_string(val, &e.key);
-            val.push(':');
+            print_string(val, e.key.as_bytes());
+            val.push(b':');
             match &e.value {
-                JoinedValue::String(s) => print_string(val, s),
-                JoinedValue::Number(d) => val.push_str(&dtoa_milo(*d)),
+                JoinedValue::String(s) => print_string(val, s.as_bytes()),
+                JoinedValue::Number(d) => val.extend_from_slice(dtoa_milo(*d).as_bytes()),
             }
             if entries.len() + i + 1 < n {
-                val.push(',');
+                val.push(b',');
             }
         }
-        val.push('}');
+        val.push(b'}');
     } else if o.type_() == JsonType::Array {
-        val.push('[');
+        val.push(b'[');
         let arr = o.array();
         for (i, a) in arr.iter().enumerate() {
             json_print(val, *a, properties, joined);
             if i + 1 < arr.len() {
-                val.push(',');
+                val.push(b',');
             }
         }
-        val.push(']');
+        val.push(b']');
+    } else if o.type_() == JsonType::String {
+        print_string(val, o.raw_string_bytes());
     } else {
-        val.push_str(&o.stringify());
+        val.extend_from_slice(o.stringify().as_bytes());
     }
 }
 
@@ -535,9 +538,10 @@ impl JsonFeatureAction for JsonJoinAction<'_> {
 
             let properties = feature.hash_get("properties");
             let s = stringify_joined(feature, properties.map(|p| p.id()), &joined);
-            out(self.g, s.as_bytes(), 1, properties, &joined);
+            out(self.g, &s, 1, properties, &joined);
         } else {
-            out(self.g, geometry.stringify().as_bytes(), 2, None, &[]);
+            let s = stringify_joined(geometry, None, &[]);
+            out(self.g, &s, 2, None, &[]);
         }
 
         1
@@ -737,8 +741,8 @@ mod tests {
 
     #[test]
     fn print_string_escapes_like_json_print_one() {
-        let mut v = String::new();
-        print_string(&mut v, "a\"b\\c\u{1}\u{e9}");
-        assert_eq!(v, "\"a\\\"b\\\\c\\u0001\u{e9}\"");
+        let mut v = Vec::new();
+        print_string(&mut v, b"a\"b\\c\x01\xc3\xa9\xff");
+        assert_eq!(v, b"\"a\\\"b\\\\c\\u0001\xc3\xa9\xff\"".to_vec());
     }
 }

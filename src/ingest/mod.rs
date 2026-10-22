@@ -36,6 +36,7 @@ use chunk::{Chunk, Interner, Message, MessageKind, SHARDS, Stat};
 use serialize::Config;
 
 use crate::Error;
+use crate::buf::Buf;
 use crate::options::{Options, Source, os_message};
 use crate::store::{Attr, Chunked, Feature, FeatureStore, Geometry, Layer, Values};
 
@@ -1110,7 +1111,7 @@ fn merge(
 
     // the features are written straight into their places in one vector
     let total: usize = chunks.iter().map(|c| c.features.len()).sum();
-    let mut features: Vec<Feature> = Vec::with_capacity(total);
+    let mut features: Buf<Feature> = Buf::with_capacity(total);
     {
         let mut slots: Vec<&mut [std::mem::MaybeUninit<Feature>]> =
             Vec::with_capacity(chunks.len());

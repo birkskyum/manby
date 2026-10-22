@@ -1,0 +1,20 @@
+[package]
+name = "manby"
+version = "0.1.0"
+edition = "2024"
+description = "Builds vector tilesets from geographic features, like tippecanoe, several times faster"
+license = "BSD-2-Clause"
+
+[dependencies]
+libc = "0.2.191"
+libdeflater = "1.26.1"
+memmap2 = "0.9.12"
+mimalloc = "0.1.52"
+rayon = "1.12.0"
+tippecanoe = { version = "2.82.0", path = "../tippecanoe-rs" }
+xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
+
+[profile.release]
+debug = 1
+lto = "thin"
+codegen-units = 1

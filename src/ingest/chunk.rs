@@ -27,8 +27,6 @@ pub struct Interner {
     pub ends: Buf<usize>,
     pub bytes: Buf<u8>,
     table: Buf<u32>,
-    /// For each shard, the entries that hash into it, in order.
-    pub shards: Vec<Buf<u32>>,
 }
 
 const EMPTY: u32 = u32::MAX;
@@ -98,11 +96,29 @@ impl Interner {
         self.hashes.push(h);
         self.bytes.extend_from_slice(s);
         self.ends.push(self.bytes.len());
-        if self.shards.is_empty() {
-            self.shards = (0..SHARDS).map(|_| Buf::new()).collect();
-        }
-        self.shards[(h >> 58) as usize % SHARDS].push(id);
         id
+    }
+
+    /// The entries grouped by the shard they hash into, in order within
+    /// each shard, and where each shard's start in them.
+    pub fn by_shard(&self) -> (Buf<u32>, [usize; SHARDS + 1]) {
+        let shard = |h: u64| (h >> 58) as usize % SHARDS;
+        let mut starts = [0usize; SHARDS + 1];
+        for &h in self.hashes.iter() {
+            starts[shard(h) + 1] += 1;
+        }
+        for s in 0..SHARDS {
+            starts[s + 1] += starts[s];
+        }
+        let mut at = starts;
+        let mut ids = Buf::with_capacity(self.len());
+        ids.resize(self.len(), 0u32);
+        for (i, &h) in self.hashes.iter().enumerate() {
+            let s = shard(h);
+            ids[at[s]] = i as u32;
+            at[s] += 1;
+        }
+        (ids, starts)
     }
 }
 
@@ -364,7 +380,15 @@ mod tests {
             assert_eq!(i.get(id), (MVT_DOUBLE, n.to_string().as_bytes()));
         }
         assert_eq!(i.len(), 5002);
-        assert_eq!(i.shards.iter().map(|s| s.len()).sum::<usize>(), 5002);
+        let (ids, starts) = i.by_shard();
+        assert_eq!((ids.len(), starts[SHARDS]), (5002, 5002));
+        for s in 0..SHARDS {
+            assert!(
+                ids[starts[s]..starts[s + 1]]
+                    .windows(2)
+                    .all(|w| w[0] < w[1])
+            );
+        }
     }
 
     #[test]

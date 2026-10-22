@@ -949,29 +949,32 @@ type Merged = (Values, Vec<Buf<u32>>);
 /// Interns the entries of every chunk's table in one table, in parallel by
 /// shard. Returns the table and, for each chunk, its ids in the table.
 fn merge_tables(tables: &[&Interner]) -> Merged {
-    let shards: Vec<(Interner, Vec<Buf<u32>>)> = (0..SHARDS)
+    let grouped: Vec<(Buf<u32>, [usize; SHARDS + 1])> =
+        tables.par_iter().map(|t| t.by_shard()).collect();
+    // each shard's table, its ids for the chunks' entries in chunk order,
+    // and where each chunk's start in them
+    let shards: Vec<(Interner, Buf<u32>, Vec<usize>)> = (0..SHARDS)
         .into_par_iter()
         .map(|s| {
             let mut table = Interner::default();
-            let mut ids: Vec<Buf<u32>> = Vec::with_capacity(tables.len());
-            for t in tables {
-                let mut out = Buf::new();
-                if let Some(list) = t.shards.get(s) {
-                    out.reserve(list.len());
-                    for &local in list {
-                        let (ty, b) = t.get(local);
-                        out.push(table.intern(ty, b));
-                    }
+            let total = grouped.iter().map(|(_, st)| st[s + 1] - st[s]).sum();
+            let mut ids = Buf::with_capacity(total);
+            let mut starts = Vec::with_capacity(tables.len() + 1);
+            for (t, (list, st)) in tables.iter().zip(&grouped) {
+                starts.push(ids.len());
+                for &local in &list[st[s]..st[s + 1]] {
+                    let (ty, b) = t.get(local);
+                    ids.push(table.intern(ty, b));
                 }
-                ids.push(out);
             }
-            (table, ids)
+            starts.push(ids.len());
+            (table, ids, starts)
         })
         .collect();
 
     let mut base = Vec::with_capacity(SHARDS);
     let mut n = 0u32;
-    for (t, _) in &shards {
+    for (t, _, _) in &shards {
         base.push(n);
         n += t.len() as u32;
     }
@@ -982,11 +985,11 @@ fn merge_tables(tables: &[&Interner]) -> Merged {
         .map(|(c, t)| {
             let mut m = Buf::new();
             m.resize(t.len(), 0u32);
-            for s in 0..SHARDS {
-                if let Some(list) = t.shards.get(s) {
-                    for (k, &local) in list.iter().enumerate() {
-                        m[local as usize] = base[s] + shards[s].1[c][k];
-                    }
+            let (list, st) = &grouped[c];
+            for (s, (_, ids, starts)) in shards.iter().enumerate() {
+                let local = &list[st[s]..st[s + 1]];
+                for (&l, &id) in local.iter().zip(&ids[starts[c]..starts[c + 1]]) {
+                    m[l as usize] = base[s] + id;
                 }
             }
             m
@@ -995,8 +998,8 @@ fn merge_tables(tables: &[&Interner]) -> Merged {
 
     let mut types: Buf<i8> = Buf::with_capacity(n as usize);
     let mut ends: Buf<u64> = Buf::with_capacity(n as usize);
-    let mut bytes: Buf<u8> = Buf::with_capacity(shards.iter().map(|(t, _)| t.bytes.len()).sum());
-    for (t, _) in &shards {
+    let mut bytes: Buf<u8> = Buf::with_capacity(shards.iter().map(|(t, _, _)| t.bytes.len()).sum());
+    for (t, _, _) in &shards {
         let base = bytes.len() as u64;
         types.extend_from_slice(&t.types);
         ends.extend(t.ends.iter().map(|&e| base + e as u64));

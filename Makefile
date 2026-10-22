@@ -4,6 +4,8 @@
 #   make test-golden   tippecanoe's golden .json.check tests and the other
 #                      recipes that need only tippecanoe, run with manby
 #   make test-geobuf   the golden tests again from Geobuf input
+#   make test-golden-mlt  the golden tests written as MVT and as MLT, compared
+#                      tile by tile (needs Rust 1.98 for the mlt feature)
 #
 # The golden tests come from tippecanoe-rs (TIPPECANOE_RS), whose
 # tippecanoe-decode decodes the output. Tests that manby does not pass yet
@@ -15,7 +17,7 @@ RELEASE = $(TIPPECANOE_RS)/target/release
 DECODE = $(RELEASE)/tippecanoe-decode
 GOLDEN = target/golden
 
-.PHONY: all test unit test-golden test-geobuf golden-setup manby tools
+.PHONY: all test unit test-golden test-geobuf test-golden-mlt golden-setup manby tools
 
 all: manby
 
@@ -40,3 +42,13 @@ test-golden: golden-setup
 
 test-geobuf: golden-setup
 	$(MAKE) -C $(GOLDEN) -f $(CURDIR)/golden/golden.mk -k -j1 geobuf-test
+
+# MLT: manby and the comparison built with the mlt feature, in their own target directory
+MLT_CARGO = CARGO_TARGET_DIR=target/mlt $(CARGO) +1.98.1
+
+test-golden-mlt: golden-setup
+	$(MLT_CARGO) build --release --features mlt --bin manby --example mlt_verify
+	ln -sf $(CURDIR)/target/mlt/release/manby $(GOLDEN)/manby-mlt
+	ln -sf $(CURDIR)/target/mlt/release/examples/mlt_verify $(GOLDEN)/mlt_verify
+	rm -f $(GOLDEN)/mlt-sizes.txt
+	$(MAKE) -C $(GOLDEN) -f $(CURDIR)/golden/mlt.mk -k all

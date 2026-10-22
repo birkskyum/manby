@@ -782,15 +782,17 @@ impl<'a> Parser<'a> {
             .unwrap_or_else(|_| tippecanoe::cstd::atof(s));
         let mut num = Num::Double(d);
 
-        if !decimal && d > MAX_SAFE_INTEGER {
-            if let Ok(u) = s.parse::<u64>() {
-                num = Num::LargeUnsigned(u);
-            }
+        if !decimal
+            && d > MAX_SAFE_INTEGER
+            && let Ok(u) = s.parse::<u64>()
+        {
+            num = Num::LargeUnsigned(u);
         }
-        if !decimal && d < MIN_SAFE_INTEGER {
-            if let Ok(i) = s.parse::<i64>() {
-                num = Num::LargeSigned(i);
-            }
+        if !decimal
+            && d < MIN_SAFE_INTEGER
+            && let Ok(i) = s.parse::<i64>()
+        {
+            num = Num::LargeSigned(i);
         }
         self.doc.nodes[n as usize].num = num;
         Some(n)

@@ -42,7 +42,6 @@ pub struct Plan {
 
 #[derive(Clone, Copy, Debug, Default)]
 struct DropState {
-    gap: f64,
     previndex: u64,
     interval: f64,
     /// floating point because interval is
@@ -248,7 +247,6 @@ fn order1(store: &mut FeatureStore, o: &Options, out: &mut Out) -> crate::Result
     let minzoom = o.minzoom;
     let mut basezoom = o.basezoom;
     let mut droprate = o.droprate;
-    let gamma = o.gamma;
     let full_detail = o.full_detail;
     let low_detail = o.low_detail;
     let mut cluster_maxzoom = o.cluster_maxzoom;
@@ -268,7 +266,6 @@ fn order1(store: &mut FeatureStore, o: &Options, out: &mut Out) -> crate::Result
         return Err(Error::new(EXIT_NODATA, "Did not read any valid geometries"));
     }
 
-    let mut fix_dropping = false;
     let dist_sum = store.dist_sum;
     let dist_count = store.dist_count;
     let area_sum = store.area_sum;
@@ -456,8 +453,6 @@ fn order1(store: &mut FeatureStore, o: &Options, out: &mut Out) -> crate::Result
             maxzoom = minzoom;
         }
 
-        fix_dropping = true;
-
         if basezoom == -1 {
             // basezoom unspecified
             basezoom = maxzoom;
@@ -474,10 +469,11 @@ fn order1(store: &mut FeatureStore, o: &Options, out: &mut Out) -> crate::Result
 
     if basezoom < 0 || droprate < 0.0 {
         guess_basezoom_droprate(features, o, maxzoom, &mut basezoom, &mut droprate, out);
-        fix_dropping = true;
     }
 
-    let _ = fix_dropping;
+    // tippecanoe assigns the minimum zooms as it merges, and again after
+    // guessing, with the guessed values; one pass with the final values
+    // gives the same.
     assign_minzooms(&mut store.features, o, maxzoom, basezoom, droprate);
 
     Ok(Plan {
@@ -713,19 +709,18 @@ fn assign_minzooms(
 
     let mut ddv: Vec<(u64, usize)> = Vec::new();
     let mut previndex: u64 = 0;
-    for ip in 0..features.len() {
-        let t = features[ip].t as i32;
+    for (ip, f) in features.iter_mut().enumerate() {
+        let t = f.t as i32;
         if t == VT_POINT
             || (o.additional.get(A_LINE_DROP) && t == VT_LINE)
             || (o.additional.get(A_POLYGON_DROP) && t == VT_POLYGON)
         {
-            let ix = features[ip].ix;
+            let ix = f.ix;
             if ix % 100 < drop_denser as u64 {
                 ddv.push((ix.wrapping_sub(previndex), ip));
                 previndex = ix;
             } else {
-                features[ip].feature_minzoom =
-                    calc_feature_minzoom(ix, t, &mut ds, maxzoom, gamma, o) as i8;
+                f.feature_minzoom = calc_feature_minzoom(ix, t, &mut ds, maxzoom, gamma, o) as i8;
             }
         }
     }
@@ -770,10 +765,8 @@ mod tests {
         let zooms: Vec<i32> = (0..16)
             .map(|i| calc_feature_minzoom(i, VT_POINT, &mut ds, 3, 0.0, &o))
             .collect();
-        // one in 8 at z0, one in 4 at z1, one in 2 at z2, all at z3
-        assert_eq!(zooms.iter().filter(|&&z| z == 0).count(), 2);
-        assert_eq!(zooms.iter().filter(|&&z| z <= 1).count(), 4);
-        assert_eq!(zooms.iter().filter(|&&z| z <= 2).count(), 8);
+        // one in 8 from z0, one in 4 from z1, one in 2 from z2, all at z3
+        assert_eq!(zooms, vec![0, 2, 3, 1, 3, 2, 3, 0, 3, 2, 3, 1, 3, 2, 3, 0]);
         assert_eq!(calc_feature_minzoom(99, VT_LINE, &mut ds, 3, 0.0, &o), 0);
     }
 

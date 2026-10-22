@@ -20,6 +20,9 @@ use tippecanoe::geometry::Draw;
 use tippecanoe::mbtiles::{LayermapEntry, merge_layermaps};
 use tippecanoe::serial::{Reader, SerializationState};
 
+/// tippecanoe-rs's globals are process-wide, so the tests here take turns.
+static GLOBALS: Mutex<()> = Mutex::new(());
+
 fn tmpfd(what: &str) -> (i32, String) {
     let mut name = format!("/tmp/manby-ref-{}.XXXXXXXX", what);
     let fd = tippecanoe::tippecanoe_main::mkstemp_cloexec(&mut name);
@@ -568,6 +571,7 @@ fn unsupported(e: &str) -> bool {
 
 #[test]
 fn reference_golden() {
+    let _lock = GLOBALS.lock().unwrap_or_else(|e| e.into_inner());
     // The globals are process-wide, so the cases run one at a time, from
     // where the golden tests run.
     std::env::set_current_dir(tests_dir().join("..")).unwrap();
@@ -605,6 +609,7 @@ fn reference_golden() {
 
 #[test]
 fn reference_one() {
+    let _lock = GLOBALS.lock().unwrap_or_else(|e| e.into_inner());
     let (Ok(input), Ok(args)) = (
         std::env::var("REFERENCE_INPUT"),
         std::env::var("REFERENCE_ARGS"),
@@ -625,5 +630,80 @@ fn reference_one() {
     match compare(&argv, cpus, 0, 0) {
         Ok(n) => eprintln!("{} features match", n),
         Err(e) => panic!("{}", e),
+    }
+}
+
+/// Everything in a store, for checking that two stores are the same.
+fn store_dump(s: &FeatureStore) -> String {
+    let mut out = String::new();
+    for f in &s.features {
+        out += &format!("{:?}\n", f);
+    }
+    for g in &s.geometry {
+        out += &format!("{} {} {}\n", g.op, g.x, g.y);
+    }
+    for a in &s.attrs {
+        out += &format!("{} {}\n", a.key, a.value);
+    }
+    out += &format!("{:?}\n{:?}\n", s.keys, s.values);
+    for l in &s.layers {
+        out += &format!("{} {:?}\n", l.name, l.entry);
+    }
+    out += &format!(
+        "{:?} {:?} {:?} {} {} {}\n",
+        s.bbox, s.bbox1, s.bbox2, s.dist_sum, s.dist_count, s.area_sum
+    );
+    out
+}
+
+/// The store must not depend on the number of threads or on how the input
+/// is split for reading.
+#[test]
+fn deterministic_store() {
+    let _lock = GLOBALS.lock().unwrap_or_else(|e| e.into_inner());
+    let tests = tests_dir();
+    let inputs = [
+        "ne_110m_populated_places/in.json",
+        "ne_110m_admin_0_countries/in.json.gz",
+        "tl_2015_us_county/piscataquis.json",
+        "dateline/in.json",
+    ];
+    for args in [
+        "-zg",
+        "-P -zg --drop-densest-as-needed",
+        "-z5 -ai --calculate-feature-index",
+    ] {
+        let mut argv = vec![
+            "tippecanoe".to_string(),
+            "-o".to_string(),
+            "/tmp/x.pmtiles".to_string(),
+        ];
+        argv.extend(args.split_whitespace().map(|s| s.to_string()));
+        for i in inputs {
+            argv.push(tests.join(i).to_string_lossy().into_owned());
+        }
+        let mut first: Option<String> = None;
+        for (threads, chunk_bytes) in [(1, 0), (2, 50), (7, 1000), (18, 3)] {
+            let mut o = parse_args(&argv).unwrap();
+            o.quiet = true;
+            o.tippecanoe_cpus = 8;
+            o.threads = threads;
+            o.chunk_bytes = chunk_bytes;
+            o.resolve().unwrap();
+            set_tippecanoe_globals(&o, o.cluster_maxzoom);
+            let mut store = manby::ingest::read_inputs(&o).unwrap();
+            manby::order::order(&mut store, &o).unwrap();
+            let dump = store_dump(&store);
+            match &first {
+                None => first = Some(dump),
+                Some(f) => assert!(
+                    *f == dump,
+                    "{}: {} threads, {} byte chunks differ",
+                    args,
+                    threads,
+                    chunk_bytes
+                ),
+            }
+        }
     }
 }

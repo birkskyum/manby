@@ -571,16 +571,11 @@ pub fn serialize_feature(
         }
     }
 
-    for i in 0..2 {
-        if sf_bbox[i] < chunk.file_bbox[i] {
-            chunk.file_bbox[i] = sf_bbox[i];
-        }
-    }
-    for i in 2..4 {
-        if sf_bbox[i] > chunk.file_bbox[i] {
-            chunk.file_bbox[i] = sf_bbox[i];
-        }
-    }
+    let fb = &mut chunk.file_bbox;
+    fb[0] = fb[0].min(sf_bbox[0]);
+    fb[1] = fb[1].min(sf_bbox[1]);
+    fb[2] = fb[2].max(sf_bbox[2]);
+    fb[3] = fb[3].max(sf_bbox[3]);
 
     if generate_id {
         chunk.generate_ids.push(chunk.features.len() as u32);

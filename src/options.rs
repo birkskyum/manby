@@ -469,17 +469,12 @@ impl Options {
 /// tippecanoe's `CPUS`: `TIPPECANOE_MAX_THREADS` or the number of CPUs,
 /// rounded down to a power of 2.
 pub fn tippecanoe_cpus() -> crate::Result<usize> {
-    let mut cpus: usize = match std::env::var("TIPPECANOE_MAX_THREADS") {
+    let cpus: usize = match std::env::var("TIPPECANOE_MAX_THREADS") {
         Ok(v) => require_int(&v, "TIPPECANOE_MAX_THREADS", "tippecanoe")? as usize,
         Err(_) => tippecanoe::platform::get_num_avail_cpus() as usize,
     };
-    if cpus < 1 {
-        cpus = 1;
-    }
-    // Guard against short struct index.segment
-    if cpus > 32767 {
-        cpus = 32767;
-    }
+    // At least 1, and guard against short struct index.segment
+    let cpus = cpus.clamp(1, 32767);
     // Round down to a power of 2
     Ok(1 << ((cpus as f64).ln() / 2f64.ln()) as i32)
 }

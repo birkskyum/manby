@@ -189,7 +189,7 @@ pub struct Geometry {
     vertices: u64,
 }
 
-fn put_varint(out: &mut Vec<u8>, mut v: u64) {
+pub(crate) fn put_varint(out: &mut Vec<u8>, mut v: u64) {
     while v >= 0x80 {
         out.push(v as u8 | 0x80);
         v >>= 7;
@@ -197,9 +197,15 @@ fn put_varint(out: &mut Vec<u8>, mut v: u64) {
     out.push(v as u8);
 }
 
-fn get_varint(data: &[u8], pos: &mut usize) -> u64 {
-    let mut v = 0u64;
-    let mut shift = 0;
+#[inline(always)]
+pub(crate) fn get_varint(data: &[u8], pos: &mut usize) -> u64 {
+    let b = data[*pos];
+    *pos += 1;
+    if b < 0x80 {
+        return b as u64;
+    }
+    let mut v = (b & 0x7F) as u64;
+    let mut shift = 7;
     loop {
         let b = data[*pos];
         *pos += 1;
@@ -264,25 +270,49 @@ impl Geometry {
             return;
         }
         let (p, off) = self.bytes.locate(start as usize);
-        let data = &self.bytes.parts[p][..];
-        let mut pos = off;
-        let (mut x, mut y) = (0i64, 0i64);
+        Geometry::decode_from(&self.bytes.parts[p][off..], n, geometry_scale, out);
+    }
+
+    /// Appends the `n` vertices that `encode` wrote at the start of `data` to
+    /// `out`, the coordinates multiplied by `2^shift`.
+    pub fn decode_from(data: &[u8], n: u32, shift: i32, out: &mut DrawVec) {
+        let mut d = Decoder::default();
         out.reserve(n as usize);
         for _ in 0..n {
-            let c = get_varint(data, &mut pos);
-            match c & 3 {
-                2 => {
-                    out.push(Draw::new(data[pos] as i8, 0, 0));
-                    pos += 1;
-                }
-                k => {
-                    x += unzigzag(c >> 2);
-                    y += unzigzag(get_varint(data, &mut pos));
-                    let op = if k == 0 { VT_MOVETO } else { VT_LINETO };
-                    out.push(Draw::new(op, x << geometry_scale, y << geometry_scale));
-                }
-            }
+            out.push(d.next(data, shift));
         }
+    }
+
+    /// Fills `out` with the vertices that `encode` wrote at the start of
+    /// `data`, as `decode_from` would.
+    pub fn decode_slice(data: &[u8], shift: i32, out: &mut [Draw]) {
+        let mut d = Decoder::default();
+        for o in out {
+            *o = d.next(data, shift);
+        }
+    }
+}
+
+#[derive(Default)]
+struct Decoder {
+    pos: usize,
+    x: i64,
+    y: i64,
+}
+
+impl Decoder {
+    #[inline(always)]
+    fn next(&mut self, data: &[u8], shift: i32) -> Draw {
+        let c = get_varint(data, &mut self.pos);
+        if c & 3 == 2 {
+            let op = data[self.pos] as i8;
+            self.pos += 1;
+            return Draw::new(op, 0, 0);
+        }
+        self.x += unzigzag(c >> 2);
+        self.y += unzigzag(get_varint(data, &mut self.pos));
+        let op = if c & 3 == 0 { VT_MOVETO } else { VT_LINETO };
+        Draw::new(op, self.x << shift, self.y << shift)
     }
 }
 

@@ -28,7 +28,7 @@ use super::engine::Ctx;
 use super::util::{par_ranges, shift_right};
 use crate::mem::{Spool, Stored};
 use crate::store::Attr;
-use crate::store::Chunked;
+use crate::store::{Chunked, Geometry, get_varint, put_varint};
 use std::sync::Arc;
 use tippecanoe::serial::SerialVal;
 
@@ -267,30 +267,8 @@ impl Layout<'_> {
     }
 }
 
-fn put_varint(out: &mut Vec<u8>, mut v: u64) {
-    while v >= 0x80 {
-        out.push(v as u8 | 0x80);
-        v >>= 7;
-    }
-    out.push(v as u8);
-}
-
 fn put_zigzag(out: &mut Vec<u8>, v: i64) {
     put_varint(out, ((v << 1) ^ (v >> 63)) as u64);
-}
-
-fn get_varint(data: &[u8], pos: &mut usize) -> u64 {
-    let mut v = 0u64;
-    let mut shift = 0;
-    loop {
-        let b = data[*pos];
-        *pos += 1;
-        v |= ((b & 0x7F) as u64) << shift;
-        if b < 0x80 {
-            return v;
-        }
-        shift += 7;
-    }
 }
 
 fn get_zigzag(data: &[u8], pos: &mut usize) -> i64 {
@@ -466,72 +444,105 @@ impl ReadTile {
     }
 }
 
-/// A coordinate pair and op in 12 bytes, the coordinates divided by
-/// `2^shift` of their part.
-#[derive(Clone, Copy, Debug)]
-pub struct Vtx {
-    x: i32,
-    y: i32,
-    op: i8,
+/// Geometry that one read chunk wrote. Each candidate's vertices are packed
+/// in a fixed width, so that decoding is quick as well as the bytes few:
+/// a byte with the power of two that divides every coordinate, a byte with
+/// the bit width `w` of the deltas, the first vertex as zigzag varints, then
+/// for each further vertex, `1 + 2 * w` bits: lineto rather than moveto, and
+/// the zigzag deltas of x and y. A candidate whose deltas are wider, or that
+/// has other ops, is written as `store::Geometry` writes it after `PLAIN`.
+pub struct GeomPart {
+    bytes: Vec<u8>,
 }
 
-/// Geometry that one read chunk wrote, kept in 12 bytes a vertex while the
-/// coordinates allow it, which they do except at the lowest zooms for
-/// geometry that the clipping cut at the edges.
-pub enum GeomPart {
-    Compact { shift: u32, v: Vec<Vtx> },
-    Wide(Vec<Draw>),
-}
+const PLAIN: u8 = 0xFF;
+const MAX_WIDTH: u32 = 28;
+/// Bytes after a part's last candidate, so that a decoder can always read
+/// eight bytes at once.
+const PADDING: usize = 8;
 
 impl GeomPart {
-    fn new(z: i32, geometry_scale: i32) -> GeomPart {
-        // tile coordinates from zoom 2 on fit in 32 bits as they are
-        let shift = if z < 2 {
-            geometry_scale.max(0) as u32
-        } else {
-            0
-        };
-        GeomPart::Compact {
-            shift,
-            v: Vec::new(),
-        }
+    fn new() -> GeomPart {
+        GeomPart { bytes: Vec::new() }
     }
 
+    /// Where the next candidate's geometry starts.
     fn len(&self) -> usize {
-        match self {
-            GeomPart::Compact { v, .. } => v.len(),
-            GeomPart::Wide(v) => v.len(),
-        }
+        self.bytes.len()
     }
 
-    fn reserve(&mut self, n: usize) {
-        match self {
-            GeomPart::Compact { v, .. } => v.reserve(n),
-            GeomPart::Wide(v) => v.reserve(n),
-        }
+    fn reserve(&mut self, vertices: usize) {
+        self.bytes.reserve(vertices * 4);
     }
 
     fn extend(&mut self, g: &[Draw]) {
-        if let GeomPart::Compact { shift, v } = self {
-            let shift = *shift;
-            let mask = (1i64 << shift) - 1;
-            let fits = |c: i64| c & mask == 0 && i32::try_from(c >> shift).is_ok();
-            if g.iter().all(|d| fits(d.x) && fits(d.y)) {
-                v.extend(g.iter().map(|d| Vtx {
-                    x: (d.x >> shift) as i32,
-                    y: (d.y >> shift) as i32,
-                    op: d.op,
-                }));
-                return;
-            }
-            let wide: Vec<Draw> = v
-                .iter()
-                .map(|p| Draw::new(p.op, (p.x as i64) << shift, (p.y as i64) << shift))
-                .collect();
-            *self = GeomPart::Wide(wide);
+        let Some(first) = g.first() else { return };
+        let out = &mut self.bytes;
+        let simple =
+            first.op == VT_MOVETO && g.iter().all(|d| d.op == VT_MOVETO || d.op == VT_LINETO);
+        let shift = g
+            .iter()
+            .fold(0u64, |a, d| a | d.x as u64 | d.y as u64)
+            .trailing_zeros()
+            .min(32);
+        let zz = |v: i64| ((v << 1) ^ (v >> 63)) as u64;
+        let wide = g.windows(2).fold(0u64, |a, p| {
+            a | zz((p[1].x - p[0].x) >> shift) | zz((p[1].y - p[0].y) >> shift)
+        });
+        let w = 64 - wide.leading_zeros();
+        if !simple || w > MAX_WIDTH {
+            out.push(PLAIN);
+            Geometry::encode(out, g);
+            return;
         }
-        if let GeomPart::Wide(v) = self {
-            v.extend_from_slice(g);
+        out.push(shift as u8);
+        out.push(w as u8);
+        put_varint(out, zz(first.x >> shift));
+        put_varint(out, zz(first.y >> shift));
+        let bits = 1 + 2 * w;
+        let (mut acc, mut n) = (0u64, 0u32);
+        for p in g.windows(2) {
+            let e = (p[1].op == VT_LINETO) as u64
+                | zz((p[1].x - p[0].x) >> shift) << 1
+                | zz((p[1].y - p[0].y) >> shift) << (1 + w);
+            acc |= e << n;
+            n += bits;
+            while n >= 8 {
+                out.push(acc as u8);
+                acc >>= 8;
+                n -= 8;
+            }
+        }
+        if n > 0 {
+            out.push(acc as u8);
+        }
+    }
+
+    /// Fills `out` with the vertices of the candidate at the start of `data`.
+    fn decode(data: &[u8], out: &mut [Draw]) {
+        let shift = data[0];
+        if shift == PLAIN {
+            Geometry::decode_slice(&data[1..], 0, out);
+            return;
+        }
+        let w = data[1] as u32;
+        let mut pos = 2;
+        let unzz = |v: u64| (v >> 1) as i64 ^ -((v & 1) as i64);
+        let mut x = unzz(get_varint(data, &mut pos));
+        let mut y = unzz(get_varint(data, &mut pos));
+        let mask = (1u64 << w) - 1;
+        let bits = (1 + 2 * w) as usize;
+        let mut at = pos * 8;
+        let (first, rest) = out.split_first_mut().unwrap();
+        *first = Draw::new(VT_MOVETO, x << shift, y << shift);
+        for o in rest {
+            let b = at >> 3;
+            let v = u64::from_le_bytes(data[b..b + 8].try_into().unwrap()) >> (at & 7);
+            at += bits;
+            x += unzz((v >> 1) & mask);
+            y += unzz((v >> (1 + w)) & mask);
+            let op = if v & 1 == 0 { VT_MOVETO } else { VT_LINETO };
+            *o = Draw::new(op, x << shift, y << shift);
         }
     }
 }
@@ -539,7 +550,7 @@ impl GeomPart {
 /// The geometry of a read tile's candidates, as the read chunks wrote it.
 #[derive(Default)]
 pub struct Geoms {
-    parts: Vec<GeomPart>,
+    parts: Vec<Vec<u8>>,
     ends: Vec<usize>,
 }
 
@@ -548,23 +559,35 @@ impl Geoms {
         self.ends.last().copied().unwrap_or(0)
     }
 
-    pub fn append(&mut self, part: GeomPart) {
-        if part.len() == 0 {
+    pub fn append(&mut self, mut part: GeomPart) {
+        if part.bytes.is_empty() {
             return;
         }
-        self.ends.push(self.len() + part.len());
-        self.parts.push(part);
+        part.bytes.resize(part.bytes.len() + PADDING, 0);
+        part.bytes.shrink_to_fit();
+        self.ends.push(self.len() + part.bytes.len());
+        self.parts.push(part.bytes);
     }
 
     /// Appends one candidate's geometry, as the prefilter's are.
     pub fn push(&mut self, g: Vec<Draw>) {
-        self.append(GeomPart::Wide(g));
+        let mut part = GeomPart::new();
+        part.extend(&g);
+        self.append(part);
     }
 
-    /// `len` vertices from `start`, which lie in one part.
+    /// The `len` vertices from byte `start`, decoded into `scratch`.
     pub fn get<'a>(&'a self, start: usize, len: usize, scratch: &'a mut DrawVec) -> &'a [Draw] {
-        if len == 0 {
-            return &[];
+        scratch.clear();
+        scratch.resize(len, Draw::new(0, 0, 0));
+        self.get_into(start, scratch);
+        scratch
+    }
+
+    /// Fills `out` with the `out.len()` vertices from byte `start`.
+    fn get_into(&self, start: usize, out: &mut [Draw]) {
+        if out.is_empty() {
+            return;
         }
         let p = if self.parts.len() == 1 {
             0
@@ -572,18 +595,7 @@ impl Geoms {
             self.ends.partition_point(|&e| e <= start)
         };
         let off = start - if p == 0 { 0 } else { self.ends[p - 1] };
-        match &self.parts[p] {
-            GeomPart::Wide(v) => &v[off..off + len],
-            GeomPart::Compact { shift, v } => {
-                scratch.clear();
-                scratch.extend(
-                    v[off..off + len]
-                        .iter()
-                        .map(|p| Draw::new(p.op, (p.x as i64) << shift, (p.y as i64) << shift)),
-                );
-                scratch
-            }
-        }
+        GeomPart::decode(&self.parts[p][off..], out);
     }
 }
 
@@ -954,7 +966,7 @@ fn read_chunk(ctx: &Ctx<'_>, input: &TileInput, source: Source<'_>, rp: &ReadPar
     let mut out = ChunkOut {
         cands: Vec::new(),
         extras: Vec::new(),
-        geom: GeomPart::new(z, ctx.o.geometry_scale),
+        geom: GeomPart::new(),
         edges: Vec::new(),
         attr_lists: Vec::new(),
         children: Vec::new(),

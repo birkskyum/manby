@@ -1,6 +1,7 @@
 //! Checks that manby's MLT encoder, which reads MVT bytes itself, makes the
 //! same bytes as mlt-core's own MVT reader, on every tile of PMTiles
-//! archives of MVT tiles and for every encoder profile.
+//! archives of MVT tiles and for every encoder profile, with integers typed
+//! as mlt-core types them (without the `web` profile's narrowing).
 //!
 //!   cargo +1.98.1 run --release --features mlt --example mlt_reader_check -- x.pmtiles ...
 
@@ -8,7 +9,9 @@ use std::collections::HashSet;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use manby::mlt::{MltProfile, MltSettings, encode_tile, encode_tile_with_mlt_core};
+use manby::mlt::{
+    MltProfile, MltSettings, encode_tile_with, encode_tile_with_mlt_core, encoder_config,
+};
 use rayon::prelude::*;
 
 #[global_allocator]
@@ -31,14 +34,15 @@ fn main() -> ExitCode {
         ] {
             for gzipped in [true, false] {
                 let s = MltSettings { profile, gzipped };
+                let config = encoder_config(&s);
                 let (same, different, refused) =
                     (AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0));
                 entries.par_iter().for_each(|e| {
                     let mut mvt = Vec::new();
                     let data = &archive[e.offset as usize..e.offset as usize + e.length as usize];
                     tippecanoe::mvt::decompress(data, &mut mvt);
-                    let ours = encode_tile(&mvt, &s).unwrap();
-                    match encode_tile_with_mlt_core(&mvt, &s) {
+                    let ours = encode_tile_with(&mvt, config, false).unwrap();
+                    match encode_tile_with_mlt_core(&mvt, config) {
                         Ok(theirs) if theirs == ours => &same,
                         Ok(_) => {
                             eprintln!("{}: {}/{}/{} differs", path, e.z, e.x, e.y);

@@ -6,7 +6,10 @@
 //! checked. An MLT tile therefore holds the layers, features, ids, geometry
 //! and attribute values of the MVT tile, in the same order, typed as MLT's
 //! columns require: one type per attribute and layer, where integers mixed
-//! with floats become 64-bit floats and any other mix becomes strings.
+//! with floats become 64-bit floats and any other mix becomes strings. The
+//! `web` profile stores integer columns that need more than 32 bits as
+//! doubles where that is exact, because MapLibre GL JS reads 64-bit integers
+//! as BigInt, which its style expressions do not compare as numbers.
 //!
 //! mlt-core needs Rust 1.98, so it is behind the `mlt` cargo feature.
 
@@ -47,13 +50,18 @@ impl TileFormat {
 /// Which encodings the MLT encoder may use, by the clients the tiles are for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MltProfile {
-    /// For MapLibre GL JS and every other client: no polygon triangles (GL
-    /// JS ignores them), and FastPFOR and FSST only for tiles stored without
-    /// gzip, since under gzip they make tiles larger.
+    /// Tiles every MapLibre GL JS that reads MLT (5.12 and later) reads, with
+    /// attribute values of the same JavaScript types as from MVT: no polygon
+    /// triangles (GL JS ignores them), no FastPFOR, FSST or shared
+    /// dictionaries (GL JS before 6.0 cannot read them all), and integer
+    /// columns that need more than 32 bits as doubles where that is exact
+    /// (GL JS reads 64-bit integers as BigInt, which style expressions do
+    /// not compare as numbers).
     #[default]
     Web,
-    /// For MapLibre Native: polygon triangles where they save the client
-    /// more time than their bytes cost, and every codec.
+    /// mlt-core's defaults for MapLibre Native: polygon triangles where they
+    /// save the client more time than their bytes cost, and every codec.
+    /// MapLibre GL JS reads these from 6.0, with 64-bit integers as BigInt.
     Native,
     /// The fewest bytes. Sorts features within each layer when that is
     /// smaller, so their drawing order can differ from MVT.
@@ -105,12 +113,16 @@ mod imp {
         } else {
             Network::Offline
         };
-        EncoderConfig::from_profile(match s.profile {
-            MltProfile::Web => Profile::Web(network),
-            MltProfile::Native => Profile::Native(network),
-            MltProfile::MinSize => Profile::MinSize,
-            MltProfile::Fast => Profile::FastEncoding,
-        })
+        match s.profile {
+            // mlt-core's pricing for GL JS online, which leaves out FSST and
+            // FastPFOR, without shared dictionaries, whatever the compression:
+            // decoders before GL JS 6.0 do not read them all.
+            MltProfile::Web => EncoderConfig::from_profile(Profile::Web(Network::Cellular4G))
+                .with_shared_dict(false),
+            MltProfile::Native => EncoderConfig::from_profile(Profile::Native(network)),
+            MltProfile::MinSize => EncoderConfig::from_profile(Profile::MinSize),
+            MltProfile::Fast => EncoderConfig::from_profile(Profile::FastEncoding),
+        }
     }
 
     /// Protobuf fields of the MVT bytes, borrowed from them.
@@ -467,6 +479,7 @@ mod imp {
     fn encode_layer(
         l: &Layer<'_>,
         config: EncoderConfig,
+        narrow_integers: bool,
         parts: &mut Parts,
     ) -> Result<Vec<u8>, String> {
         // The columns in first-seen order and their kinds, by key name as
@@ -512,7 +525,26 @@ mod imp {
                 inferred[col] = inferred[col].merge(v.kind());
             }
         }
-        let kinds: Vec<PropKind> = inferred.iter().map(|k| k.prop_kind()).collect();
+        let mut kinds: Vec<PropKind> = inferred.iter().map(|k| k.prop_kind()).collect();
+
+        if narrow_integers {
+            let mut ranges: Vec<(i128, i128)> = vec![(i128::MAX, i128::MIN); kinds.len()];
+            for f in &l.features {
+                for j in (0..f.tags.len()).step_by(2) {
+                    let (k, v) = tag(f, j)?;
+                    let n = match v {
+                        Value::Int(i) | Value::SInt(i) => i as i128,
+                        Value::UInt(u) => u as i128,
+                        _ => continue,
+                    };
+                    let r = &mut ranges[key_cols[k].unwrap_or_default()];
+                    *r = (r.0.min(n), r.1.max(n));
+                }
+            }
+            for (kind, &(lo, hi)) in kinds.iter_mut().zip(&ranges) {
+                *kind = narrowest(*kind, lo, hi);
+            }
+        }
 
         // The text of every non-string value in a string column, in writing order.
         let mut texts: Vec<CompactString> = Vec::new();
@@ -563,24 +595,59 @@ mod imp {
         w.encode(config).map_err(err)
     }
 
+    /// The type of an integer column holding `lo..=hi`. mlt-core stores
+    /// integer columns in 32 bits where the values fit, and MapLibre GL JS
+    /// reads wider ones as BigInt, which its style expressions do not compare
+    /// as numbers. So a wider column becomes a double where that is exact (up
+    /// to 2^53), which GL JS reads as a number, as it reads MVT integers.
+    fn narrowest(kind: PropKind, lo: i128, hi: i128) -> PropKind {
+        let fits_32_bits = (lo >= 0 && hi <= i128::from(u32::MAX))
+            || (lo >= i128::from(i32::MIN) && hi <= i128::from(i32::MAX));
+        if matches!(kind, PropKind::I64 | PropKind::U64)
+            && lo <= hi
+            && !fits_32_bits
+            && lo >= -(1 << 53)
+            && hi <= 1 << 53
+        {
+            PropKind::F64
+        } else {
+            kind
+        }
+    }
+
     /// The MLT tile with the content of the MVT tile `mvt`.
     pub fn encode_tile(mvt: &[u8], s: &MltSettings) -> Result<Vec<u8>, String> {
-        let config = encoder_config(s);
+        encode_tile_with(mvt, encoder_config(s), s.profile == MltProfile::Web)
+    }
+
+    /// The MLT tile with the content of the MVT tile `mvt`, with explicit
+    /// encoder settings, and with integers typed as mlt-core types them or
+    /// narrowed for MapLibre GL JS.
+    pub fn encode_tile_with(
+        mvt: &[u8],
+        config: EncoderConfig,
+        narrow_integers: bool,
+    ) -> Result<Vec<u8>, String> {
         let mut out = Vec::with_capacity(mvt.len());
         let mut parts = Parts::default();
         let mut p = Pbf::new(mvt);
         while let Some((n, f)) = p.field()? {
             if let (3, Field::Bytes(b)) = (n, f) {
-                out.extend_from_slice(&encode_layer(&layer(b)?, config, &mut parts)?);
+                out.extend_from_slice(&encode_layer(
+                    &layer(b)?,
+                    config,
+                    narrow_integers,
+                    &mut parts,
+                )?);
             }
         }
         Ok(out)
     }
 
     /// The MLT tile mlt-core's own MVT reader makes from `mvt`, which refuses
-    /// tiles that decode to more than 32 MiB. For checking `encode_tile`.
-    pub fn encode_tile_with_mlt_core(mvt: &[u8], s: &MltSettings) -> Result<Vec<u8>, String> {
-        let config = encoder_config(s);
+    /// tiles that decode to more than 32 MiB. For checking `encode_tile_with`
+    /// without narrowed integers.
+    pub fn encode_tile_with_mlt_core(mvt: &[u8], config: EncoderConfig) -> Result<Vec<u8>, String> {
         let mut out = Vec::with_capacity(mvt.len());
         for layer in mlt_core::mvt::mvt_to_tile_layers(mvt).map_err(|e| e.to_string())? {
             out.extend_from_slice(&layer.encode(config).map_err(|e| e.to_string())?);
@@ -606,7 +673,9 @@ mod imp {
 }
 
 #[cfg(feature = "mlt")]
-pub use imp::{decode_tile, encode_tile_with_mlt_core, encoder_config};
+pub use imp::{decode_tile, encode_tile_with, encode_tile_with_mlt_core, encoder_config};
+#[cfg(feature = "mlt")]
+pub use mlt_core::encoder::EncoderConfig;
 
 /// The MLT tile with the content of the MVT tile `mvt`.
 pub fn encode_tile(mvt: &[u8], settings: &MltSettings) -> Result<Vec<u8>, String> {
@@ -626,8 +695,8 @@ pub const NOT_BUILT: &str = "this manby was built without MLT support; build it 
 
 #[cfg(all(test, feature = "mlt"))]
 mod tests {
-    use mlt_core::PropValue;
     use mlt_core::geo_types::Geometry;
+    use mlt_core::{PropKind, PropValue};
     use tippecanoe::mvt::{
         MVT_BOOL, MVT_CLOSEPATH, MVT_DOUBLE, MVT_FLOAT, MVT_INT, MVT_LINESTRING, MVT_LINETO,
         MVT_MOVETO, MVT_POINT, MVT_POLYGON, MVT_SINT, MVT_STRING, MVT_UINT, MvtFeature,
@@ -757,6 +826,16 @@ mod tests {
             if i == 5 {
                 layer.tag(&mut f, "boolnum", &int(5));
             }
+            layer.tag(
+                &mut f,
+                "big",
+                &uint(if i == 6 { 5_000_000_000 } else { i as u64 }),
+            );
+            layer.tag(
+                &mut f,
+                "huge",
+                &uint(if i == 6 { 1 << 60 } else { i as u64 }),
+            );
             layer.features.push(f);
         }
         let empty = MvtLayer {
@@ -781,15 +860,39 @@ mod tests {
             MltProfile::Fast,
         ] {
             for gzipped in [true, false] {
-                let s = MltSettings { profile, gzipped };
+                let config = encoder_config(&MltSettings { profile, gzipped });
                 assert_eq!(
-                    encode_tile(&mvt, &s).unwrap(),
-                    encode_tile_with_mlt_core(&mvt, &s).unwrap(),
+                    encode_tile_with(&mvt, config, false).unwrap(),
+                    encode_tile_with_mlt_core(&mvt, config).unwrap(),
                     "{:?}",
-                    s
+                    config
                 );
             }
         }
+    }
+
+    #[test]
+    fn web_integers_are_numbers_in_javascript() {
+        let mvt = sample_tile();
+        let kinds = |narrow: bool| {
+            let config = encoder_config(&MltSettings::default());
+            let layers = decode_tile(&encode_tile_with(&mvt, config, narrow).unwrap()).unwrap();
+            let l = &layers[0];
+            let kind = |name: &str| {
+                let c = l.property_names().iter().position(|n| n == name).unwrap();
+                l.features()[6].properties()[c].kind()
+            };
+            [kind("uint"), kind("signed"), kind("big"), kind("huge")]
+        };
+        // mlt-core stores columns that fit in 32 bits in 32 bits either way
+        assert_eq!(
+            kinds(true),
+            [PropKind::U32, PropKind::I32, PropKind::F64, PropKind::U64]
+        );
+        assert_eq!(
+            kinds(false),
+            [PropKind::U32, PropKind::I32, PropKind::U64, PropKind::U64]
+        );
     }
 
     #[test]

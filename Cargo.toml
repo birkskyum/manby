@@ -34,6 +34,10 @@ required-features = ["mlt"]
 name = "mlt_reader_check"
 required-features = ["mlt"]
 
+[[example]]
+name = "mlt_variants"
+required-features = ["mlt"]
+
 [profile.release]
 debug = 1
 lto = "thin"

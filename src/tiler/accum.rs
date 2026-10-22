@@ -89,6 +89,16 @@ pub fn preserve(
         return;
     };
 
+    if let AttributeOp::Concat | AttributeOp::Comma = op {
+        let fv = &mut full_values[i];
+        fv.type_ = MVT_STRING;
+        if matches!(op, AttributeOp::Comma) {
+            fv.s.push(',');
+        }
+        fv.s.push_str(val);
+        return;
+    }
+
     let a = find(accs, i);
     let existing = match a {
         Some(a) => accs[a].v,
@@ -138,15 +148,7 @@ pub fn preserve(
                 ((count + 1) as f64, Some(count + 1), true)
             }
         }
-        AttributeOp::Concat | AttributeOp::Comma => {
-            let fv = &mut full_values[i];
-            fv.type_ = MVT_STRING;
-            if matches!(op, AttributeOp::Comma) {
-                fv.s.push(',');
-            }
-            fv.s.push_str(val);
-            return;
-        }
+        AttributeOp::Concat | AttributeOp::Comma => unreachable!(),
     };
     let acc = Acc {
         i: i as u32,

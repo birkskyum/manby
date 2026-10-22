@@ -259,6 +259,9 @@ pub struct Chunk {
     pub file_bbox: [i64; 4],
     pub file_bbox1: [i64; 4],
     pub file_bbox2: [i64; 4],
+    /// The `initial_x` and `initial_y` that the chunk's first feature with a
+    /// point would give its segment if it were the segment's first.
+    pub initial: Option<(u32, u32)>,
 
     /// The terms tippecanoe adds to `dist_sum` and `area_sum`, in order, for `-zg`.
     pub dist_terms: Vec<f64>,

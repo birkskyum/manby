@@ -124,8 +124,26 @@ fn cstr(s: &str) -> &str {
     }
 }
 
+/// The `initial_x` and `initial_y` that `scale_geometry` sets from the first
+/// point of the first feature of a segment.
+fn initial_point(cfg: &Config<'_>, geom: &DrawVec) -> Option<(u32, u32)> {
+    let g = geom
+        .iter()
+        .find(|g| g.op == VT_MOVETO || g.op == VT_LINETO)?;
+    let (x, y) = (g.x, g.y);
+    let world = 0..1i64 << 32;
+    if !world.contains(&x) || !world.contains(&y) {
+        Some((1 << 31, 1 << 31))
+    } else {
+        Some((
+            cfg.SHIFT_LEFT(cfg.SHIFT_RIGHT(x)) as u32,
+            cfg.SHIFT_LEFT(cfg.SHIFT_RIGHT(y)) as u32,
+        ))
+    }
+}
+
 /// tippecanoe's `scale_geometry`, without the initial offsets of the temporary
-/// files, which do not change what the tiling reads back.
+/// files, which [`initial_point`] works out on its own.
 fn scale_geometry(cfg: &Config<'_>, bbox: &mut [i64; 4], geom: &mut DrawVec) {
     let mut offset: i64 = 0;
     let mut prev: i64 = 0;
@@ -230,6 +248,10 @@ pub fn serialize_feature(
             b2[2] = b2[2].max(x);
             b2[3] = b2[3].max(y);
         }
+    }
+
+    if chunk.initial.is_none() {
+        chunk.initial = initial_point(cfg, &sf.geometry);
     }
 
     // try to remind myself that the geometry in this function is in SCALED COORDINATES
@@ -601,6 +623,7 @@ pub fn serialize_feature(
         feature_minzoom: 0,
         tippecanoe_minzoom: sf.tippecanoe_minzoom as i8,
         tippecanoe_maxzoom: sf.tippecanoe_maxzoom as i8,
+        segment: 0,
     });
 
     true

@@ -35,7 +35,9 @@ pub struct Feature {
     /// The feature's attributes are `attrs[attr_start..attr_start + attr_len]`.
     pub attr_start: u64,
     pub attr_len: u32,
-    /// Index into `FeatureStore::layers`.
+    /// Index into `FeatureStore::layers`: the layer that tippecanoe's tiling
+    /// puts the feature in, which is the one it names except where layer
+    /// numbers collide (see `segment_layers`).
     pub layer: u32,
     /// `VT_POINT`, `VT_LINE` or `VT_POLYGON`.
     pub t: i8,
@@ -45,6 +47,10 @@ pub struct Feature {
     /// `"tippecanoe": {"minzoom": …, "maxzoom": …}` in the input, or -1.
     pub tippecanoe_minzoom: i8,
     pub tippecanoe_maxzoom: i8,
+    /// The tippecanoe reader that read the feature (`sf.segment`), whose
+    /// string pool, layer numbers and `initial_x`/`initial_y` its serialized
+    /// form refers to. The same for any number of manby threads.
+    pub segment: u16,
 }
 
 /// An attribute of a feature: interned key and value.
@@ -52,6 +58,14 @@ pub struct Feature {
 pub struct Attr {
     pub key: u32,
     pub value: u32,
+}
+
+/// Where a feature's attribute is in its segment's string pool, as tippecanoe
+/// serializes it: the offsets of the key and of the value.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PoolOffsets {
+    pub key: i64,
+    pub value: i64,
 }
 
 /// A layer: its name and the statistics tippecanoe keeps for the metadata.
@@ -89,6 +103,25 @@ pub struct FeatureStore {
     /// empty without that option.
     pub shared_nodes: Vec<tippecanoe::serial::Node>,
     pub shared_nodes_bloom: Vec<u8>,
+    /// tippecanoe's `initial_x` and `initial_y`, by segment: the point that
+    /// the first geometry delta of each serialized feature is relative to,
+    /// after `SHIFT_RIGHT`. 0 for a segment that read no point.
+    pub initial_x: Vec<u32>,
+    pub initial_y: Vec<u32>,
+    /// `segment_layers[segment][layer]`: the layer number that tippecanoe
+    /// serializes for a feature of store layer `layer` read by `segment`,
+    /// or -1 if that segment has no such layer.
+    pub segment_layers: Vec<Vec<i64>>,
+
+    // The rest is what tippecanoe's temporary files hold beyond the features
+    // themselves, which `-at` needs to estimate tile sizes from their bytes.
+    // Without `-at` it is left empty.
+    /// For each entry of `attrs`, its offsets in its feature's segment's
+    /// string pool.
+    pub pool_offsets: Vec<PoolOffsets>,
+    /// The bytes the features take in tippecanoe's geometry files: for each,
+    /// its length as a varint and its serialized form.
+    pub serialized_bytes: u64,
 }
 
 impl FeatureStore {

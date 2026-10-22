@@ -1868,6 +1868,16 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
             }
             let trace_encode = trace_start.elapsed().as_secs_f64();
             let pbf_len = pbf.len();
+            if let Some(mlt) = &o.mlt {
+                match crate::mlt::encode_tile(&pbf, mlt) {
+                    Ok(bytes) => pbf = bytes,
+                    Err(message) => {
+                        res.len = -1;
+                        res.error = Some(format!("tile {}/{}/{}: {}", z, tx, ty, message));
+                        return res;
+                    }
+                }
+            }
 
             let compressed = if !o.p(P_TILE_COMPRESSION) {
                 gzip(ctx, &pbf)

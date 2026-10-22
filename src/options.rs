@@ -91,6 +91,10 @@ pub struct Options {
     pub threads: usize,
     /// Make different tiles from tippecanoe's where that is faster. See DESIGN.md.
     pub fast: bool,
+    /// `--tile-format`: MVT, as tippecanoe writes, or MapLibre Tiles.
+    pub tile_format: crate::mlt::TileFormat,
+    /// `--mlt-profile`: which encodings MLT tiles may use.
+    pub mlt_profile: crate::mlt::MltProfile,
 
     /// `argv[0]`, for messages.
     pub program: String,
@@ -206,6 +210,8 @@ impl Default for Options {
             quiet: false,
             threads: 0,
             fast: false,
+            tile_format: crate::mlt::TileFormat::Mvt,
+            mlt_profile: crate::mlt::MltProfile::Web,
             program: "manby".to_string(),
             commandline: String::new(),
             sources: Vec::new(),
@@ -1089,6 +1095,8 @@ fn long_options_orig() -> Vec<LongOption> {
         heading("manby"),
         opt("fast", NO, b'~'),
         opt("threads", REQ, b'~'),
+        opt("tile-format", REQ, b'~'),
+        opt("mlt-profile", REQ, b'~'),
         heading(""),
         opt("prevent", REQ, b'p'),
         opt("additional", REQ, b'a'),
@@ -1345,6 +1353,27 @@ pub fn parse_args(argv: &[String]) -> crate::Result<Options> {
                     "threads" => {
                         o.threads = require_int(&optarg, "Threads", &argv0)?.max(0) as usize
                     }
+                    "tile-format" => match crate::mlt::TileFormat::parse(arg) {
+                        Some(crate::mlt::TileFormat::Mlt) if !crate::mlt::AVAILABLE => {
+                            return err_args(format!("{}: {}", argv0, crate::mlt::NOT_BUILT));
+                        }
+                        Some(f) => o.tile_format = f,
+                        None => {
+                            return err_args(format!(
+                                "{}: --tile-format must be mvt or mlt, not {}",
+                                argv0, arg
+                            ));
+                        }
+                    },
+                    "mlt-profile" => match crate::mlt::MltProfile::parse(arg) {
+                        Some(p) => o.mlt_profile = p,
+                        None => {
+                            return err_args(format!(
+                                "{}: --mlt-profile must be web, native, min-size or fast, not {}",
+                                argv0, arg
+                            ));
+                        }
+                    },
                     _ => {
                         return err_args(format!("{}: Unrecognized option --{}", argv0, opt));
                     }
@@ -1638,6 +1667,28 @@ mod tests {
 
     fn args(s: &str) -> Vec<String> {
         s.split(' ').map(|a| a.to_string()).collect()
+    }
+
+    #[test]
+    fn tile_format() {
+        use crate::mlt::{MltProfile, TileFormat};
+        let o = parse_args(&args("tippecanoe -o out.pmtiles in.json")).unwrap();
+        assert_eq!(o.tile_format, TileFormat::Mvt);
+        assert_eq!(o.mlt_profile, MltProfile::Web);
+        let o = parse_args(&args("tippecanoe -o out.pmtiles --tile-format=mvt in.json")).unwrap();
+        assert_eq!(o.tile_format, TileFormat::Mvt);
+        let mlt = parse_args(&args(
+            "tippecanoe -o out.pmtiles --tile-format=mlt --mlt-profile=native in.json",
+        ));
+        if crate::mlt::AVAILABLE {
+            let o = mlt.unwrap();
+            assert_eq!(o.tile_format, TileFormat::Mlt);
+            assert_eq!(o.mlt_profile, MltProfile::Native);
+        } else {
+            assert!(mlt.unwrap_err().message.contains(crate::mlt::NOT_BUILT));
+        }
+        assert!(parse_args(&args("tippecanoe -o x.pmtiles --tile-format=png in.json")).is_err());
+        assert!(parse_args(&args("tippecanoe -o x.pmtiles --mlt-profile=tiny in.json")).is_err());
     }
 
     #[test]

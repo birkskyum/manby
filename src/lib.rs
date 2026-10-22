@@ -8,6 +8,7 @@ pub mod compress;
 pub mod error;
 pub mod ingest;
 pub mod mem;
+pub mod mlt;
 pub mod options;
 pub mod order;
 pub mod sink;
@@ -62,6 +63,7 @@ pub fn run(options: &Options) -> Result<Summary> {
             tmpdir: o.tmpdir.clone().into(),
             memory_budget: 64 << 20,
             program: o.program.clone(),
+            tile_format: o.tile_format,
             ..Default::default()
         },
     )?;

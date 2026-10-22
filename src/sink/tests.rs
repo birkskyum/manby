@@ -66,7 +66,7 @@ pub(crate) fn make_tiles_from(n: usize, start: u64, maxzoom: u8, seed: u64) -> V
             tiles.push((t.z, t.x, t.y, data.clone()));
             prev = data;
         }
-        id += 1 + if rng.next() % 4 == 0 {
+        id += 1 + if rng.next().is_multiple_of(4) {
             rng.next() % 300
         } else {
             0
@@ -560,7 +560,11 @@ fn directories_same_as_tippecanoe() {
             .map(|_| {
                 id += 1 + rng.next() % 7;
                 let len = 1 + (rng.next() % 5000) as u32;
-                offset += if rng.next() % 4 == 0 { 0 } else { len as u64 };
+                offset += if rng.next().is_multiple_of(4) {
+                    0
+                } else {
+                    len as u64
+                };
                 tippecanoe::pmtiles::EntryV3::new(id, offset, len, 1 + (rng.next() % 2) as u32)
             })
             .collect();
@@ -576,4 +580,112 @@ fn directories_same_as_tippecanoe() {
             n
         );
     }
+}
+
+/// The `--tile-format=mlt` side of the sinks: the format in the metadata, the
+/// PMTiles tile type and the extension of tile files. The tiles themselves
+/// are whatever the tiler wrote.
+#[test]
+fn mlt_outputs() {
+    use crate::mlt::TileFormat;
+    let mlt = SinkSettings {
+        tile_format: TileFormat::Mlt,
+        ..settings()
+    };
+    let tiles = make_tiles(300, 8, 51);
+    let m = make_metadata(8);
+
+    let path = temp_path("mlt.pmtiles");
+    let sink = Box::new(PmtilesSink::create(path.to_str().unwrap(), &mlt).unwrap());
+    feed(sink.as_ref(), &tiles, 4, 1);
+    sink.finish(&m).unwrap();
+    let archive = fs::read(&path).unwrap();
+    let header = tippecanoe::pmtiles::deserialize_header(&archive[..127]);
+    assert_eq!(header.tile_type, super::pmtiles::TILETYPE_MLT);
+    assert_eq!(
+        header.tile_compression,
+        tippecanoe::pmtiles::COMPRESSION_GZIP
+    );
+    let db = tippecanoe::pmtiles_file::pmtilesmeta2tmp(path.to_str().unwrap(), &archive);
+    let format: String = db
+        .query_row(
+            "SELECT value FROM metadata WHERE name = 'format'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(format, "mlt");
+    drop(db);
+    // apart from the tile type and the format, the archive is the MVT one
+    let mvt = manby_pmtiles(&path, &tiles, &m, &settings(), 4, 1);
+    let mvt_header = tippecanoe::pmtiles::deserialize_header(&mvt[..127]);
+    assert_eq!(mvt_header.tile_type, tippecanoe::pmtiles::TILETYPE_MVT);
+    assert_eq!(
+        archive[header.tile_data_offset as usize..],
+        mvt[mvt_header.tile_data_offset as usize..]
+    );
+    assert_eq!(header.root_dir_bytes, mvt_header.root_dir_bytes);
+    assert_eq!(header.leaf_dirs_bytes, mvt_header.leaf_dirs_bytes);
+    let _ = fs::remove_file(&path);
+
+    let path = temp_path("mlt.mbtiles");
+    let sink = Box::new(MbtilesSink::create(path.to_str().unwrap(), &mlt).unwrap());
+    feed(sink.as_ref(), &tiles, 4, 1);
+    sink.finish(&m).unwrap();
+    let db = Connection::open(&path).unwrap();
+    let format: String = db
+        .query_row(
+            "SELECT value FROM metadata WHERE name = 'format'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(format, "mlt");
+    let n: i64 = db
+        .query_row("SELECT count(*) FROM tiles", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n as usize, tiles.len());
+    drop(db);
+    let _ = fs::remove_file(&path);
+
+    let path = temp_path("mlt-dir");
+    let p = path.to_str().unwrap();
+    let sink = Box::new(DirSink::create(p, &mlt).unwrap());
+    feed(sink.as_ref(), &tiles, 4, 1);
+    sink.finish(&m).unwrap();
+    let files = tree(&path);
+    assert_eq!(
+        files.iter().filter(|f| f.0.ends_with(".mlt")).count(),
+        tiles.len()
+    );
+    let meta = String::from_utf8(fs::read(path.join("metadata.json")).unwrap()).unwrap();
+    assert!(meta.contains("\"format\": \"mlt\""));
+    // .mlt files are tiles to clear for MLT output, and left alone for MVT
+    let e = DirSink::create(
+        p,
+        &SinkSettings {
+            force: false,
+            ..settings()
+        },
+    )
+    .err()
+    .unwrap();
+    assert!(e.message.contains("metadata.json: file exists"));
+    fs::remove_file(path.join("metadata.json")).unwrap();
+    DirSink::create(p, &settings()).unwrap();
+    let e = DirSink::create(p, &mlt).err().unwrap();
+    assert!(e.message.ends_with(".mlt: file exists"));
+    DirSink::create(
+        p,
+        &SinkSettings {
+            force: true,
+            ..mlt.clone()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        tree(&path).iter().filter(|f| f.0.ends_with(".mlt")).count(),
+        0
+    );
+    let _ = fs::remove_dir_all(&path);
 }

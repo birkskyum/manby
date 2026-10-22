@@ -162,49 +162,55 @@ impl Default for TileOptions {
 }
 
 impl TileOptions {
-    /// The tiling options of a run. Until `Options` carries all of
-    /// tippecanoe's tiling options, those that it lacks are read from
-    /// tippecanoe-rs's globals, which `manby::run` sets from `Options`.
-    pub fn new(options: &Options, plan: &Plan) -> TileOptions {
-        use std::sync::atomic::Ordering::Relaxed;
-        use tippecanoe::globals as g;
-
-        let mut prevent = [false; 256];
-        let mut additional = [false; 256];
-        for c in 0..256 {
-            prevent[c] = g::prevent(c) != 0;
-            additional[c] = g::additional(c) != 0;
-        }
-
+    /// The tiling options of a run, from the command line options, the zoom
+    /// plan and what reading found (the shared nodes).
+    pub fn new(o: &Options, plan: &Plan, store: &FeatureStore) -> TileOptions {
         TileOptions {
             minzoom: plan.minzoom,
             maxzoom: plan.maxzoom,
             basezoom: plan.basezoom,
             droprate: plan.droprate,
-            geometry_scale: g::GEOMETRY_SCALE.load(Relaxed),
-            prevent,
-            additional,
-            max_tile_size: g::MAX_TILE_SIZE.load(Relaxed),
-            max_tile_features: g::MAX_TILE_FEATURES.load(Relaxed),
-            cluster_distance: g::CLUSTER_DISTANCE.load(Relaxed),
-            cluster_maxzoom: g::CLUSTER_MAXZOOM.load(Relaxed),
-            tiny_polygon_size: g::TINY_POLYGON_SIZE.load(Relaxed),
-            limit_tile_feature_count: g::LIMIT_TILE_FEATURE_COUNT.load(Relaxed),
-            limit_tile_feature_count_at_maxzoom: g::LIMIT_TILE_FEATURE_COUNT_AT_MAXZOOM
-                .load(Relaxed),
-            extend_zooms_max: g::EXTEND_ZOOMS_MAX.load(Relaxed),
-            retain_points_multiplier: g::RETAIN_POINTS_MULTIPLIER.load(Relaxed),
-            preserve_multiplier_density_threshold: g::PRESERVE_MULTIPLIER_DENSITY_THRESHOLD
-                .load(Relaxed),
-            order_by: g::ORDER_BY.read().map(|o| o.clone()).unwrap_or_default(),
-            clipbboxes: g::CLIPBBOXES.read().map(|c| !c.is_empty()).unwrap_or(false),
-            extra_detail: g::EXTRA_DETAIL.load(Relaxed),
-            cpus: g::CPUS.load(Relaxed).max(1),
-            temp_files: g::TEMP_FILES.load(Relaxed).max(4),
-            quiet: options.quiet,
-            threads: options.threads,
-            fast: options.fast,
-            ..TileOptions::default()
+            iz: plan.iz as i32,
+            ix: plan.ix,
+            iy: plan.iy,
+            geometry_scale: plan.geometry_scale,
+            buffer: o.buffer,
+            full_detail: o.full_detail,
+            low_detail: o.low_detail,
+            min_detail: o.min_detail,
+            gamma: o.gamma,
+            simplification: o.simplification,
+            maxzoom_simplification: o.maxzoom_simplification,
+            prevent: o.prevent.0,
+            additional: o.additional.0,
+            max_tile_size: o.max_tile_size,
+            max_tile_features: o.max_tile_features,
+            cluster_distance: o.cluster_distance,
+            cluster_maxzoom: plan.cluster_maxzoom,
+            tiny_polygon_size: o.tiny_polygon_size,
+            limit_tile_feature_count: o.limit_tile_feature_count,
+            limit_tile_feature_count_at_maxzoom: o.limit_tile_feature_count_at_maxzoom,
+            extend_zooms_max: o.extend_zooms_max,
+            retain_points_multiplier: o.retain_points_multiplier,
+            preserve_multiplier_density_threshold: o.preserve_multiplier_density_threshold,
+            order_by: o.order_by.clone(),
+            clipbboxes: !o.clip_bboxes.is_empty(),
+            extra_detail: o.extra_detail,
+            attribute_accum: o.attribute_accum.clone(),
+            filter: o.filter.clone(),
+            drop_by_attribute: (!o.drop_by_attribute_as_needed_attribute.is_empty())
+                .then(|| o.drop_by_attribute_as_needed_attribute.clone()),
+            drop_by_attribute_descending: o.drop_by_attribute_descending,
+            unidecode_data: o.unidecode_data.clone(),
+            prefilter: o.prefilter.clone(),
+            postfilter: o.postfilter.clone(),
+            shared_nodes: store.shared_nodes.clone(),
+            shared_nodes_bloom: store.shared_nodes_bloom.clone(),
+            cpus: o.tippecanoe_cpus.max(1),
+            temp_files: (o.tippecanoe_cpus * 4).max(4),
+            quiet: o.quiet,
+            threads: o.threads,
+            fast: o.fast,
         }
     }
 
@@ -224,7 +230,7 @@ pub fn tile(
     options: &Options,
     sink: &dyn TileSink,
 ) -> crate::Result<TileStats> {
-    tile_with(store, &TileOptions::new(options, plan), sink)
+    tile_with(store, &TileOptions::new(options, plan, store), sink)
 }
 
 /// Makes the tiles of `store` as `topts` describes and hands them to `sink`.

@@ -65,6 +65,8 @@ pub struct SinkSettings {
     /// PMTiles: bytes of distinct tile data kept in memory; the rest goes to
     /// a temporary file until `finish`.
     pub memory_budget: usize,
+    /// Directory output: threads creating the tile files.
+    pub file_writers: usize,
     /// `argv[0]`, which starts the second line of some messages, as in tippecanoe.
     pub program: String,
 }
@@ -77,6 +79,7 @@ impl Default for SinkSettings {
             tile_compression: true,
             tmpdir: PathBuf::from("/tmp"),
             memory_budget: physical_memory() / 4,
+            file_writers: 4,
             program: "tippecanoe".to_string(),
         }
     }

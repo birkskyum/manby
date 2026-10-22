@@ -511,13 +511,20 @@ fn dir_existing() {
     let p = path.to_str().unwrap();
     let sink = Box::new(DirSink::create(p, &settings()).unwrap());
     sink.write_tile(2, 1, 3, b"t").unwrap();
-    let e = sink.write_tile(2, 1, 3, b"t").err().unwrap();
+    sink.finish(&make_metadata(2)).unwrap();
+
+    // a tile written twice fails, by finish() at the latest
+    let twice = temp_path("dir-twice");
+    let sink = Box::new(DirSink::create(twice.to_str().unwrap(), &settings()).unwrap());
+    sink.write_tile(2, 1, 3, b"t").unwrap();
+    let _ = sink.write_tile(2, 1, 3, b"t");
+    let e = sink.finish(&make_metadata(2)).err().unwrap();
     assert_eq!(e.exit_code, tippecanoe::errors::EXIT_EXISTS);
     assert!(
         e.message
             .starts_with("Can't write tile to already existing")
     );
-    sink.finish(&make_metadata(2)).unwrap();
+    let _ = fs::remove_dir_all(&twice);
 
     let e = DirSink::create(p, &settings()).err().unwrap();
     assert_eq!(e.exit_code, tippecanoe::errors::EXIT_EXISTS);

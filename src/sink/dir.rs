@@ -1,33 +1,50 @@
 //! A directory of z/x/y.pbf files and metadata.json, as tippecanoe's `-e` writes.
 //!
-//! Tiles are written on the threads that make them, so the writes run in
-//! parallel. Each tile file is created with `O_EXCL`, which refuses an
-//! existing file in one step where tippecanoe uses `stat` and then `fopen`,
-//! and the z and z/x directories are made once instead of for every tile.
+//! Creating many small files is slow on most file systems and does not get
+//! faster with many threads (on APFS, beyond about four), so tiles are handed
+//! to a few writer threads instead of being written by the threads that make
+//! them. Each writer owns a share of the z/x directories, which keeps writers
+//! out of each other's directories and lets each make its directories once
+//! without locking. Each tile file is created with `O_EXCL`, which refuses an
+//! existing file in one step where tippecanoe uses `stat` and then `fopen`.
 
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::os::fd::IntoRawFd;
 use std::os::unix::ffi::OsStrExt;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 
-use tippecanoe::errors::{EXIT_CLOSE, EXIT_EXISTS, EXIT_OPEN, EXIT_UNLINK, EXIT_WRITE};
+use tippecanoe::errors::{
+    EXIT_CLOSE, EXIT_EXISTS, EXIT_IMPOSSIBLE, EXIT_OPEN, EXIT_UNLINK, EXIT_WRITE,
+};
 use tippecanoe::mbtiles::Metadata;
 use tippecanoe::write_json::JsonWriter;
 
 use super::{SinkSettings, TileSink, check_tile, io_message, to_string_double};
 use crate::{Error, Result};
 
-const SHARDS: usize = 16;
+enum Job {
+    Tile {
+        z: u8,
+        x: u32,
+        y: u32,
+        data: Vec<u8>,
+    },
+    /// Answered once every tile sent before it is written.
+    Barrier(SyncSender<()>),
+}
+
+type Failure = Arc<Mutex<Option<(i32, String)>>>;
 
 pub struct DirSink {
     dir: String,
-    /// Zoom directories already made.
-    zooms: [AtomicBool; 32],
-    /// z/x directories already made, sharded by x.
-    columns: Vec<Mutex<HashSet<(u8, u32)>>>,
+    senders: Vec<SyncSender<Job>>,
+    writers: Vec<JoinHandle<()>>,
+    /// The first error a writer met.
+    failure: Failure,
 }
 
 impl DirSink {
@@ -60,63 +77,168 @@ impl DirSink {
             }
         }
 
+        let failure: Failure = Arc::new(Mutex::new(None));
+        let mut senders = Vec::new();
+        let mut writers = Vec::new();
+        for i in 0..settings.file_writers.max(1) {
+            let (sender, receiver) = sync_channel(1024);
+            let (dir, failure) = (dir.to_string(), failure.clone());
+            let writer = std::thread::Builder::new()
+                .name(format!("tile files {}", i))
+                .spawn(move || write_files(&dir, receiver, &failure))
+                .map_err(|e| Error::new(EXIT_IMPOSSIBLE, format!("tile file writer: {}", e)))?;
+            senders.push(sender);
+            writers.push(writer);
+        }
+
         Ok(DirSink {
             dir: dir.to_string(),
-            zooms: std::array::from_fn(|_| AtomicBool::new(false)),
-            columns: (0..SHARDS).map(|_| Mutex::default()).collect(),
+            senders,
+            writers,
+            failure,
         })
+    }
+
+    fn failed(&self) -> Option<Error> {
+        self.failure
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .map(|(code, message)| Error::new(*code, message.clone()))
+    }
+
+    /// Waits until every tile sent so far is written.
+    fn flush(&self) -> Result<()> {
+        let acks: Vec<_> = self
+            .senders
+            .iter()
+            .filter_map(|s| {
+                let (ack, done) = sync_channel(1);
+                s.send(Job::Barrier(ack)).ok().map(|_| done)
+            })
+            .collect();
+        for done in acks {
+            let _ = done.recv();
+        }
+        self.failed().map_or(Ok(()), Err)
+    }
+
+    fn stop(&mut self) {
+        self.senders.clear();
+        for writer in self.writers.drain(..) {
+            let _ = writer.join();
+        }
     }
 }
 
+impl Drop for DirSink {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// One writer thread: writes the tiles it is sent until the sink closes.
+fn write_files(dir: &str, receiver: Receiver<Job>, failure: &Failure) {
+    let mut zooms = [false; 32];
+    let mut columns: HashSet<(u8, u32)> = HashSet::new();
+    for job in receiver.iter() {
+        match job {
+            Job::Tile { z, x, y, data } => {
+                if failure.lock().unwrap_or_else(|p| p.into_inner()).is_some() {
+                    continue;
+                }
+                if let Err(e) = write_file(dir, z, x, y, &data, &mut zooms, &mut columns) {
+                    let mut f = failure.lock().unwrap_or_else(|p| p.into_inner());
+                    if f.is_none() {
+                        *f = Some((e.exit_code, e.message));
+                    }
+                }
+            }
+            Job::Barrier(ack) => {
+                let _ = ack.send(());
+            }
+        }
+    }
+}
+
+/// tippecanoe's `dir_write_tile`, returning errors instead of exiting.
+fn write_file(
+    dir: &str,
+    z: u8,
+    x: u32,
+    y: u32,
+    data: &[u8],
+    zooms: &mut [bool; 32],
+    columns: &mut HashSet<(u8, u32)>,
+) -> Result<()> {
+    // Don't check mkdir error returns, since most of these calls to
+    // mkdir will be creating directories that already exist.
+    let zoom_dir = format!("{}/{}", dir, z);
+    if !zooms[z as usize] {
+        let _ = fs::create_dir(dir);
+        let _ = fs::create_dir(&zoom_dir);
+        zooms[z as usize] = true;
+    }
+    let column_dir = format!("{}/{}", zoom_dir, x);
+    if columns.insert((z, x)) {
+        let _ = fs::create_dir(&column_dir);
+    }
+
+    let path = format!("{}/{}.pbf", column_dir, y);
+    let mut f = match OpenOptions::new().write(true).create_new(true).open(&path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(Error::new(
+                EXIT_EXISTS,
+                format!("Can't write tile to already existing {}", path),
+            ));
+        }
+        Err(e) => return Err(Error::new(EXIT_WRITE, io_message(&path, &e))),
+    };
+    f.write_all(data)
+        .map_err(|e| Error::new(EXIT_WRITE, io_message(&path, &e)))?;
+    let fd = f.into_raw_fd();
+    // SAFETY: the File gave up `fd`, so this is the only close of it.
+    if unsafe { libc::close(fd) } != 0 {
+        let e = std::io::Error::last_os_error();
+        return Err(Error::new(EXIT_CLOSE, io_message(&path, &e)));
+    }
+    Ok(())
+}
+
 impl TileSink for DirSink {
+    /// Queues the tile for its writer. A failed write is reported by a later
+    /// call, by `erase_zoom` or by `finish`.
     fn write_tile(&self, z: u8, x: u32, y: u32, data: &[u8]) -> Result<()> {
         check_tile(z, x, y)?;
-
-        // Don't check mkdir error returns, since most of these calls to
-        // mkdir will be creating directories that already exist.
-        let zoom_dir = format!("{}/{}", self.dir, z);
-        if !self.zooms[z as usize].load(Ordering::Relaxed) {
-            let _ = fs::create_dir(&self.dir);
-            let _ = fs::create_dir(&zoom_dir);
-            self.zooms[z as usize].store(true, Ordering::Relaxed);
+        if let Some(e) = self.failed() {
+            return Err(e);
         }
-        let column_dir = format!("{}/{}", zoom_dir, x);
-        {
-            let mut made = self.columns[x as usize % SHARDS]
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            if made.insert((z, x)) {
-                let _ = fs::create_dir(&column_dir);
-            }
-        }
-
-        let path = format!("{}/{}.pbf", column_dir, y);
-        let mut f = match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                return Err(Error::new(
-                    EXIT_EXISTS,
-                    format!("Can't write tile to already existing {}", path),
-                ));
-            }
-            Err(e) => return Err(Error::new(EXIT_WRITE, io_message(&path, &e))),
+        let column = (z as u64) << 32 | x as u64;
+        let writer =
+            (column.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as usize % self.senders.len();
+        let job = Job::Tile {
+            z,
+            x,
+            y,
+            data: data.to_vec(),
         };
-        f.write_all(data)
-            .map_err(|e| Error::new(EXIT_WRITE, io_message(&path, &e)))?;
-        let fd = f.into_raw_fd();
-        // SAFETY: the File gave up `fd`, so this is the only close of it.
-        if unsafe { libc::close(fd) } != 0 {
-            let e = std::io::Error::last_os_error();
-            return Err(Error::new(EXIT_CLOSE, io_message(&path, &e)));
-        }
-        Ok(())
+        self.senders[writer].send(job).map_err(|_| {
+            self.failed()
+                .unwrap_or_else(|| Error::new(EXIT_IMPOSSIBLE, "tile file writer stopped"))
+        })
     }
 
     fn erase_zoom(&self, z: u8) -> Result<()> {
+        self.flush()?;
         dir_erase_zoom(&self.dir, z as i32)
     }
 
-    fn finish(self: Box<Self>, metadata: &Metadata) -> Result<()> {
+    fn finish(mut self: Box<Self>, metadata: &Metadata) -> Result<()> {
+        self.stop();
+        if let Some(e) = self.failed() {
+            return Err(e);
+        }
         dir_write_metadata(&self.dir, metadata)
     }
 }

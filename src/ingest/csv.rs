@@ -114,8 +114,7 @@ pub fn parse(
         let lat = tippecanoe::cstd::atof(&line[latcol]);
 
         let (x, y) = (cfg.project)(lon, lat, 32);
-        let mut dv = DrawVec::new();
-        dv.push(Draw::new(VT_MOVETO, x, y));
+        let dv: DrawVec = vec![Draw::new(VT_MOVETO, x, y)];
 
         let mut full_keys: Vec<Cow<'_, str>> = Vec::new();
         let mut full_values: Vec<SerialVal> = Vec::new();

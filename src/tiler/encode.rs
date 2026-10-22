@@ -13,12 +13,13 @@ use rayon::prelude::*;
 use tippecanoe::geometry::DrawVec;
 use tippecanoe::mvt::{
     MVT_BOOL, MVT_CLOSEPATH, MVT_DOUBLE, MVT_FLOAT, MVT_INT, MVT_LINETO, MVT_MOVETO, MVT_SINT,
-    MVT_STRING, MVT_UINT, MvtValue,
+    MVT_STRING, MVT_UINT, MvtValue, stringified_to_mvt_value,
 };
 use tippecanoe::protozero::{add_varint_to_buffer, encode_zigzag32, encode_zigzag64};
 use tippecanoe::text::fnv1a;
 
-use super::util::par_ranges;
+use super::util::{Helpers, par_ranges};
+use crate::store::Values;
 
 /// The size of tippecanoe's key dedup cache.
 const DEDUP_SLOTS: u64 = 65536;
@@ -81,32 +82,53 @@ pub struct ValueCodes {
 }
 
 impl ValueCodes {
-    pub fn new(values: &[MvtValue]) -> ValueCodes {
-        let encoded: Vec<Vec<u8>> = values
-            .par_iter()
-            .with_min_len(4096)
-            .map(|v| encode_value(v).unwrap_or_default())
+    pub fn new(values: &Values) -> ValueCodes {
+        let n = values.len();
+        let parts = 64;
+        let encoded: Vec<(Vec<u8>, Vec<u32>)> = (0..parts)
+            .into_par_iter()
+            .map(|p| {
+                let mut bytes = Vec::new();
+                let mut lens = Vec::new();
+                for i in n * p / parts..n * (p + 1) / parts {
+                    let v = values.get(i as u32);
+                    let e =
+                        encode_value(&stringified_to_mvt_value(v.type_, v.s)).unwrap_or_default();
+                    bytes.extend_from_slice(&e);
+                    lens.push(e.len() as u32);
+                }
+                (bytes, lens)
+            })
             .collect();
-        let mut bytes = Vec::with_capacity(encoded.iter().map(|e| e.len()).sum());
-        let mut off = Vec::with_capacity(encoded.len() + 1);
-        for e in &encoded {
-            off.push(bytes.len() as u32);
-            bytes.extend_from_slice(e);
+        let mut bytes = Vec::with_capacity(encoded.iter().map(|e| e.0.len()).sum());
+        let mut off = Vec::with_capacity(n + 1);
+        for (b, lens) in encoded {
+            let mut at = bytes.len() as u32;
+            for l in lens {
+                off.push(at);
+                at += l;
+            }
+            bytes.extend_from_slice(&b);
         }
         off.push(bytes.len() as u32);
 
-        let mut order: Vec<u32> = (0..encoded.len() as u32).collect();
-        order.par_sort_by(|&a, &b| encoded[a as usize].cmp(&encoded[b as usize]));
-        let mut rank = vec![0u32; encoded.len()];
+        let mut codes = ValueCodes {
+            bytes,
+            off,
+            rank: Vec::new(),
+        };
+        let mut order: Vec<u32> = (0..n as u32).collect();
+        order.par_sort_by(|&a, &b| codes.get(a).cmp(codes.get(b)));
+        let mut rank = vec![0u32; n];
         let mut r = 0u32;
         for (i, &v) in order.iter().enumerate() {
-            if i > 0 && encoded[v as usize] != encoded[order[i - 1] as usize] {
+            if i > 0 && codes.get(v) != codes.get(order[i - 1]) {
                 r += 1;
             }
             rank[v as usize] = r;
         }
-
-        ValueCodes { bytes, off, rank }
+        codes.rank = rank;
+        codes
     }
 
     fn get(&self, v: u32) -> &[u8] {
@@ -226,7 +248,7 @@ impl<'c> LayerEnc<'c> {
     pub fn finish(
         self,
         geometries: &[&DrawVec],
-        threads: usize,
+        helpers: &Helpers,
         out: &mut Vec<u8>,
     ) -> Result<(), String> {
         let mut layer: Vec<u8> = Vec::new();
@@ -298,7 +320,7 @@ impl<'c> LayerEnc<'c> {
 
         if self.feats.len() >= 16384 {
             let chunks: Vec<Result<Vec<u8>, String>> =
-                par_ranges(self.feats.len(), 8192, threads, |r| {
+                par_ranges(helpers, self.feats.len(), 8192, |r| {
                     let mut out = Vec::new();
                     for f in &self.feats[r] {
                         encode(f, &mut out)?;

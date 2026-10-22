@@ -163,8 +163,8 @@ impl<'a> Attrs<'a> {
         &self.ctx.store.keys[a.key as usize]
     }
 
-    fn sval(&self, a: &Attr) -> &'a SerialVal {
-        &self.ctx.store.values[a.value as usize]
+    fn sval(&self, a: &Attr) -> SerialVal {
+        self.ctx.store.values.get(a.value).to_serial()
     }
 
     /// The attributes without nulls, materialized so they can be changed.
@@ -194,7 +194,7 @@ fn promote_attribute(ax: &Attrs<'_>, key: &str, p: &mut TF, key_pool: &mut KeyPo
         let list = p.attrs.as_mut().unwrap();
         let a = list.remove(i);
         p.full_keys.push(key_pool.pool(key));
-        p.full_values.push(ax.sval(&a).clone());
+        p.full_values.push(ax.sval(&a));
     }
 }
 
@@ -212,7 +212,7 @@ fn preserve_attributes(ax: &Attrs<'_>, c: &Cand, p: &mut TF, key_pool: &mut KeyP
         if let Some(op) = accum.get(key) {
             let sv = ax.sval(a);
             promote_attribute(ax, key, p, key_pool);
-            preserve_attribute(op, key, sv, &mut p.full_keys, &mut p.full_values, key_pool);
+            preserve_attribute(op, key, &sv, &mut p.full_keys, &mut p.full_values, key_pool);
         }
     }
     if c.full != NO_LIST {
@@ -380,7 +380,7 @@ fn find_attribute_value(ax: &Attrs<'_>, tf: &TF, key: &str) -> MvtValue {
 
     for a in ax.of(tf) {
         if ax.live(a) && ax.key(a) == key {
-            return ax.ctx.values[a.value as usize].clone();
+            return ax.ctx.value(a.value);
         }
     }
 
@@ -614,7 +614,7 @@ fn simplify_and_scale(
 /// for a postfilter, tippecanoe's tile layers.
 trait Tagger {
     fn feature(&mut self, t: i32, has_id: bool, id: u64, geom: usize, geometry: &DrawVec);
-    fn tag_store(&mut self, key: &str, slot: u32, value: u32, v: &MvtValue);
+    fn tag_store(&mut self, key: &str, slot: u32, value: u32, v: &dyn Fn() -> MvtValue);
     fn tag_extra(&mut self, key: &str, v: &MvtValue);
     fn end_feature(&mut self);
 }
@@ -624,7 +624,7 @@ impl Tagger for LayerEnc<'_> {
         LayerEnc::feature(self, t, has_id, id, geom);
     }
 
-    fn tag_store(&mut self, key: &str, slot: u32, value: u32, _v: &MvtValue) {
+    fn tag_store(&mut self, key: &str, slot: u32, value: u32, _v: &dyn Fn() -> MvtValue) {
         LayerEnc::tag_store(self, key, slot, value);
     }
 
@@ -668,9 +668,9 @@ impl Tagger for MvtBuilder {
         });
     }
 
-    fn tag_store(&mut self, key: &str, _slot: u32, _value: u32, v: &MvtValue) {
+    fn tag_store(&mut self, key: &str, _slot: u32, _value: u32, v: &dyn Fn() -> MvtValue) {
         let feature = self.current.as_mut().unwrap();
-        self.layer.tag(feature, key, v);
+        self.layer.tag(feature, key, &v());
     }
 
     fn tag_extra(&mut self, key: &str, v: &MvtValue) {
@@ -854,7 +854,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                     postfilter.is_some(),
                     &mut key_pool,
                 );
-                pctx = Ctx::new(&prefiltered.store, o, octx.threads);
+                pctx = Ctx::new(&prefiltered.store, o, octx.helpers.clone());
                 (&pctx, &prefiltered.rt)
             }
             None => (octx, ort),
@@ -922,17 +922,17 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                 layers[f.layer as usize].get_or_insert_with(LayerFeatures::default);
 
             if t as i32 == VT_POINT {
-                if extent_previndex >= f.index {
+                if extent_previndex >= f.index() {
                     extent = 1;
                 } else {
-                    let radius = ((f.index - extent_previndex) as f64).sqrt() / 4.0;
+                    let radius = ((f.index() - extent_previndex) as f64).sqrt() / 4.0;
                     extent = (std::f64::consts::PI * radius * radius) as i64;
                     if extent < 1 {
                         extent = 1;
                     }
                 }
 
-                extent_previndex = f.index;
+                extent_previndex = f.index();
             }
 
             if t as i32 == VT_POLYGON && o.a(A_GENERATE_POLYGON_LABEL_POINTS) {
@@ -974,7 +974,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                 || o.a(A_DROP_FRACTION_AS_NEEDED)
                 || o.p(P_DYNAMIC_DROP)
             {
-                drop_sequence = calculate_drop_sequence(f.feature_minzoom, f.index);
+                drop_sequence = calculate_drop_sequence(f.feature_minzoom, f.index());
             }
 
             if f.feature_minzoom as i32 > z + 1 {
@@ -1077,7 +1077,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
 
             if dropped == FEATURE_KEPT {
                 if gamma > 0.0
-                    && manage_gap(f.index, &mut previndex, scale, gamma, &mut gap) != 0
+                    && manage_gap(f.index(), &mut previndex, scale, gamma, &mut gap) != 0
                     && let Some(w) = find_feature_to_accumulate_onto(&layer.features, t, i64::MAX)
                 {
                     preserve_attributes(&ax, c, &mut layer.features[w], &mut key_pool);
@@ -1088,7 +1088,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                 }
 
                 if z <= cluster_maxzoom && cluster_distance != 0 {
-                    if (f.index < merge_previndex || f.index - merge_previndex < cluster_mingap)
+                    if (f.index() < merge_previndex || f.index() - merge_previndex < cluster_mingap)
                         && let Some(w) =
                             find_feature_to_accumulate_onto(&layer.features, t, i64::MAX)
                     {
@@ -1175,7 +1175,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                         full_keys: full.0,
                         full_values: full.1,
                         extent,
-                        index: f.index,
+                        index: f.index(),
                         reduced: false,
                         coalesced: false,
                         clustered: 0,
@@ -1227,14 +1227,14 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
             if o.a(A_CALCULATE_FEATURE_DENSITY) {
                 let o_density_previndex = density_previndex as f64;
                 if manage_gap(
-                    f.index,
+                    f.index(),
                     &mut density_previndex,
                     scale,
                     1.0,
                     &mut density_gap,
                 ) == 0
                 {
-                    spacing = (f.index as f64 - o_density_previndex) / scale;
+                    spacing = (f.index() as f64 - o_density_previndex) / scale;
                 }
             }
 
@@ -1274,7 +1274,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                 continue;
             }
 
-            let sfindex = f.index;
+            let sfindex = f.index();
 
             if !sf_geom!().is_empty() {
                 let mut adjusted_max_tile_size = max_tile_size;
@@ -1328,7 +1328,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                         full_keys: full.0,
                         full_values: full.1,
                         extent,
-                        index: f.index,
+                        index: f.index(),
                         reduced: !still_need_simplification_after_reduction,
                         coalesced: false,
                         clustered: 0,
@@ -1378,8 +1378,8 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                         if simplified_geometry_through < layer.features.len() {
                             let shared_nodes = &shared_nodes;
                             par_each_mut(
+                                &ctx.helpers,
                                 &mut layer.features[simplified_geometry_through..],
-                                ctx.threads,
                                 |_, f2| {
                                     simplify_feature(ctx, f2, z, tx, ty, maxzoom, shared_nodes);
 
@@ -1531,7 +1531,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                     .map(|f| f.geometry.len())
                     .sum();
                 if features.len() >= 16 && work >= 50_000 {
-                    par_each_mut(features, ctx.threads, |i, f| {
+                    par_each_mut(&ctx.helpers, features, |i, f| {
                         simplify_and_scale(ctx, i, f, z, tx, ty, maxzoom, shared_nodes)
                     });
                 } else {
@@ -1698,12 +1698,9 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
 
                 for a in ax.of(f) {
                     if ax.live(a) {
-                        layer.tag_store(
-                            ax.key(a),
-                            ctx.key_slots[a.key as usize],
-                            a.value,
-                            &ctx.values[a.value as usize],
-                        );
+                        layer.tag_store(ax.key(a), ctx.key_slots[a.key as usize], a.value, &|| {
+                            ctx.value(a.value)
+                        });
                     }
                 }
                 for a in 0..f.full_keys.len() {
@@ -1860,7 +1857,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                 pbf = mvt_tile.encode();
             }
             for layer in std::mem::take(&mut tile) {
-                if let Err(message) = layer.finish(&tile_geoms, ctx.threads, &mut pbf) {
+                if let Err(message) = layer.finish(&tile_geoms, &ctx.helpers, &mut pbf) {
                     res.len = -1;
                     res.error = Some(message);
                     return res;
@@ -2262,7 +2259,7 @@ fn reuse_bounds(ctx: &Ctx<'_>, rt: &ReadTile, res: &mut MakeResult) {
     let sequences =
         o.a(A_COALESCE_FRACTION_AS_NEEDED) || o.a(A_DROP_FRACTION_AS_NEEDED) || o.p(P_DYNAMIC_DROP);
     let store = ctx.store;
-    for c in &rt.cands {
+    for c in rt.cands.iter() {
         if c.dropped != FEATURE_KEPT {
             continue;
         }
@@ -2271,7 +2268,7 @@ fn reuse_bounds(ctx: &Ctx<'_>, rt: &ReadTile, res: &mut MakeResult) {
         }
         if sequences {
             let f = &store.features[c.fi as usize];
-            let ds = calculate_drop_sequence(f.feature_minzoom, f.index);
+            let ds = calculate_drop_sequence(f.feature_minzoom, f.index());
             if ds > old.mindrop_sequence {
                 res.reuse_drop_sequence = res.reuse_drop_sequence.min(ds);
             }

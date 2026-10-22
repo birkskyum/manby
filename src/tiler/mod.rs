@@ -121,6 +121,9 @@ pub struct TileOptions {
     /// Bytes of tile data kept in memory while it waits for its tile to be
     /// read or written out; the rest waits in temporary files.
     pub rest_memory: usize,
+    /// Memory for the tiles with the most data, which run together only as
+    /// far as this allows.
+    pub big_memory: usize,
     /// Write MapLibre Tiles instead of MVT (`--tile-format=mlt`).
     pub mlt: Option<crate::mlt::MltSettings>,
 }
@@ -176,7 +179,8 @@ impl Default for TileOptions {
             timing: false,
             trace: false,
             tmpdir: std::path::PathBuf::from("/tmp"),
-            rest_memory: 128 << 20,
+            rest_memory: 16 << 20,
+            big_memory: 1 << 30,
             mlt: None,
         }
     }
@@ -236,7 +240,8 @@ impl TileOptions {
             timing: false,
             trace: false,
             tmpdir: std::path::PathBuf::from(&o.tmpdir),
-            rest_memory: 128 << 20,
+            rest_memory: 16 << 20,
+            big_memory: 1 << 30,
             mlt: (o.tile_format == crate::mlt::TileFormat::Mlt).then_some(
                 crate::mlt::MltSettings {
                     profile: o.mlt_profile,
@@ -283,7 +288,8 @@ pub fn tile_with(
         .build()
         .map_err(|e| crate::Error::new(tippecanoe::errors::EXIT_PTHREAD, e.to_string()))?;
     let started = std::time::Instant::now();
-    let ctx = pool.install(|| engine::Ctx::new(store, topts, threads));
+    let helpers = std::sync::Arc::new(util::Helpers::new(threads.saturating_sub(1)));
+    let ctx = pool.install(|| engine::Ctx::new(store, topts, helpers));
     let root = pool.install(|| engine::root_input(&ctx));
     if topts.timing {
         eprintln!("setup {:.3}s", started.elapsed().as_secs_f64());

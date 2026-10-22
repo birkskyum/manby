@@ -53,126 +53,26 @@ pub fn peak_resident() -> Option<u64> {
 }
 
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use tippecanoe::errors::{EXIT_OPEN, EXIT_READ, EXIT_WRITE};
 
 use crate::Error;
 
-/// How many bytes a spool collects in memory before one write.
+/// How many bytes a spool collects in one buffer.
 const REGION: usize = 256 << 10;
 /// Writers go to one of this many buffers, by thread.
 const SPOOL_SHARDS: usize = 8;
-const NO_SHARD: u32 = u32::MAX;
+/// Regions read back from the file that a spool keeps for the next reads.
+const CACHED: usize = 64;
 
-/// A part of the file that one buffer fills before it is written.
-struct Region {
-    start: u64,
-    buf: Vec<u8>,
-}
-
-/// An unlinked temporary file for data at rest: written once, read back
-/// later, and gone when the last reference is dropped. Its pages stay in
-/// the page cache while there is room, so reading it back is cheap, but
-/// they are not part of the process's memory. Small writes are collected
-/// per thread and written a region at a time.
-pub struct Spool {
-    dir: PathBuf,
-    file: OnceLock<std::result::Result<File, String>>,
-    len: AtomicU64,
-    shards: Vec<Mutex<Option<Region>>>,
-}
-
-impl Spool {
-    pub fn new(dir: &Path) -> Arc<Spool> {
-        Arc::new(Spool {
-            dir: dir.to_path_buf(),
-            file: OnceLock::new(),
-            len: AtomicU64::new(0),
-            shards: (0..SPOOL_SHARDS).map(|_| Mutex::new(None)).collect(),
-        })
-    }
-
-    fn file(&self) -> crate::Result<&File> {
-        self.file
-            .get_or_init(|| create_unlinked(&self.dir, "spool"))
-            .as_ref()
-            .map_err(|m| Error::new(EXIT_OPEN, m.clone()))
-    }
-
-    fn write_at(&self, data: &[u8], at: u64) -> crate::Result<()> {
-        self.file()?
-            .write_all_at(data, at)
-            .map_err(|e| Error::new(EXIT_WRITE, format!("{}: {}", self.dir.display(), e)))
-    }
-
-    /// Writes `data`, returning the buffer it went through and where it is.
-    fn write(&self, data: &[u8]) -> crate::Result<(u32, u64)> {
-        if data.len() >= REGION / 4 {
-            let at = self.len.fetch_add(data.len() as u64, Relaxed);
-            self.write_at(data, at)?;
-            return Ok((NO_SHARD, at));
-        }
-        let shard = {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            std::thread::current().id().hash(&mut h);
-            (h.finish() % SPOOL_SHARDS as u64) as u32
-        };
-        let mut region = self.shards[shard as usize].lock().unwrap();
-        if region
-            .as_ref()
-            .is_none_or(|r| r.buf.len() + data.len() > REGION)
-        {
-            if let Some(r) = region.take() {
-                self.write_at(&r.buf, r.start)?;
-            }
-            *region = Some(Region {
-                start: self.len.fetch_add(REGION as u64, Relaxed),
-                buf: Vec::with_capacity(REGION),
-            });
-        }
-        let r = region.as_mut().unwrap();
-        let at = r.start + r.buf.len() as u64;
-        r.buf.extend_from_slice(data);
-        Ok((shard, at))
-    }
-
-    /// Reads `out.len()` bytes from `at`.
-    fn read(&self, shard: u32, at: u64, out: &mut [u8]) -> crate::Result<()> {
-        if shard != NO_SHARD {
-            let region = self.shards[shard as usize].lock().unwrap();
-            if let Some(r) = region.as_ref()
-                && at >= r.start
-                && at < r.start + r.buf.len() as u64
-            {
-                let from = (at - r.start) as usize;
-                out.copy_from_slice(&r.buf[from..from + out.len()]);
-                return Ok(());
-            }
-        }
-        self.file()?
-            .read_exact_at(out, at)
-            .map_err(|e| Error::new(EXIT_READ, format!("{}: {}", self.dir.display(), e)))
-    }
-
-    /// Moves `data` into the file.
-    pub fn store(self: &Arc<Self>, data: &[u8]) -> crate::Result<Stored> {
-        let (shard, at) = self.write(data)?;
-        Ok(Stored::Spooled {
-            spool: self.clone(),
-            shard,
-            at,
-            len: data.len(),
-        })
-    }
-}
-
-/// How many bytes of data at rest may stay in memory; the rest goes to spools.
+/// How many bytes of data at rest may stay in memory; the rest goes to
+/// temporary files.
 pub struct Rest {
     used: AtomicU64,
     allowance: u64,
@@ -196,38 +96,190 @@ impl Rest {
             .is_ok()
     }
 
-    /// Keeps `data` in memory if there is room, or moves it into `spool`.
-    pub fn keep(self: &Arc<Self>, data: Vec<u8>, spool: &Arc<Spool>) -> crate::Result<Stored> {
-        if self.take(data.capacity()) {
-            Ok(Stored::Kept(data, self.clone()))
-        } else {
-            spool.store(&data)
-        }
-    }
-
-    /// Keeps all of `data` in memory if there is room for all of it.
-    pub fn keep_all(self: &Arc<Self>, data: &mut [Stored]) -> bool {
-        let n: usize = data.iter().map(|d| d.resident()).sum();
-        if !self.take(n) {
-            return false;
-        }
-        for d in data.iter_mut() {
-            if let Stored::Mem(v) = d {
-                *d = Stored::Kept(std::mem::take(v), self.clone());
-            }
-        }
-        true
+    fn give(&self, n: usize) {
+        self.used.fetch_sub(n as u64, Relaxed);
     }
 }
 
-/// Bytes in memory or in a spool.
+/// Data at rest: written once and read back later, kept in memory in large
+/// blocks while `Rest` has room and otherwise in an unlinked temporary file,
+/// whose pages are in the page cache but not part of the process's memory.
+/// Writes are collected per thread into regions; a full region stays in
+/// memory or is written out in one piece.
+pub struct Spool {
+    dir: PathBuf,
+    rest: Arc<Rest>,
+    file: OnceLock<std::result::Result<File, String>>,
+    len: AtomicU64,
+    shards: Vec<Mutex<Option<Region>>>,
+    /// Full regions in memory, by start.
+    kept: RwLock<BTreeMap<u64, Vec<u8>>>,
+    kept_bytes: AtomicU64,
+    /// Regions in the file, by start, with their lengths.
+    written: Mutex<BTreeMap<u64, usize>>,
+    cache: Mutex<Vec<(u64, Arc<Vec<u8>>)>>,
+}
+
+/// A region being filled.
+struct Region {
+    start: u64,
+    buf: Vec<u8>,
+}
+
+impl Spool {
+    pub fn new(dir: &Path, rest: &Arc<Rest>) -> Arc<Spool> {
+        Arc::new(Spool {
+            dir: dir.to_path_buf(),
+            rest: rest.clone(),
+            file: OnceLock::new(),
+            len: AtomicU64::new(0),
+            shards: (0..SPOOL_SHARDS).map(|_| Mutex::new(None)).collect(),
+            kept: RwLock::new(BTreeMap::new()),
+            kept_bytes: AtomicU64::new(0),
+            written: Mutex::new(BTreeMap::new()),
+            cache: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn file(&self) -> crate::Result<&File> {
+        self.file
+            .get_or_init(|| create_unlinked(&self.dir, "spool"))
+            .as_ref()
+            .map_err(|m| Error::new(EXIT_OPEN, m.clone()))
+    }
+
+    /// Keeps a full region in memory if there is room, or writes it out.
+    fn retire(&self, start: u64, buf: Vec<u8>) -> crate::Result<()> {
+        if self.rest.take(buf.capacity()) {
+            self.kept_bytes.fetch_add(buf.capacity() as u64, Relaxed);
+            self.kept.write().unwrap().insert(start, buf);
+            return Ok(());
+        }
+        self.file()?
+            .write_all_at(&buf, start)
+            .map_err(|e| Error::new(EXIT_WRITE, format!("{}: {}", self.dir.display(), e)))?;
+        self.written.lock().unwrap().insert(start, buf.len());
+        Ok(())
+    }
+
+    /// Stores `data`, returning where it is.
+    pub fn store(self: &Arc<Self>, data: &[u8]) -> crate::Result<Stored> {
+        let len = data.len();
+        if len >= REGION / 4 {
+            let at = self.len.fetch_add(len as u64, Relaxed);
+            self.retire(at, data.to_vec())?;
+            return Ok(Stored::Spooled {
+                spool: self.clone(),
+                at,
+                len,
+            });
+        }
+        let shard = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            std::thread::current().id().hash(&mut h);
+            (h.finish() % SPOOL_SHARDS as u64) as usize
+        };
+        let mut region = self.shards[shard].lock().unwrap();
+        if region.as_ref().is_none_or(|r| r.buf.len() + len > REGION) {
+            if let Some(r) = region.take() {
+                self.retire(r.start, r.buf)?;
+            }
+            *region = Some(Region {
+                start: self.len.fetch_add(REGION as u64, Relaxed),
+                buf: Vec::with_capacity(REGION),
+            });
+        }
+        let r = region.as_mut().unwrap();
+        let at = r.start + r.buf.len() as u64;
+        r.buf.extend_from_slice(data);
+        Ok(Stored::Spooled {
+            spool: self.clone(),
+            at,
+            len,
+        })
+    }
+
+    /// Reads `out.len()` bytes from `at`. With `sequential`, a region read
+    /// from the file is kept for the reads that follow, for a reader that
+    /// goes through the data in about the order it was written.
+    fn read(&self, at: u64, out: &mut [u8], sequential: bool) -> crate::Result<()> {
+        let n = out.len() as u64;
+        let within = |start: u64, len: usize| at >= start && at + n <= start + len as u64;
+        // a region leaves its shard only after it is kept or written out
+        for shard in &self.shards {
+            let region = shard.lock().unwrap();
+            if let Some(r) = region.as_ref()
+                && within(r.start, r.buf.len())
+            {
+                let from = (at - r.start) as usize;
+                out.copy_from_slice(&r.buf[from..from + out.len()]);
+                return Ok(());
+            }
+        }
+        {
+            let kept = self.kept.read().unwrap();
+            if let Some((&start, buf)) = kept.range(..=at).next_back()
+                && within(start, buf.len())
+            {
+                let from = (at - start) as usize;
+                out.copy_from_slice(&buf[from..from + out.len()]);
+                return Ok(());
+            }
+        }
+        let region = self
+            .written
+            .lock()
+            .unwrap()
+            .range(..=at)
+            .next_back()
+            .map(|(&s, &l)| (s, l));
+        let file = self.file()?;
+        let err =
+            |e: std::io::Error| Error::new(EXIT_READ, format!("{}: {}", self.dir.display(), e));
+        match region {
+            Some((start, len)) if sequential && len <= REGION && within(start, len) => {
+                let cached = self
+                    .cache
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|(s, _)| *s == start)
+                    .map(|(_, b)| b.clone());
+                let buf = match cached {
+                    Some(b) => b,
+                    None => {
+                        let mut b = vec![0u8; len];
+                        file.read_exact_at(&mut b, start).map_err(err)?;
+                        let b = Arc::new(b);
+                        let mut cache = self.cache.lock().unwrap();
+                        if cache.len() >= CACHED {
+                            cache.remove(0);
+                        }
+                        cache.push((start, b.clone()));
+                        b
+                    }
+                };
+                let from = (at - start) as usize;
+                out.copy_from_slice(&buf[from..from + out.len()]);
+                Ok(())
+            }
+            _ => file.read_exact_at(out, at).map_err(err),
+        }
+    }
+}
+
+impl Drop for Spool {
+    fn drop(&mut self) {
+        self.rest.give(self.kept_bytes.load(Relaxed) as usize);
+    }
+}
+
+/// Bytes in memory, or stored in a spool.
 pub enum Stored {
     Mem(Vec<u8>),
-    /// In memory, counted in a `Rest`.
-    Kept(Vec<u8>, Arc<Rest>),
     Spooled {
         spool: Arc<Spool>,
-        shard: u32,
         at: u64,
         len: usize,
     },
@@ -236,7 +288,7 @@ pub enum Stored {
 impl Stored {
     pub fn len(&self) -> usize {
         match self {
-            Stored::Mem(v) | Stored::Kept(v, _) => v.len(),
+            Stored::Mem(v) => v.len(),
             Stored::Spooled { len, .. } => *len,
         }
     }
@@ -245,35 +297,24 @@ impl Stored {
         self.len() == 0
     }
 
-    /// The memory the bytes take while at rest.
-    pub fn resident(&self) -> usize {
-        match self {
-            Stored::Mem(v) | Stored::Kept(v, _) => v.capacity(),
-            Stored::Spooled { .. } => 0,
-        }
+    pub fn load(&self) -> crate::Result<Cow<'_, [u8]>> {
+        self.load1(false)
     }
 
-    pub fn load(&self) -> crate::Result<Cow<'_, [u8]>> {
+    /// `load`, for a reader that goes through a spool in about the order it
+    /// was written.
+    pub fn load_sequential(&self) -> crate::Result<Cow<'_, [u8]>> {
+        self.load1(true)
+    }
+
+    fn load1(&self, sequential: bool) -> crate::Result<Cow<'_, [u8]>> {
         match self {
-            Stored::Mem(v) | Stored::Kept(v, _) => Ok(Cow::Borrowed(v)),
-            Stored::Spooled {
-                spool,
-                shard,
-                at,
-                len,
-            } => {
+            Stored::Mem(v) => Ok(Cow::Borrowed(v)),
+            Stored::Spooled { spool, at, len } => {
                 let mut out = vec![0u8; *len];
-                spool.read(*shard, *at, &mut out)?;
+                spool.read(*at, &mut out, sequential)?;
                 Ok(Cow::Owned(out))
             }
-        }
-    }
-}
-
-impl Drop for Stored {
-    fn drop(&mut self) {
-        if let Stored::Kept(v, rest) = self {
-            rest.used.fetch_sub(v.capacity() as u64, Relaxed);
         }
     }
 }

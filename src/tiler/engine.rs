@@ -443,6 +443,11 @@ impl Level {
 
         if !r.tilestats.is_empty() {
             self.tilestats.push(std::mem::take(&mut r.tilestats));
+            // merged as they come, as merging does not depend on the order
+            if self.tilestats.len() > 64 {
+                let merged = merge_tilestats(std::mem::take(&mut self.tilestats));
+                self.tilestats.push(merged);
+            }
         }
 
         let (n, out) = (&mut t.next, r.th_out);

@@ -1,6 +1,23 @@
 //! Port of geojson.hpp and geojson.cpp: serializing the features of a GeoJSON
 //! stream.
 
+// Kept in the shape of the C++ rather than in the shape clippy prefers.
+#![allow(
+    clippy::collapsible_if,
+    clippy::collapsible_else_if,
+    clippy::identity_op,
+    clippy::if_same_then_else,
+    clippy::needless_late_init,
+    clippy::only_used_in_recursion,
+    clippy::manual_clamp,
+    clippy::manual_div_ceil,
+    clippy::manual_range_contains,
+    clippy::vec_init_then_push,
+    clippy::int_plus_one,
+    clippy::needless_range_loop,
+    clippy::too_many_arguments
+)]
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 

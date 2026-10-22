@@ -1,6 +1,23 @@
 //! Port of geocsv.hpp and geocsv.cpp: point features from the lat and lon
 //! columns of a CSV file.
 
+// Kept in the shape of the C++ rather than in the shape clippy prefers.
+#![allow(
+    clippy::collapsible_if,
+    clippy::collapsible_else_if,
+    clippy::identity_op,
+    clippy::if_same_then_else,
+    clippy::needless_late_init,
+    clippy::only_used_in_recursion,
+    clippy::manual_clamp,
+    clippy::manual_div_ceil,
+    clippy::manual_range_contains,
+    clippy::vec_init_then_push,
+    clippy::int_plus_one,
+    clippy::needless_range_loop,
+    clippy::too_many_arguments
+)]
+
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::sync::Arc;

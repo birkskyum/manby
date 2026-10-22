@@ -8,6 +8,7 @@ use std::os::fd::FromRawFd;
 use crate::cstd::{errno, strerror};
 use crate::errors::{EXIT_IMPOSSIBLE, EXIT_OPEN, EXIT_WRITE};
 
+#[allow(dead_code)]
 const INCREMENT: usize = 131072;
 const INITIAL: libc::off_t = 256;
 

@@ -1,12 +1,12 @@
 //! Vectors whose storage may be a temporary file.
 //!
 //! A run has a memory budget. Large vectors take heap memory until together
-//! they hold half of it; past that, a new large vector's storage is a region
-//! of an unlinked temporary file, mapped into memory, whose pages the
-//! operating system may write out and drop. Whenever the process's resident
-//! memory goes over the budget, a pager thread maps the file regions afresh:
-//! that takes their pages out of the process's memory, while the page cache
-//! keeps them for the next use as long as the machine has room.
+//! they hold an eighth of it; past that, a new large vector's storage is a
+//! region of an unlinked temporary file, mapped into memory, whose pages
+//! the operating system may write out and drop. Whenever the process's
+//! resident memory nears the budget, a pager thread maps file regions
+//! afresh: that takes their pages out of the process's memory, while the
+//! page cache keeps them for the next use as long as the machine has room.
 
 use std::alloc::Layout;
 use std::collections::BTreeMap;
@@ -76,16 +76,20 @@ pub fn set_budget(budget: u64, dir: &Path) {
 /// What the file holds and how often the pager took its pages out of
 /// memory: mapped bytes, and trims.
 pub fn file_use() -> (u64, u64) {
-    let s = PAGER.state.lock().unwrap();
     (
-        s.mapped,
-        PAGER.trims.load(Relaxed) | (s.regions.len() as u64) << 32,
+        PAGER.state.lock().unwrap().mapped,
+        PAGER.trims.load(Relaxed),
     )
+}
+
+/// Whether anything has gone to the file.
+pub fn spilling() -> bool {
+    PAGER.mapping.load(Relaxed)
 }
 
 fn place_in_file(bytes: usize) -> bool {
     let budget = PAGER.budget.load(Relaxed);
-    bytes >= FILE_MIN && budget != u64::MAX && PAGER.heap.load(Relaxed) + bytes as u64 > budget / 2
+    bytes >= FILE_MIN && budget != u64::MAX && PAGER.heap.load(Relaxed) + bytes as u64 > budget / 8
 }
 
 fn file_alloc(bytes: usize) -> Option<NonNull<u8>> {

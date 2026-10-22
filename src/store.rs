@@ -6,6 +6,8 @@
 
 use std::collections::BTreeMap;
 
+use rayon::prelude::*;
+
 use crate::buf::Buf;
 
 use tippecanoe::geometry::{Draw, DrawVec, VT_LINETO, VT_MOVETO};
@@ -73,6 +75,13 @@ pub struct PoolOffsets {
     pub key: i64,
     pub value: i64,
 }
+
+/// A pointer that parallel jobs write through at places that do not
+/// overlap.
+struct Shared<T>(*mut T);
+
+// SAFETY: the jobs write disjoint places, and the owner outlives them.
+unsafe impl<T> Sync for Shared<T> {}
 
 /// A sequence kept as the vectors it was built in, so that joining the
 /// pieces that parallel jobs made does not copy them.
@@ -249,6 +258,24 @@ fn unzigzag(v: u64) -> i64 {
 }
 
 impl Geometry {
+    /// The bytes of the `n` vertices from byte `start`.
+    fn raw(&self, start: u64, n: u32) -> &[u8] {
+        if n == 0 {
+            return &[];
+        }
+        let (p, off) = self.bytes.locate(start as usize);
+        let data = &self.bytes.parts[p][off..];
+        let mut pos = 0;
+        for _ in 0..n {
+            if get_varint(data, &mut pos) & 3 == 2 {
+                pos += 1;
+            } else {
+                get_varint(data, &mut pos);
+            }
+        }
+        &data[..pos]
+    }
+
     /// Appends a feature's geometry, its coordinates already divided by the
     /// geometry scale, to `out`.
     pub fn encode(out: &mut impl Bytes, g: &[Draw]) {
@@ -514,6 +541,211 @@ impl FeatureStore {
             }
         }
         b
+    }
+
+    /// Lays the geometry and attributes out in the order of the features,
+    /// so that going through the features in order goes through them in
+    /// order too, rather than in the order they were read. The copying goes
+    /// forward through the old layout once per bucket of features, so that
+    /// what it touches at random is one bucket's part of the new layout,
+    /// which `bucket_bytes` bounds.
+    pub fn lay_out_in_order(&mut self, bucket_bytes: u64) {
+        let n = self.features.len();
+        if n == 0 {
+            return;
+        }
+        // where each feature was, in the order it was read
+        let mut order: Buf<(u64, u64, u32, u32)> = Buf::with_capacity(n);
+        for (i, f) in self.features.iter().enumerate() {
+            order.push((f.geom_start, f.attr_start, f.geom_len, i as u32));
+            if i % (1 << 16) == 0 {
+                crate::buf::relieve();
+            }
+        }
+        order.par_sort_unstable();
+
+        let geometry = &self.geometry;
+        let mut lens: Buf<u32> = Buf::with_capacity(n);
+        lens.resize(n, 0);
+        let out = Shared(lens.as_mut_ptr());
+        order.par_chunks(1 << 12).for_each(|block| {
+            let out = &out;
+            for &(g, _, vertices, i) in block {
+                let len = geometry.raw(g, vertices).len() as u32;
+                // SAFETY: each index is in order once.
+                unsafe { *out.0.add(i as usize) = len };
+            }
+            crate::buf::relieve();
+        });
+
+        let (mut g, mut a, mut vertices) = (0u64, 0u64, 0u64);
+        for (i, (f, &len)) in self.features.iter_mut().zip(lens.iter()).enumerate() {
+            f.geom_start = g;
+            f.attr_start = a;
+            g += len as u64;
+            a += f.attr_len as u64;
+            vertices += f.geom_len as u64;
+            if i % (1 << 16) == 0 {
+                crate::buf::relieve();
+            }
+        }
+        drop(lens);
+
+        let pooled = !self.pool_offsets.is_empty();
+        let mut new_geometry: Buf<u8> = Buf::with_capacity(g as usize);
+        let mut new_attrs: Buf<Attr> = Buf::with_capacity(a as usize);
+        let mut new_pool: Vec<PoolOffsets> =
+            Vec::with_capacity(if pooled { a as usize } else { 0 });
+        let to = (
+            Shared(new_geometry.as_mut_ptr()),
+            Shared(new_attrs.as_mut_ptr()),
+            Shared(new_pool.as_mut_ptr()),
+        );
+        let (features, attrs, pool) = (&self.features, &self.attrs, &self.pool_offsets);
+        let per_feature = (g + a * 8) / n as u64 + 80;
+        let buckets = (n as u64 * per_feature)
+            .div_ceil(bucket_bytes.max(1))
+            .max(1) as usize;
+        for b in 0..buckets {
+            let (lo, hi) = ((n * b / buckets) as u32, (n * (b + 1) / buckets) as u32);
+            order.par_chunks(1 << 12).for_each(|block| {
+                let to = &to;
+                for &(og, oa, vertices, i) in block {
+                    if i < lo || i >= hi {
+                        continue;
+                    }
+                    let f = &features[i as usize];
+                    let bytes = geometry.raw(og, vertices);
+                    let (oa, len) = (oa as usize, f.attr_len as usize);
+                    // SAFETY: the features' new places are disjoint and lie
+                    // within the capacities, and each feature is copied once.
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            bytes.as_ptr(),
+                            to.0.0.add(f.geom_start as usize),
+                            bytes.len(),
+                        );
+                        std::ptr::copy_nonoverlapping(
+                            attrs.slice(oa, len).as_ptr(),
+                            to.1.0.add(f.attr_start as usize),
+                            len,
+                        );
+                        if pooled {
+                            std::ptr::copy_nonoverlapping(
+                                pool[oa..oa + len].as_ptr(),
+                                to.2.0.add(f.attr_start as usize),
+                                len,
+                            );
+                        }
+                    }
+                }
+                crate::buf::relieve();
+            });
+        }
+        // SAFETY: every byte and attribute was written above.
+        unsafe {
+            new_geometry.set_len(g as usize);
+            new_attrs.set_len(a as usize);
+            if pooled {
+                new_pool.set_len(a as usize);
+            }
+        }
+        let mut geometry = Geometry::default();
+        geometry.append(new_geometry, vertices);
+        self.geometry = geometry;
+        self.attrs = Chunked::default();
+        self.attrs.append(new_attrs);
+        self.pool_offsets = new_pool;
+    }
+
+    /// Numbers the values in the order the attributes, in turn, first use
+    /// them, and lays them out in that order, so that going through the
+    /// features in order goes through their values about in order too.
+    pub fn number_values_in_order(&mut self, bucket_bytes: u64) {
+        let nv = self.values.len();
+        if nv == 0 {
+            return;
+        }
+        let mut new_id: Buf<u32> = Buf::with_capacity(nv);
+        new_id.resize(nv, u32::MAX);
+        let mut next = 0u32;
+        for (k, a) in self.attrs.iter_mut().enumerate() {
+            let v = &mut new_id[a.value as usize];
+            if *v == u32::MAX {
+                *v = next;
+                next += 1;
+            }
+            a.value = *v;
+            if k % (1 << 16) == 0 {
+                crate::buf::relieve();
+            }
+        }
+        for v in new_id.iter_mut() {
+            if *v == u32::MAX {
+                *v = next;
+                next += 1;
+            }
+        }
+
+        let old = &self.values;
+        let span = |o: usize| {
+            let start = if o == 0 { 0 } else { old.ends[o - 1] };
+            (start as usize, old.ends[o] as usize)
+        };
+        let mut types: Buf<i8> = Buf::with_capacity(nv);
+        types.resize(nv, 0);
+        let mut ends: Buf<u64> = Buf::with_capacity(nv);
+        ends.resize(nv, 0);
+        for (o, &n) in new_id.iter().enumerate() {
+            let (start, end) = span(o);
+            types[n as usize] = old.types[o];
+            ends[n as usize] = (end - start) as u64;
+            if o % (1 << 16) == 0 {
+                crate::buf::relieve();
+            }
+        }
+        let mut total = 0;
+        for e in ends.iter_mut() {
+            total += *e;
+            *e = total;
+        }
+
+        let mut bytes: Buf<u8> = Buf::with_capacity(total as usize);
+        let to = Shared(bytes.as_mut_ptr());
+        let buckets = total.div_ceil(bucket_bytes.max(1)).max(1) as usize;
+        for b in 0..buckets {
+            let (lo, hi) = ((nv * b / buckets) as u32, (nv * (b + 1) / buckets) as u32);
+            new_id
+                .par_chunks(1 << 14)
+                .enumerate()
+                .for_each(|(c, block)| {
+                    let to = &to;
+                    for (k, &n) in block.iter().enumerate() {
+                        if n < lo || n >= hi {
+                            continue;
+                        }
+                        let (start, end) = span((c << 14) + k);
+                        let at = if n == 0 {
+                            0
+                        } else {
+                            ends[n as usize - 1] as usize
+                        };
+                        // SAFETY: the values' new places are disjoint and lie
+                        // within the capacity, and each value is copied once.
+                        unsafe {
+                            std::ptr::copy_nonoverlapping(
+                                old.bytes.as_ptr().add(start),
+                                to.0.add(at),
+                                end - start,
+                            )
+                        };
+                    }
+                    crate::buf::relieve();
+                });
+        }
+        // SAFETY: every byte was written above.
+        unsafe { bytes.set_len(total as usize) };
+        self.values = Values { types, ends, bytes };
     }
 
     pub fn feature_attrs(&self, f: &Feature) -> &[Attr] {

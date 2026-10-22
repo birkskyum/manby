@@ -19,6 +19,7 @@ use super::make::{MakeParams, MakeResult, Thresholds, dropping_features, make_ti
 use super::read::{ReadParams, TileInput, read_tile, store_inputs};
 use super::util::Helpers;
 use super::{TileOptions, TileStats};
+use crate::buf::Buf;
 use crate::error::Error;
 use crate::mem::{Rest, Spool, Stored};
 use crate::sink::TileSink;
@@ -28,7 +29,7 @@ use crate::store::FeatureStore;
 pub struct Ctx<'a> {
     pub store: &'a FeatureStore,
     pub o: &'a TileOptions,
-    pub value_null: Vec<bool>,
+    pub value_null: Buf<bool>,
     /// The position of each layer when the layers are sorted by name.
     pub layer_rank: Vec<u32>,
     pub filter: Option<JsonRef<'a>>,

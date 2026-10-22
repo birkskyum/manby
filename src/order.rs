@@ -253,6 +253,10 @@ fn order1(store: &mut FeatureStore, o: &Options, out: &mut Out) -> crate::Result
     }
 
     sort_features(&mut store.features);
+    if crate::buf::spilling() {
+        store.lay_out_in_order(o.memory_budget() / 4);
+        store.number_values_in_order(o.memory_budget() / 4);
+    }
 
     let features = &store.features;
     let indices = features.len() as i64;

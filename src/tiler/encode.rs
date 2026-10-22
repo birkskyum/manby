@@ -85,17 +85,20 @@ impl ValueCodes {
     pub fn new(values: &Values) -> ValueCodes {
         let n = values.len();
         let parts = 64;
-        let encoded: Vec<(Vec<u8>, Vec<u32>)> = (0..parts)
+        let encoded: Vec<(Buf<u8>, Buf<u32>)> = (0..parts)
             .into_par_iter()
             .map(|p| {
-                let mut bytes = Vec::new();
-                let mut lens = Vec::new();
+                let mut bytes = Buf::new();
+                let mut lens = Buf::new();
                 for i in n * p / parts..n * (p + 1) / parts {
                     let v = values.get(i as u32);
                     let e =
                         encode_value(&stringified_to_mvt_value(v.type_, v.s)).unwrap_or_default();
                     bytes.extend_from_slice(&e);
                     lens.push(e.len() as u32);
+                    if i % (1 << 16) == 0 {
+                        crate::buf::relieve();
+                    }
                 }
                 (bytes, lens)
             })
@@ -104,7 +107,7 @@ impl ValueCodes {
         let mut off = Buf::with_capacity(n + 1);
         for (b, lens) in encoded {
             let mut at = bytes.len() as u32;
-            for l in lens {
+            for &l in lens.iter() {
                 off.push(at);
                 at += l;
             }
@@ -117,16 +120,39 @@ impl ValueCodes {
             off,
             rank: Buf::new(),
         };
-        let mut order: Buf<u32> = (0..n as u32).collect();
-        order.par_sort_by(|&a, &b| codes.get(a).cmp(codes.get(b)));
+        // sorted by the first bytes of their codes, and the rest only where
+        // those are equal, so that the sort seldom looks up the codes
+        let prefix = |b: &[u8]| {
+            let mut k = [0u8; 8];
+            let m = b.len().min(8);
+            k[..m].copy_from_slice(&b[..m]);
+            u64::from_be_bytes(k)
+        };
+        let mut keys: Buf<(u64, u32)> = Buf::with_capacity(n);
+        for v in 0..n as u32 {
+            keys.push((prefix(codes.get(v)), v));
+            if v % (1 << 16) == 0 {
+                crate::buf::relieve();
+            }
+        }
+        keys.par_sort_unstable_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then_with(|| codes.get(a.1).cmp(codes.get(b.1)))
+        });
         let mut rank = Buf::new();
         rank.resize(n, 0u32);
         let mut r = 0u32;
-        for (i, &v) in order.iter().enumerate() {
-            if i > 0 && codes.get(v) != codes.get(order[i - 1]) {
-                r += 1;
+        for (i, &(k, v)) in keys.iter().enumerate() {
+            if i > 0 {
+                let (pk, pv) = keys[i - 1];
+                if k != pk || codes.get(v) != codes.get(pv) {
+                    r += 1;
+                }
             }
             rank[v as usize] = r;
+            if i % (1 << 16) == 0 {
+                crate::buf::relieve();
+            }
         }
         codes.rank = rank;
         codes

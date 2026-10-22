@@ -280,11 +280,15 @@ pub fn store_inputs(inputs: &mut [TileInput], spool: &Arc<Spool>) -> crate::Resu
         return Ok(());
     }
     for t in inputs.iter_mut() {
-        let mut header = Vec::new();
-        t.encode_runs(&mut header);
         let Stored::Mem(data) = &t.data else {
             unreachable!("inputs are spooled once");
         };
+        if data.in_file() {
+            // already out of memory
+            continue;
+        }
+        let mut header = Vec::new();
+        t.encode_runs(&mut header);
         t.data = spool.store_parts(&[&header, data])?;
         t.runs = Vec::new();
         crate::buf::relieve();

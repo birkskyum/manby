@@ -13,7 +13,7 @@ pub mod sink;
 pub mod store;
 pub mod tiler;
 
-use tippecanoe::errors::{EXIT_ARGS, EXIT_NODATA};
+use tippecanoe::errors::EXIT_NODATA;
 use tippecanoe::mbtiles::{make_metadata, merge_layermaps};
 use tippecanoe::options::{P_TILE_COMPRESSION, P_TILE_STATS};
 use tippecanoe::projection::tile2lonlat;
@@ -95,13 +95,6 @@ pub fn run(options: &Options) -> Result<Summary> {
     for w in o.resolve()? {
         eprintln!("{}", w);
     }
-    if o.filters() {
-        return Err(Error::new(
-            EXIT_ARGS,
-            format!("{}: manby does not run -C or -c filters yet", o.program),
-        ));
-    }
-
     // TRANSITIONAL: see set_tippecanoe_globals.
     options::set_tippecanoe_globals(&o, o.cluster_maxzoom);
 
@@ -123,17 +116,16 @@ pub fn run(options: &Options) -> Result<Summary> {
 
     let stats = tiler::tile_with(&store, &tile_options(&o, &plan, &store), sink.as_ref())?;
 
+    // The tiler can also extend the zoom levels beyond the plan.
     let minzoom = plan.minzoom;
-    let mut maxzoom = plan.maxzoom;
-    let mut incomplete = false;
-    if stats.maxzoom != maxzoom {
-        if stats.maxzoom > minzoom {
+    let maxzoom = stats.maxzoom;
+    let incomplete = stats.incomplete;
+    if incomplete {
+        if maxzoom > minzoom {
             eprintln!(
                 "\n\n\n*** NOTE TILES ONLY COMPLETE THROUGH ZOOM {} ***",
-                stats.maxzoom
+                maxzoom
             );
-            maxzoom = stats.maxzoom;
-            incomplete = true;
         } else {
             return Err(Error::new(
                 EXIT_NODATA,

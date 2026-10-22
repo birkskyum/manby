@@ -99,6 +99,12 @@ impl Interner {
         id
     }
 
+    /// Frees what only interning needs: the hash table and the hashes.
+    pub fn stop_interning(&mut self) {
+        self.table = Buf::new();
+        self.hashes = Buf::new();
+    }
+
     /// The entries grouped by the shard they hash into, in order within
     /// each shard, and where each shard's start in them.
     pub fn by_shard(&self) -> (Buf<u32>, [usize; SHARDS + 1]) {

@@ -948,9 +948,10 @@ type Merged = (Values, Vec<Buf<u32>>);
 
 /// Interns the entries of every chunk's table in one table, in parallel by
 /// shard. Returns the table and, for each chunk, its ids in the table.
-fn merge_tables(tables: &[&Interner]) -> Merged {
+fn merge_tables(mut tables: Vec<Interner>) -> Merged {
     let grouped: Vec<(Buf<u32>, [usize; SHARDS + 1])> =
         tables.par_iter().map(|t| t.by_shard()).collect();
+    tables.par_iter_mut().for_each(|t| t.stop_interning());
     // each shard's table, its ids for the chunks' entries in chunk order,
     // and where each chunk's start in them
     let shards: Vec<(Interner, Buf<u32>, Vec<usize>)> = (0..SHARDS)
@@ -996,10 +997,11 @@ fn merge_tables(tables: &[&Interner]) -> Merged {
         })
         .collect();
 
+    drop(tables);
     let mut types: Buf<i8> = Buf::with_capacity(n as usize);
     let mut ends: Buf<u64> = Buf::with_capacity(n as usize);
     let mut bytes: Buf<u8> = Buf::with_capacity(shards.iter().map(|(t, _, _)| t.bytes.len()).sum());
-    for (t, _, _) in &shards {
+    for (t, _, _) in shards {
         let base = bytes.len() as u64;
         types.extend_from_slice(&t.types);
         ends.extend(t.ends.iter().map(|&e| base + e as u64));
@@ -1026,6 +1028,23 @@ fn merge(
         ));
         chunk_attrs.push(std::mem::take(&mut a.chunk.attrs));
     }
+    // the keys, values and features are freed as soon as they are merged
+    let chunk_keys: Vec<Interner> = parts
+        .chunks
+        .iter_mut()
+        .map(|a| std::mem::take(&mut a.chunk.keys))
+        .collect();
+    let chunk_values: Vec<Interner> = parts
+        .chunks
+        .iter_mut()
+        .map(|a| std::mem::take(&mut a.chunk.values))
+        .collect();
+    let chunk_features: Vec<Buf<Feature>> = parts
+        .chunks
+        .iter_mut()
+        .map(|a| std::mem::take(&mut a.chunk.features))
+        .collect();
+    let feature_counts: Vec<usize> = chunk_features.iter().map(|f| f.len()).collect();
     let chunks: Vec<&Chunk> = parts.chunks.iter().map(|a| &a.chunk).collect();
 
     // Layers, by name, in the order they first appear.
@@ -1100,8 +1119,8 @@ fn merge(
         }
     }
 
-    let (keys, key_remap) = merge_tables(&chunks.iter().map(|c| &c.keys).collect::<Vec<_>>());
-    let (values, value_remap) = merge_tables(&chunks.iter().map(|c| &c.values).collect::<Vec<_>>());
+    let (keys, key_remap) = merge_tables(chunk_keys);
+    let (values, value_remap) = merge_tables(chunk_values);
 
     let mut geom_off = Vec::with_capacity(chunks.len());
     let mut attr_off = Vec::with_capacity(chunks.len());
@@ -1114,41 +1133,44 @@ fn merge(
     }
 
     // the features are written straight into their places in one vector
-    let total: usize = chunks.iter().map(|c| c.features.len()).sum();
+    let total: usize = feature_counts.iter().sum();
     let mut features: Buf<Feature> = Buf::with_capacity(total);
     {
         let mut slots: Vec<&mut [std::mem::MaybeUninit<Feature>]> =
             Vec::with_capacity(chunks.len());
         let mut rest = &mut features.spare_capacity_mut()[..total];
-        for c in &chunks {
-            let (mine, after) = std::mem::take(&mut rest).split_at_mut(c.features.len());
+        for &n in &feature_counts {
+            let (mine, after) = std::mem::take(&mut rest).split_at_mut(n);
             slots.push(mine);
             rest = after;
         }
-        slots.into_par_iter().enumerate().for_each(|(ci, out)| {
-            let c = chunks[ci];
-            let seq_base = parts.seq_base[ci];
-            let segment = parts.segment[ci];
-            let lr = &layer_remap[ci];
-            for (block, fs) in out.chunks_mut(1 << 14).zip(c.features.chunks(1 << 14)) {
-                for (o, f) in block.iter_mut().zip(fs) {
-                    o.write(Feature {
-                        seq: (seq_base + f.seq as i64) as u64,
-                        layer: lr[f.layer as usize],
-                        geom_start: f.geom_start + geom_off[ci],
-                        attr_start: f.attr_start + attr_off[ci],
-                        segment,
-                        ..*f
-                    });
+        let jobs: Vec<_> = slots.into_iter().zip(chunk_features).collect();
+        jobs.into_par_iter()
+            .enumerate()
+            .for_each(|(ci, (out, chunk_features))| {
+                let c = chunks[ci];
+                let seq_base = parts.seq_base[ci];
+                let segment = parts.segment[ci];
+                let lr = &layer_remap[ci];
+                for (block, fs) in out.chunks_mut(1 << 14).zip(chunk_features.chunks(1 << 14)) {
+                    for (o, f) in block.iter_mut().zip(fs) {
+                        o.write(Feature {
+                            seq: (seq_base + f.seq as i64) as u64,
+                            layer: lr[f.layer as usize],
+                            geom_start: f.geom_start + geom_off[ci],
+                            attr_start: f.attr_start + attr_off[ci],
+                            segment,
+                            ..*f
+                        });
+                    }
+                    crate::buf::relieve();
                 }
-                crate::buf::relieve();
-            }
-            for &i in &c.generate_ids {
-                // SAFETY: every feature of the chunk was written just above.
-                let f = unsafe { out[i as usize].assume_init_mut() };
-                f.id = f.seq + 1;
-            }
-        });
+                for &i in &c.generate_ids {
+                    // SAFETY: every feature of the chunk was written just above.
+                    let f = unsafe { out[i as usize].assume_init_mut() };
+                    f.id = f.seq + 1;
+                }
+            });
     }
     // SAFETY: the chunks' slices cover all `total` places, and each was written.
     unsafe { features.set_len(total) };
@@ -1242,13 +1264,13 @@ fn merge(
     {
         let mut spans = Vec::with_capacity(chunks.len());
         let (mut f, mut a) = (0usize, 0usize);
-        for (ci, c) in chunks.iter().enumerate() {
+        for ci in 0..chunks.len() {
             spans.push(serialized::Span {
                 segment: parts.segment[ci] as usize,
-                features: f..f + c.features.len(),
+                features: f..f + feature_counts[ci],
                 attrs: a..a + attr_lens[ci],
             });
-            f += c.features.len();
+            f += feature_counts[ci];
             a += attr_lens[ci];
         }
         serialized::layout(

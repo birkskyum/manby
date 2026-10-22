@@ -220,6 +220,7 @@ dependencies = [
  "memmap2",
  "mimalloc",
  "rayon",
+ "rusqlite",
  "tippecanoe",
  "xxhash-rust",
 ]

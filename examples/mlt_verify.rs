@@ -7,7 +7,7 @@
 //! The MVT tiles are decoded with tippecanoe-rs and the MLT tiles with
 //! mlt-core. Values are compared under MLT's typing rules: integers in a
 //! float column are compared as floats, and in a column that mixes types
-//! every value is its text. The encoder may wind a polygon ring the other
+//! every value is its text (floats in mlt-core's shortest form). The encoder may wind a polygon ring the other
 //! way; such rings are counted, not failed.
 
 use std::collections::HashMap;
@@ -15,6 +15,7 @@ use std::process::ExitCode;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use mlt_core::compact_str::ToCompactString;
 use mlt_core::geo_types::{Coord, Geometry, LineString, Polygon};
 use mlt_core::{PropValue, TileLayer};
 use rayon::prelude::*;
@@ -65,9 +66,12 @@ fn mvt_value(v: &MvtValue) -> Option<(Value, String)> {
         ),
         MVT_FLOAT => (
             Value::Float(n.float_value() as f64),
-            n.float_value().to_string(),
+            n.float_value().to_compact_string().to_string(),
         ),
-        MVT_DOUBLE => (Value::Float(n.double_value()), n.double_value().to_string()),
+        MVT_DOUBLE => (
+            Value::Float(n.double_value()),
+            n.double_value().to_compact_string().to_string(),
+        ),
         MVT_INT => (Value::Int(n.int_value() as i128), n.int_value().to_string()),
         MVT_SINT => (
             Value::Int(n.sint_value() as i128),
@@ -108,8 +112,8 @@ fn same_value(m: &Value, v: &Value, text: &str) -> bool {
 }
 
 /// The parts of an MVT geometry: points, lines or rings, without closing points.
-fn mvt_parts(geometry: &[tippecanoe::mvt::MvtGeometry]) -> Vec<Vec<(i64, i64)>> {
-    let mut parts: Vec<Vec<(i64, i64)>> = Vec::new();
+fn mvt_parts(geometry: &[tippecanoe::mvt::MvtGeometry]) -> Parts {
+    let mut parts: Parts = Vec::new();
     for g in geometry {
         if g.op == MVT_MOVETO {
             parts.push(vec![(g.x, g.y)]);
@@ -117,13 +121,12 @@ fn mvt_parts(geometry: &[tippecanoe::mvt::MvtGeometry]) -> Vec<Vec<(i64, i64)>> 
             if let Some(p) = parts.last_mut() {
                 p.push((g.x, g.y));
             }
-        } else if g.op == MVT_CLOSEPATH {
-            if let Some(p) = parts.last_mut()
-                && p.len() > 1
-                && p.first() == p.last()
-            {
-                p.pop();
-            }
+        } else if g.op == MVT_CLOSEPATH
+            && let Some(p) = parts.last_mut()
+            && p.len() > 1
+            && p.first() == p.last()
+        {
+            p.pop();
         }
     }
     parts
@@ -148,8 +151,10 @@ fn polygon_rings(p: &Polygon<i32>, out: &mut Vec<Vec<(i64, i64)>>) {
     out.extend(p.interiors().iter().map(ring));
 }
 
+type Parts = Vec<Vec<(i64, i64)>>;
+
 /// The MVT type and parts of an MLT geometry.
-fn mlt_parts(g: &Geometry<i32>) -> Option<(i32, Vec<Vec<(i64, i64)>>)> {
+fn mlt_parts(g: &Geometry<i32>) -> Option<(i32, Parts)> {
     Some(match g {
         Geometry::Point(p) => (MVT_POINT, vec![vec![(p.x() as i64, p.y() as i64)]]),
         Geometry::MultiPoint(m) => (
@@ -241,7 +246,7 @@ fn check_tile(name: &str, mvt: &[u8], mlt: &[u8], stats: &Stats) {
             }
 
             let expected = mvt_parts(&vf.geometry);
-            match mlt_parts(&mf.geometry()) {
+            match mlt_parts(mf.geometry()) {
                 Some((t, parts)) if t == vf.type_ && parts.len() == expected.len() => {
                     for (a, e) in parts.iter().zip(&expected) {
                         if a == e {

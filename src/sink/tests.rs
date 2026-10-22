@@ -66,7 +66,7 @@ pub(crate) fn make_tiles_from(n: usize, start: u64, maxzoom: u8, seed: u64) -> V
             tiles.push((t.z, t.x, t.y, data.clone()));
             prev = data;
         }
-        id += 1 + if rng.next() % 4 == 0 {
+        id += 1 + if rng.next().is_multiple_of(4) {
             rng.next() % 300
         } else {
             0
@@ -560,7 +560,11 @@ fn directories_same_as_tippecanoe() {
             .map(|_| {
                 id += 1 + rng.next() % 7;
                 let len = 1 + (rng.next() % 5000) as u32;
-                offset += if rng.next() % 4 == 0 { 0 } else { len as u64 };
+                offset += if rng.next().is_multiple_of(4) {
+                    0
+                } else {
+                    len as u64
+                };
                 tippecanoe::pmtiles::EntryV3::new(id, offset, len, 1 + (rng.next() % 2) as u32)
             })
             .collect();

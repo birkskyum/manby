@@ -12,7 +12,7 @@ use manby::mlt::{MltProfile, MltSettings, encode_tile, encode_tile_with_mlt_core
 use rayon::prelude::*;
 
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 fn main() -> ExitCode {
     let mut failed = false;

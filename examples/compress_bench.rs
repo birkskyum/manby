@@ -11,7 +11,7 @@ use rayon::prelude::*;
 type Compress<'a> = &'a (dyn Fn(&Vec<u8>) -> Vec<u8> + Sync);
 
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 fn main() {
     let path = std::env::args()

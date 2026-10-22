@@ -38,8 +38,8 @@ manby's peak memory is below tippecanoe's on the benchmarks. For inputs larger t
 
 | Input | tippecanoe | manby, `--memory-budget=1G` |
 | --- | --- | --- |
-| 40 million points (5.6 GB), `-zg --drop-densest-as-needed` | 702 s, 8.1 GB | 100 s, 1.3 GB |
-| The census tracts 20 times over (3 GB), `-zg --coalesce-densest-as-needed` | 655 s, 6.2 GB | 150 s, 1.0 GB |
+| 40 million points (5.6 GB), `-zg --drop-densest-as-needed` | 587 s, 7.7 GB | 91 s, 1.0 GB |
+| The census tracts 20 times over (3 GB), `-zg --coalesce-densest-as-needed` | 611 s, 5.5 GB | 156 s, 1.1 GB |
 
 ## Building and testing
 

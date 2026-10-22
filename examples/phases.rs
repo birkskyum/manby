@@ -2,6 +2,9 @@
 //!
 //!     cargo run --release --example phases -- -zg -P bench/data/points4m.geojsonl
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() {
     let mut argv: Vec<String> = std::env::args().collect();
     argv.splice(

@@ -8,6 +8,8 @@ use std::time::Instant;
 
 use rayon::prelude::*;
 
+type Compress<'a> = &'a (dyn Fn(&Vec<u8>) -> Vec<u8> + Sync);
+
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -39,7 +41,7 @@ fn main() {
     };
     let default = |t: &Vec<u8>| manby::compress::gzip(t, false);
     let fast = |t: &Vec<u8>| manby::compress::gzip(t, true);
-    let methods: [(&str, &(dyn Fn(&Vec<u8>) -> Vec<u8> + Sync)); 3] = [
+    let methods: [(&str, Compress); 3] = [
         ("tippecanoe-rs", &tippecanoe),
         ("manby", &default),
         ("manby fast", &fast),

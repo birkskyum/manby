@@ -1592,3 +1592,140 @@ mod snap_rounding {
         mp
     }
 }
+
+/// Helpers shared by the geometry tests of several modules.
+#[cfg(test)]
+pub(crate) mod test_util {
+    use super::*;
+
+    /// Parses `op x y` triples into a drawvec.
+    pub fn dv(s: &str) -> DrawVec {
+        let v: Vec<i64> = s.split_whitespace().map(|t| t.parse().unwrap()).collect();
+        v.chunks(3)
+            .map(|c| Draw::new(c[0] as i8, c[1], c[2]))
+            .collect()
+    }
+
+    /// Formats a drawvec as `op x y necessary` quadruples, the way the C++
+    /// harness that produced the expected values prints them.
+    pub fn show(dv: &DrawVec) -> String {
+        dv.iter()
+            .map(|d| format!("{} {} {} {}", d.op, d.x, d.y, d.necessary))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+// The expected values in these tests come from the C++ functions, built with
+// -ffp-contract=off and run on the same input.
+#[cfg(test)]
+mod tests {
+    use super::test_util::{dv, show};
+    use super::*;
+
+    #[test]
+    fn decode_geometry_reads_deltas() {
+        let bytes: Vec<u8> = vec![
+            0x01, 0x02, 0x04, 0x02, 0x01, 0x06, 0x06, 0x02, 0x03, 0x05, 0x01, 0x02, 0x03, 0x04,
+            0x07, 0x00,
+        ];
+        let mut meta: &[u8] = &bytes;
+        let mut bbox = [0i64; 4];
+        let out = decode_geometry(&mut meta, 3, 2, 5, &mut bbox, 1000, 2000);
+        assert_eq!(
+            show(&out),
+            "1 -1073740823 -2684352558 0 2 -1073740824 -2684352555 0 6 0 0 0 2 -1073740826 -2684352558 0 1 -1073740825 -2684352560 0 4 0 0 0 7 0 0 0"
+        );
+        assert_eq!(bbox, [-1073740826, -2684352560, -1073740823, -2684352555]);
+        assert_eq!(bytes.len() - meta.len(), 16);
+    }
+
+    #[test]
+    fn quick_check_classifies_bboxes() {
+        assert_eq!(quick_check(&[10, 10, 1000, 1000], 22, 5), 1);
+        assert_eq!(quick_check(&[-10, 10, 1000, 1000], 22, 5), 3);
+        assert_eq!(quick_check(&[-10, 10, 1000, 1100], 22, 5), 2);
+        assert_eq!(quick_check(&[2000, 10, 3000, 1000], 22, 5), 0);
+        assert!(point_within_tile(0, 1023, 22));
+        assert!(!point_within_tile(0, 1024, 22));
+    }
+
+    #[test]
+    fn simplify_lines_douglas_peucker() {
+        let mut g =
+            dv("1 0 0 2 1000 300 2 2000 -200 2 3000 5000 2 4000 4900 2 5000 0 2 6000 100 2 7000 0");
+        let out = simplify_lines(
+            &mut g,
+            10,
+            0,
+            0,
+            12,
+            true,
+            1.0,
+            0,
+            &DrawVec::new(),
+            &[],
+            0,
+            &[],
+        );
+        assert_eq!(
+            show(&out),
+            "1 0 0 1 2 1600 0 1 2 2038 0 1 2 3000 5000 1 2 5000 0 1 2 7000 0 1"
+        );
+        assert_eq!(show(&g), show(&out));
+    }
+
+    #[test]
+    fn reorder_lines_reverses_up_and_left() {
+        let g = dv("1 900 900 2 500 600 2 300 100 2 10 20");
+        assert_eq!(
+            show(&reorder_lines(&g)),
+            "1 10 20 0 2 300 100 0 2 500 600 0 2 900 900 0"
+        );
+    }
+
+    #[test]
+    fn stairstep_follows_pixels() {
+        let mut g = dv("1 0 0 2 5000 3000 2 2000 9000 2 0 0");
+        let out = stairstep(&mut g, 10, 12);
+        assert_eq!(show(&g), "1 0 0 0 2 5 3 0 2 2 9 0 2 0 0 0");
+        assert_eq!(
+            show(&out),
+            "1 0 0 0 2 0 0 0 2 0 1024 0 2 2048 1024 0 2 2048 2048 0 2 4096 2048 0 2 4096 3072 0 2 5120 3072 0 2 5120 3072 0 2 5120 4096 0 2 4096 4096 0 2 4096 6144 0 2 3072 6144 0 2 3072 8192 0 2 2048 8192 0 2 2048 9216 0 2 2048 9216 0 2 2048 7168 0 2 1024 7168 0 2 1024 3072 0 2 0 3072 0 2 0 0 0"
+        );
+    }
+
+    #[test]
+    fn center_of_mass_of_two_squares() {
+        let g =
+            dv("1 0 0 2 100 0 2 100 100 2 0 100 2 0 0 1 200 0 2 400 0 2 400 400 2 200 400 2 200 0");
+        assert_eq!(show(&vec![center_of_mass_mp(&g)]), "1 272 183 0");
+    }
+
+    #[test]
+    fn polygon_to_anchor_avoids_the_hollow_of_a_u() {
+        // The center of mass of this U shape is in its hollow, so the label
+        // point comes from one of the fallbacks.
+        let g = dv(
+            "1 0 0 2 3000 0 2 3000 3000 2 2000 3000 2 2000 1000 2 1000 1000 2 1000 3000 2 0 3000 2 0 0",
+        );
+        assert_eq!(show(&polygon_to_anchor(&g)), "1 2500 1500 0");
+    }
+
+    #[test]
+    fn checkerboard_anchors_in_a_tile() {
+        let g = dv("1 0 0 2 536870912 0 2 536870912 536870912 2 0 536870912 2 0 0");
+        assert_eq!(
+            show(&checkerboard_anchors(&g, 2, 3, 3, 13835058055282163712)),
+            "1 471824789 235912394 0"
+        );
+    }
+
+    #[test]
+    fn bitfield40_wraps_like_the_cpp_bitfield() {
+        assert_eq!(bitfield40(5), 5);
+        assert_eq!(bitfield40(-5), -5);
+        assert_eq!(bitfield40(1 << 39), -(1 << 39));
+        assert_eq!(bitfield40(66851165 * 65536), -16888561664);
+    }
+}

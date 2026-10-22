@@ -627,3 +627,45 @@ pub fn find_common_edges(
 
     merged >= merge_count
 }
+
+// The expected values come from the C++ function run on the same input.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::test_util::{dv, show};
+    use crate::serial::SerialFeature;
+
+    #[test]
+    fn two_squares_share_one_arc() {
+        let squares = [
+            "1 0 0 2 4000 0 2 4000 4000 2 0 4000 2 0 0",
+            "1 4000 0 2 8000 0 2 8000 4000 2 4000 4000 2 4000 0",
+        ];
+        let mut features: Vec<SerialFeaturePtr> = squares
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                Box::new(SerialFeature {
+                    t: VT_POLYGON as i8,
+                    index: [5, 6][i],
+                    renamed: -1,
+                    geometry: dv(s),
+                    ..Default::default()
+                })
+            })
+            .collect();
+
+        assert!(find_common_edges(&mut features, 10, 12, 1.0, 10, 1.0));
+
+        assert_eq!(
+            show(&features[0].geometry),
+            "1 4000 4000 0 2 0 4000 0 2 0 0 0 2 4000 0 0 2 4000 4000 0"
+        );
+        assert_eq!(features[0].arc_polygon, vec![1, 2, 3, 0]);
+        assert_eq!(
+            show(&features[1].geometry),
+            "1 4000 0 0 2 8000 0 0 2 8000 4000 0 2 4000 4000 0 2 4000 0 0"
+        );
+        assert_eq!(features[1].arc_polygon, vec![4, -2, 5, 0]);
+    }
+}

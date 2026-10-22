@@ -249,3 +249,32 @@ pub fn visvalingam(ls: &mut DrawVec, start: usize, end: usize, threshold: f64, r
         item = items[it].next;
     }
 }
+
+// The expected values come from the C++ function run on the same input.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::test_util::{dv, show};
+
+    #[test]
+    fn visvalingam_marks_the_points_it_keeps() {
+        let mut g =
+            dv("1 0 0 2 1000 300 2 2000 -200 2 3000 5000 2 4000 4900 2 5000 0 2 6000 100 2 7000 0");
+        visvalingam(&mut g, 0, 8, 1000000.0, 0);
+        assert_eq!(
+            show(&g),
+            "1 0 0 1 2 1000 300 0 2 2000 -200 1 2 3000 5000 1 2 4000 4900 1 2 5000 0 1 2 6000 100 0 2 7000 0 1"
+        );
+    }
+
+    #[test]
+    fn visvalingam_keeps_at_least_retain_points() {
+        let mut g =
+            dv("1 0 0 2 1000 300 2 2000 -200 2 3000 5000 2 4000 4900 2 5000 0 2 6000 100 2 7000 0");
+        visvalingam(&mut g, 0, 8, 1e18, 6);
+        assert_eq!(
+            show(&g),
+            "1 0 0 1 2 1000 300 0 2 2000 -200 1 2 3000 5000 1 2 4000 4900 1 2 5000 0 1 2 6000 100 0 2 7000 0 1"
+        );
+    }
+}

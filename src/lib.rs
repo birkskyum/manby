@@ -61,7 +61,7 @@ pub fn run(options: &Options) -> Result<Summary> {
             allow_existing: o.forcetable,
             tile_compression: !o.prevent.get(P_TILE_COMPRESSION),
             tmpdir: o.tmpdir.clone().into(),
-            memory_budget: 64 << 20,
+            memory_budget: 16 << 20,
             program: o.program.clone(),
             tile_format: o.tile_format,
             ..Default::default()

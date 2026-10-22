@@ -46,11 +46,11 @@ use crate::{Error, Result};
 pub const TILETYPE_MLT: u8 = 0x6;
 
 const SHARDS: usize = 64;
-const CHUNK: usize = 4 << 20;
+const CHUNK: usize = 256 << 10;
 /// Bytes of tile data per parallel write at `finish`.
-const PIECE: u64 = 4 << 20;
+const PIECE: u64 = 1 << 20;
 /// Bytes of spilled tile data a shard collects before writing them out.
-const SPILL_BATCH: usize = 1 << 20;
+const SPILL_BATCH: usize = 256 << 10;
 
 /// Where one distinct tile's data is.
 #[derive(Clone, Copy)]

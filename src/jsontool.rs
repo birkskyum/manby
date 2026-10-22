@@ -10,7 +10,7 @@ use std::fs::File;
 use std::io::{BufReader, Read, StdoutLock, Write};
 use std::sync::atomic::{AtomicI32, Ordering};
 
-use crate::cstd::{atof, strerror};
+use crate::cstd::{atof, perror_io};
 use crate::csv::{csv_dequote, csv_getline, csv_split, is_number};
 use crate::errors::{EXIT_ARGS, EXIT_CSV, EXIT_IMPOSSIBLE, EXIT_OPEN, EXIT_SUCCESS, EXIT_UTF8};
 use crate::geojson_loop::{JsonFeatureAction, parse_json};
@@ -659,7 +659,7 @@ pub fn main() {
         match File::open(csv) {
             Ok(f) => g.csvfile = Some(BufReader::new(f)),
             Err(e) => {
-                eprintln!("{}: {}", csv, strerror(e.raw_os_error().unwrap_or(0)));
+                perror_io(csv, &e);
                 std::process::exit(EXIT_OPEN);
             }
         }
@@ -673,7 +673,7 @@ pub fn main() {
             let f = match File::open(arg) {
                 Ok(f) => f,
                 Err(e) => {
-                    eprintln!("{}: {}", arg, strerror(e.raw_os_error().unwrap_or(0)));
+                    perror_io(arg, &e);
                     std::process::exit(EXIT_OPEN);
                 }
             };

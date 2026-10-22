@@ -623,3 +623,228 @@ pub fn encode_tile(mvt: &[u8], settings: &MltSettings) -> Result<Vec<u8>, String
 
 /// The error for `--tile-format=mlt` in a manby built without the feature.
 pub const NOT_BUILT: &str = "this manby was built without MLT support; build it with `cargo +1.98.1 build --release --features mlt`";
+
+#[cfg(all(test, feature = "mlt"))]
+mod tests {
+    use mlt_core::PropValue;
+    use mlt_core::geo_types::Geometry;
+    use tippecanoe::mvt::{
+        MVT_BOOL, MVT_CLOSEPATH, MVT_DOUBLE, MVT_FLOAT, MVT_INT, MVT_LINESTRING, MVT_LINETO,
+        MVT_MOVETO, MVT_POINT, MVT_POLYGON, MVT_SINT, MVT_STRING, MVT_UINT, MvtFeature,
+        MvtGeometry, MvtLayer, MvtTile, MvtValue,
+    };
+
+    use super::*;
+
+    fn value(t: i32, f: impl FnOnce(&mut MvtValue)) -> MvtValue {
+        let mut v = MvtValue::from_double(0.0);
+        v.type_ = t;
+        f(&mut v);
+        v
+    }
+
+    fn feature(t: i32, id: Option<u64>, ops: &[Op]) -> MvtFeature {
+        MvtFeature {
+            type_: t,
+            id: id.unwrap_or(0),
+            has_id: id.is_some(),
+            geometry: ops
+                .iter()
+                .map(|&(op, x, y)| MvtGeometry::new(op, x, y))
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    /// A geometry command and its coordinates.
+    type Op = (i32, i64, i64);
+
+    fn ring(x: i64, y: i64, size: i64, clockwise: bool) -> Vec<Op> {
+        let corners = if clockwise {
+            [(x, y), (x + size, y), (x + size, y + size), (x, y + size)]
+        } else {
+            [(x, y), (x, y + size), (x + size, y + size), (x + size, y)]
+        };
+        let mut ops: Vec<Op> = vec![(MVT_MOVETO, corners[0].0, corners[0].1)];
+        ops.extend(corners[1..].iter().map(|&(x, y)| (MVT_LINETO, x, y)));
+        ops.push((MVT_CLOSEPATH, 0, 0));
+        ops
+    }
+
+    /// A tile with every geometry kind, value type and column mix.
+    fn sample_tile() -> Vec<u8> {
+        let mut layer = MvtLayer {
+            name: "things".to_string(),
+            extent: 4096,
+            version: 2,
+            ..Default::default()
+        };
+        let line = [
+            (MVT_MOVETO, 1, 1),
+            (MVT_LINETO, 50, 9),
+            (MVT_LINETO, -3, 70),
+        ];
+        let mut lines = line.to_vec();
+        lines.extend([(MVT_MOVETO, 100, 100), (MVT_LINETO, 120, 140)]);
+        let mut multipolygon = ring(0, 0, 100, true);
+        multipolygon.extend(ring(10, 10, 20, false));
+        multipolygon.extend(ring(200, 200, 50, true));
+        // A first ring with negative area still starts a polygon.
+        let mut hole_first = ring(0, 0, 30, false);
+        hole_first.extend(ring(5, 5, 5, false));
+        let geometries: Vec<(i32, Vec<Op>)> = vec![
+            (MVT_POINT, vec![(MVT_MOVETO, 5, 7)]),
+            (
+                MVT_POINT,
+                vec![
+                    (MVT_MOVETO, 1, 2),
+                    (MVT_MOVETO, 3, -4),
+                    (MVT_MOVETO, 9000, 2),
+                ],
+            ),
+            (MVT_LINESTRING, line.to_vec()),
+            (MVT_LINESTRING, lines),
+            (MVT_POLYGON, ring(0, 0, 64, true)),
+            (MVT_POLYGON, multipolygon),
+            (MVT_POLYGON, hole_first),
+        ];
+        let int = |i: i64| value(MVT_INT, |v| v.numeric_value.set_int_value(i));
+        let uint = |u: u64| value(MVT_UINT, |v| v.numeric_value.set_uint_value(u));
+        let sint = |i: i64| value(MVT_SINT, |v| v.numeric_value.set_sint_value(i));
+        let double = |d: f64| value(MVT_DOUBLE, |v| v.numeric_value.set_double_value(d));
+        let float = |f: f32| value(MVT_FLOAT, |v| v.numeric_value.set_float_value(f));
+        let string = |s: &str| value(MVT_STRING, |v| v.set_string_value(s));
+        let boolean = |b: bool| value(MVT_BOOL, |v| v.numeric_value.set_bool_value(b));
+        for (i, (t, ops)) in geometries.into_iter().enumerate() {
+            let i64v = i as i64;
+            let mut f = feature(t, (i % 3 != 0).then_some(i as u64 * 7), &ops);
+            layer.tag(&mut f, "name", &string(&format!("feature {}", i)));
+            layer.tag(&mut f, "uint", &uint(i as u64 * 1000));
+            layer.tag(
+                &mut f,
+                "signed",
+                &if i % 2 == 0 {
+                    sint(-i64v)
+                } else {
+                    uint(i as u64)
+                },
+            );
+            layer.tag(
+                &mut f,
+                "real",
+                &if i % 2 == 0 {
+                    int(i64v)
+                } else {
+                    double(i64v as f64 + 0.25)
+                },
+            );
+            layer.tag(&mut f, "float", &float(i as f32 / 3.0));
+            layer.tag(&mut f, "flag", &boolean(i % 2 == 0));
+            if i != 3 {
+                layer.tag(
+                    &mut f,
+                    "mixed",
+                    &if i % 2 == 0 {
+                        string("x")
+                    } else {
+                        double(1e20 / (i64v as f64))
+                    },
+                );
+            }
+            if i == 4 {
+                layer.tag(&mut f, "boolnum", &boolean(true));
+            }
+            if i == 5 {
+                layer.tag(&mut f, "boolnum", &int(5));
+            }
+            layer.features.push(f);
+        }
+        let empty = MvtLayer {
+            name: "empty".to_string(),
+            extent: 4096,
+            version: 2,
+            ..Default::default()
+        };
+        MvtTile {
+            layers: vec![layer, empty],
+        }
+        .encode()
+    }
+
+    #[test]
+    fn same_as_mlt_cores_reader() {
+        let mvt = sample_tile();
+        for profile in [
+            MltProfile::Web,
+            MltProfile::Native,
+            MltProfile::MinSize,
+            MltProfile::Fast,
+        ] {
+            for gzipped in [true, false] {
+                let s = MltSettings { profile, gzipped };
+                assert_eq!(
+                    encode_tile(&mvt, &s).unwrap(),
+                    encode_tile_with_mlt_core(&mvt, &s).unwrap(),
+                    "{:?}",
+                    s
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn decodes_to_the_mvt_content() {
+        let mlt = encode_tile(&sample_tile(), &MltSettings::default()).unwrap();
+        let layers = decode_tile(&mlt).unwrap();
+        // the empty layer has no features, so it encodes to nothing
+        assert_eq!(layers.len(), 1);
+        let l = &layers[0];
+        assert_eq!(l.name(), "things");
+        assert_eq!(l.feature_count(), 7);
+        let col = |name: &str| l.property_names().iter().position(|n| n == name).unwrap();
+        let f = l.features();
+        assert_eq!(f[0].id(), None);
+        assert_eq!(f[1].id(), Some(7));
+        assert!(matches!(f[0].geometry(), Geometry::Point(_)));
+        assert!(matches!(f[1].geometry(), Geometry::MultiPoint(_)));
+        assert!(matches!(f[2].geometry(), Geometry::LineString(_)));
+        assert!(matches!(f[3].geometry(), Geometry::MultiLineString(_)));
+        assert!(matches!(f[4].geometry(), Geometry::Polygon(_)));
+        match f[5].geometry() {
+            Geometry::MultiPolygon(m) => {
+                assert_eq!(m.0.len(), 2);
+                assert_eq!(m.0[0].interiors().len(), 1);
+            }
+            g => panic!("{:?}", g),
+        }
+        match f[6].geometry() {
+            Geometry::Polygon(p) => assert_eq!(p.interiors().len(), 1),
+            g => panic!("{:?}", g),
+        }
+        assert_eq!(
+            f[1].properties()[col("name")],
+            PropValue::Str(Some("feature 1".into()))
+        );
+        // integers mixed with floats are floats; other mixes are text
+        assert_eq!(f[2].properties()[col("real")], PropValue::F64(Some(2.0)));
+        assert_eq!(f[1].properties()[col("real")], PropValue::F64(Some(1.25)));
+        assert_eq!(
+            f[2].properties()[col("mixed")],
+            PropValue::Str(Some("x".into()))
+        );
+        // mlt-core's text for a float, which is neither Rust's nor tippecanoe's
+        assert_eq!(
+            f[1].properties()[col("mixed")],
+            PropValue::Str(Some("1e+20".into()))
+        );
+        assert!(f[3].properties()[col("mixed")].is_null());
+        assert_eq!(
+            f[4].properties()[col("boolnum")],
+            PropValue::Str(Some("true".into()))
+        );
+        assert_eq!(
+            f[5].properties()[col("boolnum")],
+            PropValue::Str(Some("5".into()))
+        );
+    }
+}

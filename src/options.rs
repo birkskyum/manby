@@ -1670,6 +1670,28 @@ mod tests {
     }
 
     #[test]
+    fn tile_format() {
+        use crate::mlt::{MltProfile, TileFormat};
+        let o = parse_args(&args("tippecanoe -o out.pmtiles in.json")).unwrap();
+        assert_eq!(o.tile_format, TileFormat::Mvt);
+        assert_eq!(o.mlt_profile, MltProfile::Web);
+        let o = parse_args(&args("tippecanoe -o out.pmtiles --tile-format=mvt in.json")).unwrap();
+        assert_eq!(o.tile_format, TileFormat::Mvt);
+        let mlt = parse_args(&args(
+            "tippecanoe -o out.pmtiles --tile-format=mlt --mlt-profile=native in.json",
+        ));
+        if crate::mlt::AVAILABLE {
+            let o = mlt.unwrap();
+            assert_eq!(o.tile_format, TileFormat::Mlt);
+            assert_eq!(o.mlt_profile, MltProfile::Native);
+        } else {
+            assert!(mlt.unwrap_err().message.contains(crate::mlt::NOT_BUILT));
+        }
+        assert!(parse_args(&args("tippecanoe -o x.pmtiles --tile-format=png in.json")).is_err());
+        assert!(parse_args(&args("tippecanoe -o x.pmtiles --mlt-profile=tiny in.json")).is_err());
+    }
+
+    #[test]
     fn benchmark_command_lines() {
         let o = parse_args(&args(
             "tippecanoe -q -f -o out.pmtiles -zg --drop-densest-as-needed -P in.geojsonl",

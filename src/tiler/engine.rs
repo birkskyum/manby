@@ -302,9 +302,10 @@ struct Driver<'d, 's> {
     /// Tasks waiting for a thread, shallower levels first.
     ready: BinaryHeap<Reverse<Ready>>,
     seq: u64,
-    /// At most one task per thread runs at a time, so that a thread waiting
-    /// inside a task can only pick up that task's own parallel work, not
-    /// another whole tile.
+    /// How many tasks the pool holds at once: enough that no thread waits for
+    /// the coordinator, few enough that shallower levels keep their priority.
+    /// Tasks never wait on rayon work inside, so a queued task cannot be
+    /// picked up by a thread in the middle of another.
     max_in_flight: usize,
     levels: Vec<Level>,
     maxzoom: i32,
@@ -347,7 +348,7 @@ pub fn drive<'s>(
         tx,
         ready: BinaryHeap::new(),
         seq: 0,
-        max_in_flight: threads.max(1),
+        max_in_flight: threads.max(1) * 4,
         levels: Vec::new(),
         maxzoom: o.maxzoom,
         extend_zooms_max: o.extend_zooms_max,

@@ -1459,7 +1459,13 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
 
             {
                 let shared_nodes = &shared_nodes;
-                if features.len() >= 64 && features.iter().any(|f| f.t as i32 != VT_POINT) {
+                // helper threads only pay off for a lot of geometry
+                let work: usize = features
+                    .iter()
+                    .filter(|f| f.t as i32 != VT_POINT)
+                    .map(|f| f.geometry.len())
+                    .sum();
+                if features.len() >= 16 && work >= 50_000 {
                     par_each_mut(features, ctx.threads, |i, f| {
                         simplify_and_scale(ctx, i, f, z, tx, ty, maxzoom, shared_nodes)
                     });
@@ -1606,11 +1612,10 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
             let name = &store.layers[*li as usize].name;
             let extent = 1i64 << tile_detail;
             let mut enc = LayerEnc::new(&ctx.codes, name, extent);
-            let mut mvt = MvtBuilder::new(name, extent);
-            let layer: &mut dyn Tagger = if postfilter.is_some() {
-                &mut mvt
-            } else {
-                &mut enc
+            let mut mvt = postfilter.map(|_| MvtBuilder::new(name, extent));
+            let layer: &mut dyn Tagger = match mvt.as_mut() {
+                Some(m) => m,
+                None => &mut enc,
             };
 
             for f in layer_features.iter() {
@@ -1670,7 +1675,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                 layer.end_feature();
             }
 
-            if postfilter.is_some() {
+            if let Some(mvt) = mvt {
                 if !mvt.layer.features.is_empty() {
                     mvt_tile.layers.push(mvt.layer);
                 }

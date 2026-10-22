@@ -903,6 +903,10 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
     let mut line_detail = first_detail;
     let mut first_time = true;
     while line_detail >= min_detail || line_detail == detail {
+        if octx.failed.load(std::sync::atomic::Ordering::Relaxed) {
+            res.len = -1;
+            return res;
+        }
         octx.counters[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let trace_start = std::time::Instant::now();
 

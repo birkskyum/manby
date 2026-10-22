@@ -49,6 +49,8 @@ pub struct Ctx<'a> {
     /// For `TileOptions::timing`: attempts, compressions, bytes compressed
     /// and nanoseconds spent compressing.
     pub counters: [std::sync::atomic::AtomicU64; 4],
+    /// Set when a task fails, so that the others stop at their next attempt.
+    pub failed: std::sync::atomic::AtomicBool,
     pub started: std::time::Instant,
 }
 
@@ -99,6 +101,7 @@ impl<'a> Ctx<'a> {
             helpers,
             rest: Rest::new(o.rest_memory),
             counters: Default::default(),
+            failed: Default::default(),
             started: std::time::Instant::now(),
             store,
             o,
@@ -637,7 +640,16 @@ impl<'d, 's> Driver<'d, 's> {
             let tx = self.tx.clone();
             let t = ready.task;
             self.scope.spawn(move |_| {
-                let _ = tx.send(run_task(ctx, t, &tx).unwrap_or_else(Done::Failed));
+                // a task that panics fails the run; its message is printed
+                // already
+                let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_task(ctx, t, &tx)
+                }))
+                .unwrap_or_else(|_| Err(Error::new(EXIT_IMPOSSIBLE, String::new())));
+                if done.is_err() {
+                    ctx.failed.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                let _ = tx.send(done.unwrap_or_else(Done::Failed));
             });
         }
         for r in deferred {

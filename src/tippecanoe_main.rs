@@ -405,7 +405,11 @@ fn insert(merges: &mut [Mergelist], m: usize, head: &mut Option<usize>, map: &[u
     let mut prev: Option<usize> = None;
     let mut cur = *head;
     while let Some(h) = cur {
-        if indexcmp(&index_at(map, merges[m].start), &index_at(map, merges[h].start)) > 0 {
+        if indexcmp(
+            &index_at(map, merges[m].start),
+            &index_at(map, merges[h].start),
+        ) > 0
+        {
             prev = Some(h);
             cur = merges[h].next;
         } else {
@@ -553,7 +557,10 @@ fn merge(
             && progress_time()
             && 100 * *progress / *progress_max != *progress_reported
         {
-            eprint!("Reordering geometry: {}% \r", 100 * *progress / *progress_max);
+            eprint!(
+                "Reordering geometry: {}% \r",
+                100 * *progress / *progress_max
+            );
             *progress_reported = 100 * *progress / *progress_max;
         }
 
@@ -1215,7 +1222,10 @@ fn radix1(
                     && progress_time()
                     && 100 * *progress / *progress_max != *progress_reported
                 {
-                    eprint!("Reordering geometry: {}% \r", 100 * *progress / *progress_max);
+                    eprint!(
+                        "Reordering geometry: {}% \r",
+                        100 * *progress / *progress_max
+                    );
                     *progress_reported = 100 * *progress / *progress_max;
                 }
 
@@ -1413,8 +1423,7 @@ fn radix1(
                 madvise(&geommap, Advice::WillNeed);
 
                 for a in 0..indexst_size as usize / INDEX_SIZE {
-                    let mut ix =
-                        Index::from_bytes(&indexmap[a * INDEX_SIZE..(a + 1) * INDEX_SIZE]);
+                    let mut ix = Index::from_bytes(&indexmap[a * INDEX_SIZE..(a + 1) * INDEX_SIZE]);
                     let pos = geompos_out.load(Ordering::Relaxed);
 
                     // MAGIC: This knows that the feature minzoom is the last byte of the serialized feature
@@ -1431,7 +1440,12 @@ fn radix1(
                         "geom",
                     );
                     let feature_minzoom = calc_feature_minzoom(&ix, ds, maxzoom, gamma);
-                    fserialize_byte(geomfile, feature_minzoom as i8, geompos_out, "merge geometry");
+                    fserialize_byte(
+                        geomfile,
+                        feature_minzoom as i8,
+                        geompos_out,
+                        "merge geometry",
+                    );
 
                     // Count this as an 75%-accomplishment, since we already 25%-counted it
                     *progress += (ix.end - ix.start) * 3 / 4;
@@ -1440,7 +1454,10 @@ fn radix1(
                         && progress_time()
                         && 100 * *progress / *progress_max != *progress_reported
                     {
-                        eprint!("Reordering geometry: {}% \r", 100 * *progress / *progress_max);
+                        eprint!(
+                            "Reordering geometry: {}% \r",
+                            100 * *progress / *progress_max
+                        );
                         *progress_reported = 100 * *progress / *progress_max;
                     }
 
@@ -1987,7 +2004,10 @@ fn read_input(
             }
 
             if get(&QUIET) == 0 {
-                eprintln!("For layer {}, using name \"{}\"", l as i32, sources[l].layer);
+                eprintln!(
+                    "For layer {}, using name \"{}\"",
+                    l as i32, sources[l].layer
+                );
             }
         }
     }
@@ -2005,8 +2025,7 @@ fn read_input(
     let mut overall_offset: i64 = 0;
     let dist = Mutex::new(DistSums::default());
 
-    let files_open_before_reading =
-        open_fd(get_null_device(), libc::O_RDONLY | libc::O_CLOEXEC, 0);
+    let files_open_before_reading = open_fd(get_null_device(), libc::O_RDONLY | libc::O_CLOEXEC, 0);
     if files_open_before_reading < 0 {
         perror("open /dev/null");
         std::process::exit(EXIT_OPEN);
@@ -2315,7 +2334,7 @@ fn read_input(
                     std::process::exit(EXIT_OPEN);
                 }
                 // SAFETY: the writer takes over the new descriptor.
-                let mut readfp = BufWriter::new(unsafe { File::from_raw_fd(readfd) });
+                let mut readfp = Some(BufWriter::new(unsafe { File::from_raw_fd(readfd) }));
                 unlink(&readname);
 
                 let is_parsing = AtomicI32::new(0);
@@ -2365,7 +2384,14 @@ fn read_input(
                         }
 
                         let readingpos = AtomicI64::new(0);
-                        fwrite_check(&buf[..n], 1, n, &mut readfp, &readingpos, &reading);
+                        fwrite_check(
+                            &buf[..n],
+                            1,
+                            n,
+                            readfp.as_mut().unwrap(),
+                            &readingpos,
+                            &reading,
+                        );
                         ahead += n as i64;
 
                         if buf[n - 1] as i32 == read_parallel_this && ahead > PARSE_MIN {
@@ -2379,7 +2405,7 @@ fn read_input(
                                     parser_created = false;
                                 }
 
-                                let _ = readfp.flush();
+                                let _ = readfp.as_mut().unwrap().flush();
 
                                 readname = format!("{}/read.XXXXXXXX", tmpdir);
                                 let next_fd = mkstemp_cloexec(&mut readname);
@@ -2388,10 +2414,9 @@ fn read_input(
                                     std::process::exit(EXIT_OPEN);
                                 }
                                 // SAFETY: the writer takes over the new descriptor.
-                                let next_fp =
-                                    BufWriter::new(unsafe { File::from_raw_fd(next_fd) });
+                                let next_fp = BufWriter::new(unsafe { File::from_raw_fd(next_fd) });
 
-                                let this_fp = std::mem::replace(&mut readfp, next_fp);
+                                let this_fp = readfp.replace(next_fp).unwrap();
                                 let this_fd = std::mem::replace(&mut readfd, next_fd);
                                 start_parsing(
                                     scope,
@@ -2415,13 +2440,10 @@ fn read_input(
                         parser_created = false;
                     }
 
-                    let _ = readfp.flush();
+                    let _ = readfp.as_mut().unwrap().flush();
 
                     if ahead > 0 {
-                        let this_fp = std::mem::replace(
-                            &mut readfp,
-                            BufWriter::new(borrow_fd_clone_placeholder()),
-                        );
+                        let this_fp = readfp.take().unwrap();
                         start_parsing(
                             scope,
                             rpa(readfd, this_fp, initial_offset, ahead),
@@ -2439,10 +2461,7 @@ fn read_input(
                     } else {
                         // The C++ never closes this last temporary file when
                         // nothing was left to parse, so neither does this.
-                        std::mem::forget(std::mem::replace(
-                            &mut readfp,
-                            BufWriter::new(borrow_fd_clone_placeholder()),
-                        ));
+                        std::mem::forget(readfp.take());
                     }
                     let _ = parser_created;
                 });
@@ -2489,8 +2508,7 @@ fn read_input(
         }
     }
 
-    let files_open_after_reading =
-        open_fd(get_null_device(), libc::O_RDONLY | libc::O_CLOEXEC, 0);
+    let files_open_after_reading = open_fd(get_null_device(), libc::O_RDONLY | libc::O_CLOEXEC, 0);
     if files_open_after_reading < 0 {
         perror("open /dev/null");
         std::process::exit(EXIT_OPEN);
@@ -2994,9 +3012,7 @@ fn read_input(
         }
 
         if count == 0 && dist_count == 0 && minimum_maxzoom == 0 {
-            eprintln!(
-                "Can't guess maxzoom (-zg) without at least two distinct feature locations"
-            );
+            eprintln!("Can't guess maxzoom (-zg) without at least two distinct feature locations");
             if let Some(db) = outdb.take() {
                 mbtiles_close(db.into_inner().unwrap(), pgm);
             }
@@ -3025,8 +3041,8 @@ fn read_input(
             // Go one zoom level beyond what is strictly necessary for nearby features.
             let want = nearby_ft / 2.0;
 
-            maxzoom = ((360.0 / (0.00000274 * want)).ln() / 2f64.ln() - full_detail as f64).ceil()
-                as i32;
+            maxzoom =
+                ((360.0 / (0.00000274 * want)).ln() / 2f64.ln() - full_detail as f64).ceil() as i32;
             if maxzoom < 0 {
                 maxzoom = 0;
             }
@@ -3131,8 +3147,7 @@ fn read_input(
 
         let mut total_tile_count: f64 = 0.0;
         for i in 1..=maxzoom {
-            let tile_count =
-                (area_sum / (((1i64 << (32 - i)) * (1i64 << (32 - i))) as f64)).ceil();
+            let tile_count = (area_sum / (((1i64 << (32 - i)) * (1i64 << (32 - i))) as f64)).ceil();
             total_tile_count += tile_count;
 
             // 2M tiles is an arbitrary limit, chosen to make tiling jobs
@@ -3308,9 +3323,7 @@ fn read_input(
         }
 
         if obasezoom < 0 && basezoom > maxzoom {
-            eprintln!(
-                "Couldn't find a suitable base zoom. Working from the other direction."
-            );
+            eprintln!("Couldn't find a suitable base zoom. Working from the other direction.");
             if gamma == 0.0 {
                 eprintln!("You might want to try -g1 to limit near-duplicates.");
             }
@@ -3435,22 +3448,19 @@ fn read_input(
         };
         // SAFETY: the sorted geometry file is changed only through this map
         // while it is mapped.
-        let mut geom: MmapMut = match unsafe {
-            MmapOptions::new()
-                .len(geomst_size as usize)
-                .map_mut(geomfd)
-        } {
-            Ok(m) if geomst_size > 0 => m,
-            Ok(_) => {
-                set_errno(libc::EINVAL);
-                perror("mmap geom for fixup");
-                std::process::exit(EXIT_MEMORY);
-            }
-            Err(e) => {
-                perror_io("mmap geom for fixup", &e);
-                std::process::exit(EXIT_MEMORY);
-            }
-        };
+        let mut geom: MmapMut =
+            match unsafe { MmapOptions::new().len(geomst_size as usize).map_mut(geomfd) } {
+                Ok(m) if geomst_size > 0 => m,
+                Ok(_) => {
+                    set_errno(libc::EINVAL);
+                    perror("mmap geom for fixup");
+                    std::process::exit(EXIT_MEMORY);
+                }
+                Err(e) => {
+                    perror_io("mmap geom for fixup", &e);
+                    std::process::exit(EXIT_MEMORY);
+                }
+            };
         let _ = geom.advise(Advice::Sequential);
         let _ = geom.advise(Advice::WillNeed);
 
@@ -3504,10 +3514,7 @@ fn read_input(
             for ip in 0..indices {
                 let here = map_at(ip);
                 if ip > 0 && here.start != map_at(ip - 1).end {
-                    eprintln!(
-                        "Mismatched index at {}: {} vs {}",
-                        ip, here.start, here.end
-                    );
+                    eprintln!("Mismatched index at {}: {} vs {}", ip, here.start, here.end);
                 }
                 let feature_minzoom = calc_feature_minzoom(&here, &mut ds, maxzoom, gamma);
                 geom[(here.end - 1) as usize] = feature_minzoom as u8;
@@ -3550,8 +3557,14 @@ fn read_input(
     let midy = AtomicU32::new(0);
     let mut strategies: Vec<Strategy> = Vec::new();
 
-    let initial_x: Vec<u32> = initial_x.iter().map(|v| v.load(Ordering::Relaxed)).collect();
-    let initial_y: Vec<u32> = initial_y.iter().map(|v| v.load(Ordering::Relaxed)).collect();
+    let initial_x: Vec<u32> = initial_x
+        .iter()
+        .map(|v| v.load(Ordering::Relaxed))
+        .collect();
+    let initial_y: Vec<u32> = initial_y
+        .iter()
+        .map(|v| v.load(Ordering::Relaxed))
+        .collect();
 
     let shared_nodes_slice: &[Node] = match &shared_nodes_map {
         Some(m) => {
@@ -3565,8 +3578,10 @@ fn read_input(
     };
 
     let unidecode_data = UNIDECODE_DATA.read().unwrap().clone();
-    let drop_by_attribute_as_needed_attribute =
-        DROP_BY_ATTRIBUTE_AS_NEEDED_ATTRIBUTE.read().unwrap().clone();
+    let drop_by_attribute_as_needed_attribute = DROP_BY_ATTRIBUTE_AS_NEEDED_ATTRIBUTE
+        .read()
+        .unwrap()
+        .clone();
 
     let written = traverse_zooms(
         &mut fd,
@@ -3715,18 +3730,6 @@ fn read_input(
     (ret, m)
 }
 
-/// A writer that discards everything, standing in for a temporary file that
-/// has been handed on and must not be closed twice.
-fn borrow_fd_clone_placeholder() -> File {
-    match File::open(get_null_device()) {
-        Ok(f) => f,
-        Err(e) => {
-            perror_io("open /dev/null", &e);
-            std::process::exit(EXIT_OPEN);
-        }
-    }
-}
-
 fn has_name(long_options: &[LongOption], pl: &'static AtomicI32) -> bool {
     for lo in long_options {
         if let Some(f) = lo.flag {
@@ -3798,17 +3801,14 @@ pub fn set_attribute_value(arg: &str) {
         let mut set_attributes = SET_ATTRIBUTES.write().unwrap();
         for (i, (key, value)) in root.entries().into_iter().enumerate() {
             if key.type_() != JsonType::String {
-                eprintln!(
-                    "{}: --set-attribute {}: key {} not a string",
-                    av(),
-                    arg,
-                    i
-                );
+                eprintln!("{}: --set-attribute {}: key {} not a string", av(), arg, i);
                 std::process::exit(EXIT_JSON);
             }
 
             let val = stringify_value(Some(value), "json", 1, root);
-            set_attributes.entry(key.string().to_string()).or_insert(val);
+            set_attributes
+                .entry(key.string().to_string())
+                .or_insert(val);
         }
 
         return;
@@ -3938,7 +3938,10 @@ fn long_options_orig() -> Vec<LongOption> {
         opt("maximum-zoom", REQ, b'z'),
         opt("minimum-zoom", REQ, b'Z'),
         opt("smallest-maximum-zoom-guess", REQ, b'~'),
-        flag("extend-zooms-if-still-dropping", &ADDITIONAL[A_EXTEND_ZOOMS]),
+        flag(
+            "extend-zooms-if-still-dropping",
+            &ADDITIONAL[A_EXTEND_ZOOMS],
+        ),
         opt("extend-zooms-if-still-dropping-maximum", REQ, b'~'),
         flag(
             "generate-variable-depth-tile-pyramid",
@@ -3986,9 +3989,18 @@ fn long_options_orig() -> Vec<LongOption> {
         opt("preserve-point-density-threshold", REQ, b'~'),
         opt("preserve-multiplier-density-threshold", REQ, b'~'),
         heading("Dropping or merging a fraction of features to keep under tile size limits"),
-        flag("drop-densest-as-needed", &ADDITIONAL[A_DROP_DENSEST_AS_NEEDED]),
-        flag("drop-fraction-as-needed", &ADDITIONAL[A_DROP_FRACTION_AS_NEEDED]),
-        flag("drop-smallest-as-needed", &ADDITIONAL[A_DROP_SMALLEST_AS_NEEDED]),
+        flag(
+            "drop-densest-as-needed",
+            &ADDITIONAL[A_DROP_DENSEST_AS_NEEDED],
+        ),
+        flag(
+            "drop-fraction-as-needed",
+            &ADDITIONAL[A_DROP_FRACTION_AS_NEEDED],
+        ),
+        flag(
+            "drop-smallest-as-needed",
+            &ADDITIONAL[A_DROP_SMALLEST_AS_NEEDED],
+        ),
         opt("drop-by-attribute-as-needed", REQ, b'~'),
         opt("drop-by-attribute-order", REQ, b'~'),
         flag(
@@ -4023,7 +4035,10 @@ fn long_options_orig() -> Vec<LongOption> {
         flag("no-line-simplification", &PREVENT[P_SIMPLIFY]),
         flag("simplify-only-low-zooms", &PREVENT[P_SIMPLIFY_LOW]),
         opt("simplification-at-maximum-zoom", REQ, b'~'),
-        flag("no-tiny-polygon-reduction", &PREVENT[P_TINY_POLYGON_REDUCTION]),
+        flag(
+            "no-tiny-polygon-reduction",
+            &PREVENT[P_TINY_POLYGON_REDUCTION],
+        ),
         flag(
             "no-tiny-polygon-reduction-at-maximum-zoom",
             &PREVENT[P_TINY_POLYGON_REDUCTION_AT_MAXZOOM],
@@ -4035,7 +4050,10 @@ fn long_options_orig() -> Vec<LongOption> {
         ),
         flag("visvalingam", &ADDITIONAL[A_VISVALINGAM]),
         heading("Attempts to improve shared polygon boundaries"),
-        flag("detect-shared-borders", &ADDITIONAL[A_DETECT_SHARED_BORDERS]),
+        flag(
+            "detect-shared-borders",
+            &ADDITIONAL[A_DETECT_SHARED_BORDERS],
+        ),
         flag("grid-low-zooms", &ADDITIONAL[A_GRID_LOW_ZOOMS]),
         heading("Controlling clipping to tile boundaries"),
         opt("buffer", REQ, b'b'),
@@ -4139,8 +4157,10 @@ fn usage(argv: &[String], status: i32) -> ! {
 /// libc `sscanf` with a format of `%lf` conversions. Returns the number of
 /// values converted.
 fn sscanf_doubles(s: &str, format: &str, out: &mut [f64; 4]) -> i32 {
-    let (Ok(cs), Ok(cf)) = (std::ffi::CString::new(cstr(s)), std::ffi::CString::new(format))
-    else {
+    let (Ok(cs), Ok(cf)) = (
+        std::ffi::CString::new(cstr(s)),
+        std::ffi::CString::new(format),
+    ) else {
         return 0;
     };
     let [a, b, c, d] = out;
@@ -4159,8 +4179,10 @@ fn sscanf_doubles(s: &str, format: &str, out: &mut [f64; 4]) -> i32 {
 
 /// libc `sscanf` with a format of three `%u` conversions.
 fn sscanf_unsigneds(s: &str, format: &str, out: &mut [u32; 3]) -> i32 {
-    let (Ok(cs), Ok(cf)) = (std::ffi::CString::new(cstr(s)), std::ffi::CString::new(format))
-    else {
+    let (Ok(cs), Ok(cf)) = (
+        std::ffi::CString::new(cstr(s)),
+        std::ffi::CString::new(format),
+    ) else {
         return 0;
     };
     let [a, b, c] = out;
@@ -4268,7 +4290,12 @@ pub fn main() {
     let mut g = Getopt::new();
     let mut option_index: usize = 0;
     loop {
-        i = g.getopt_long(&mut argv, &getopt_str, &long_options, Some(&mut option_index));
+        i = g.getopt_long(
+            &mut argv,
+            &getopt_str,
+            &long_options,
+            Some(&mut option_index),
+        );
         if i == -1 {
             break;
         }
@@ -5158,6 +5185,11 @@ pub fn fopen_oflag(name: &str, _mode: &str, oflag: i32) -> Option<File> {
 
 /// `progress_time()`: whether enough time has passed to print progress again.
 pub fn progress_time() -> bool {
+    // tile-join and tippecanoe-decode link a progress_time() that is always false
+    if !get(&PROGRESS_TIME_ENABLED) {
+        return false;
+    }
+
     let progress_interval = PROGRESS_INTERVAL.load();
     if progress_interval == 0.0 {
         return true;
@@ -5170,11 +5202,7 @@ pub fn progress_time() -> bool {
     let now: f64;
     // SAFETY: tv is a valid timeval to fill in.
     if unsafe { libc::gettimeofday(&mut tv, std::ptr::null_mut()) } != 0 {
-        eprintln!(
-            "{}: Can't get the time of day: {}",
-            av(),
-            strerror(errno())
-        );
+        eprintln!("{}: Can't get the time of day: {}", av(), strerror(errno()));
         now = 0.0;
     } else {
         now = tv.tv_sec as f64 + tv.tv_usec as f64 / 1000000.0;
@@ -5215,16 +5243,28 @@ mod tests {
         let b = ix.to_bytes();
         assert_eq!(Index::from_bytes(&b), ix);
         // The C++ bitfields: segment in the low 16 bits, then t, then seq
-        assert_eq!(u64::from_ne_bytes(b[24..32].try_into().unwrap()), (5 << 18) | (1 << 16) | 0xFFFE);
+        assert_eq!(
+            u64::from_ne_bytes(b[24..32].try_into().unwrap()),
+            (5 << 18) | (1 << 16) | 0xFFFE
+        );
     }
 
     #[test]
     fn index_ordering() {
-        let mut a = Index { ix: 5, ..Default::default() };
+        let mut a = Index {
+            ix: 5,
+            ..Default::default()
+        };
         a.set_seq(10);
-        let mut b = Index { ix: 5, ..Default::default() };
+        let mut b = Index {
+            ix: 5,
+            ..Default::default()
+        };
         b.set_seq(11);
-        let c = Index { ix: 4, ..Default::default() };
+        let c = Index {
+            ix: 4,
+            ..Default::default()
+        };
         assert_eq!(indexcmp(&a, &b), -1);
         assert_eq!(indexcmp(&b, &a), 1);
         assert_eq!(indexcmp(&c, &a), -1);
@@ -5240,11 +5280,18 @@ mod tests {
         for run in runs.iter() {
             let start = map.len() as i64;
             for &v in run.iter() {
-                let mut ix = Index { ix: v, ..Default::default() };
+                let mut ix = Index {
+                    ix: v,
+                    ..Default::default()
+                };
                 ix.set_seq(v);
                 map.extend_from_slice(&ix.to_bytes());
             }
-            merges.push(Mergelist { start, end: map.len() as i64, next: None });
+            merges.push(Mergelist {
+                start,
+                end: map.len() as i64,
+                next: None,
+            });
         }
 
         let mut head = None;
@@ -5290,6 +5337,9 @@ mod tests {
         );
         assert_eq!(vertexcmp(&a, &b), -1);
         assert_eq!(vertexcmp_bytes(&b.to_bytes(), &a.to_bytes()), 1);
-        assert_eq!(nodecmp_bytes(&Node { index: 3 }.to_bytes(), &Node { index: 3 }.to_bytes()), 0);
+        assert_eq!(
+            nodecmp_bytes(&Node { index: 3 }.to_bytes(), &Node { index: 3 }.to_bytes()),
+            0
+        );
     }
 }

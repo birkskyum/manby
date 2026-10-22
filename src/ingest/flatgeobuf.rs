@@ -208,8 +208,7 @@ pub fn read_header<'a>(src: &'a [u8], quiet: bool) -> crate::Result<Header<'a>> 
     }
 
     let mut features = Vec::new();
-    let mut start =
-        ((MAGICBYTES + 4 + header_size) as u64).saturating_add(index_size) as usize;
+    let mut start = ((MAGICBYTES + 4 + header_size) as u64).saturating_add(index_size) as usize;
     while start < src.len() {
         let feature_size = prefixed_size(&src[start..]) as usize;
         let buf = clamp(src, start, feature_size + 4);

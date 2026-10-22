@@ -95,6 +95,10 @@ pub struct Options {
     pub memory_budget: Option<u64>,
     /// Make different tiles from tippecanoe's where that is faster. See DESIGN.md.
     pub fast: bool,
+    /// `--compression=zlib`: store every tile as zlib compresses it, so the
+    /// archive is byte for byte tippecanoe's. Otherwise tiles that fit
+    /// whatever zlib does are stored compressed with libdeflate.
+    pub zlib_tiles: bool,
     /// `--tile-format`: MVT, as tippecanoe writes, or MapLibre Tiles.
     pub tile_format: crate::mlt::TileFormat,
     /// `--mlt-profile`: which encodings MLT tiles may use.
@@ -215,6 +219,7 @@ impl Default for Options {
             threads: 0,
             memory_budget: None,
             fast: false,
+            zlib_tiles: false,
             tile_format: crate::mlt::TileFormat::Mvt,
             mlt_profile: crate::mlt::MltProfile::Web,
             program: "manby".to_string(),
@@ -1119,6 +1124,7 @@ fn long_options_orig() -> Vec<LongOption> {
         opt("version", NO, b'v'),
         heading("manby"),
         opt("fast", NO, b'~'),
+        opt("compression", REQ, b'~'),
         opt("threads", REQ, b'~'),
         opt("memory-budget", REQ, b'~'),
         opt("tile-format", REQ, b'~'),
@@ -1376,6 +1382,16 @@ pub fn parse_args(argv: &[String]) -> crate::Result<Options> {
                                 as usize
                     }
                     "fast" => o.fast = true,
+                    "compression" => match arg {
+                        "zlib" => o.zlib_tiles = true,
+                        "libdeflate" => o.zlib_tiles = false,
+                        _ => {
+                            return err_args(format!(
+                                "{}: --compression must be zlib or libdeflate, not {}",
+                                argv0, arg
+                            ));
+                        }
+                    },
                     "threads" => {
                         o.threads = require_int(&optarg, "Threads", &argv0)?.max(0) as usize
                     }
@@ -1724,6 +1740,23 @@ mod tests {
         }
         assert!(parse_args(&args("tippecanoe -o x.pmtiles --tile-format=png in.json")).is_err());
         assert!(parse_args(&args("tippecanoe -o x.pmtiles --mlt-profile=tiny in.json")).is_err());
+    }
+
+    #[test]
+    fn compression() {
+        let o = parse_args(&args("tippecanoe -o out.pmtiles in.json")).unwrap();
+        assert!(!o.zlib_tiles);
+        let o = parse_args(&args(
+            "tippecanoe -o out.pmtiles --compression=zlib in.json",
+        ))
+        .unwrap();
+        assert!(o.zlib_tiles);
+        let o = parse_args(&args(
+            "tippecanoe -o x.pmtiles --compression libdeflate in.json",
+        ))
+        .unwrap();
+        assert!(!o.zlib_tiles);
+        assert!(parse_args(&args("tippecanoe -o x.pmtiles --compression=zstd in.json")).is_err());
     }
 
     #[test]

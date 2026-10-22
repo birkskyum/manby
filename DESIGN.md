@@ -68,12 +68,14 @@ Walks the tile quadtree from the top. Each tile is a task. Its input is the feat
 
 ### Compression (`src/compress.rs`)
 
-In the default mode tiles are compressed with the system zlib at tippecanoe's settings, because the size limit is checked on the compressed size and so the compressed bytes decide which features are dropped. Fast mode uses libdeflate.
+The size limit is checked on the compressed size, so the size zlib makes at tippecanoe's settings decides which features a tile keeps. manby runs zlib only where that size can change a decision. zlib's `deflateBound()` is the most bytes zlib can make of a tile. When that bound, scaled up for skipped features as tippecanoe scales the size, is within the limit (or `-pk` lifts the limit), the tile is kept whatever zlib makes of it, so manby compresses it with libdeflate instead and skips the check. A tile near or over the limit goes through zlib, and when it is kept, that zlib stream is stored as is. Tiles over the feature count limit always go through zlib, since their size picks the next threshold.
+
+libdeflate at its default level 6 makes smaller tiles than zlib -6 on all four benchmarks, by 0.1% (roads-z14), 1.1% (tracts-z12), 3.3% (tracts) and 4.1% (points), and is 1.8 to 4.5 times faster (`examples/compress_levels.rs` compares every level). So the tiles decode to exactly tippecanoe's, and the archives are smaller, but not byte for byte tippecanoe's. `--compression=zlib` stores every tile as zlib makes it, which makes tippecanoe's archive byte for byte, apart from the flag itself in the `generator_options` metadata.
 
 ## Fast mode
 
 Opt-in changes that make different tiles, measured against the default mode for speed and for how close the tiles stay (tile sizes under the limits, features kept per zoom):
-- libdeflate instead of zlib.
+- libdeflate's compressed size for the size limit, instead of zlib's.
 - Predicting each feature's share of the tile size and choosing the drop threshold in one pass, instead of encode-and-retry.
 - Reading the features of a low zoom tile in drop-priority order, so a zoom 0 tile touches only the features it keeps.
 

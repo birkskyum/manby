@@ -112,6 +112,8 @@ pub struct TileOptions {
     pub threads: usize,
     /// Compress with libdeflate instead of zlib (different tiles).
     pub fast: bool,
+    /// Store every tile as zlib compresses it, as tippecanoe does.
+    pub zlib_tiles: bool,
     /// Report each zoom level's passes and compression to stderr.
     pub timing: bool,
     /// Report every attempt at every tile to stderr.
@@ -179,6 +181,7 @@ impl Default for TileOptions {
             quiet: true,
             threads: 0,
             fast: false,
+            zlib_tiles: false,
             timing: false,
             trace: false,
             tmpdir: std::path::PathBuf::from("/tmp"),
@@ -241,6 +244,7 @@ impl TileOptions {
             quiet: o.quiet,
             threads: o.threads,
             fast: o.fast,
+            zlib_tiles: o.zlib_tiles,
             timing: false,
             trace: false,
             tmpdir: std::path::PathBuf::from(&o.tmpdir),

@@ -241,33 +241,42 @@ pub fn par_ranges<R: Send>(
     })
 }
 
-/// Like `par_ranges`, for changing the items of a slice; `f` gets each part
-/// and the index of its first item.
-pub fn par_chunks_mut<T: Send>(
-    items: &mut [T],
-    min_len: usize,
-    threads: usize,
-    f: impl Fn(usize, &mut [T]) + Sync,
-) {
+/// Runs `f` on every item, each item taken by whichever of up to `threads`
+/// scoped threads is free next, for work whose cost varies a lot from item
+/// to item. Each item is changed by exactly one call.
+pub fn par_each_mut<T: Send>(items: &mut [T], threads: usize, f: impl Fn(usize, &mut T) + Sync) {
     let n = items.len();
-    let parts = (n / min_len.max(1)).clamp(1, threads.max(1));
-    if parts <= 1 {
-        f(0, items);
+    let workers = threads.min(n);
+    if workers <= 1 {
+        for (i, item) in items.iter_mut().enumerate() {
+            f(i, item);
+        }
         return;
     }
-    let size = n.div_ceil(parts);
-    let f = &f;
-    std::thread::scope(|s| {
-        let mut chunks = items.chunks_mut(size).enumerate();
-        let (_, first) = chunks.next().unwrap();
-        let handles: Vec<_> = chunks
-            .map(|(i, c)| s.spawn(move || f(i * size, c)))
-            .collect();
-        f(0, first);
-        for h in handles {
-            if let Err(e) = h.join() {
-                std::panic::resume_unwind(e);
+
+    struct Items<T>(*mut T);
+    // SAFETY: the pointer is only used to reach distinct items, each from one
+    // thread, while `items` stays mutably borrowed for the scope.
+    unsafe impl<T: Send> Sync for Items<T> {}
+
+    let base = Items(items.as_mut_ptr());
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let work = || {
+        let base = &base;
+        loop {
+            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if i >= n {
+                break;
             }
+            // SAFETY: i < n, and fetch_add hands out each index once.
+            let item = unsafe { &mut *base.0.add(i) };
+            f(i, item);
         }
+    };
+    std::thread::scope(|s| {
+        for _ in 1..workers {
+            s.spawn(work);
+        }
+        work();
     });
 }

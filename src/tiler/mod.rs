@@ -8,6 +8,7 @@
 
 mod encode;
 mod engine;
+mod geom;
 mod make;
 mod read;
 mod util;

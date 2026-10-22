@@ -22,6 +22,8 @@ use tippecanoe::text::bit_reverse;
 use super::engine::Ctx;
 use super::util::{par_ranges, shift_right};
 use crate::store::Attr;
+use std::sync::Arc;
+use tippecanoe::serial::SerialVal;
 
 /// `pow(2, 64)`.
 const TWO_TO_THE_64: f64 = 18446744073709551616.0;
@@ -66,6 +68,9 @@ pub struct Cand {
     /// `NO_LIST` for the feature's own attributes without nulls, or an index
     /// into `ReadTile::attr_lists` when the filter excluded some.
     pub attrs: u32,
+    /// `NO_LIST`, or an index into `ReadTile::full` for the full keys and
+    /// values that a feature from the prefilter arrives with.
+    pub full: u32,
 }
 
 pub const NO_LIST: u32 = u32::MAX;
@@ -79,6 +84,7 @@ pub struct ReadTile {
     pub geom: Vec<Draw>,
     pub edges: Vec<Draw>,
     pub attr_lists: Vec<Vec<Attr>>,
+    pub full: Vec<(Vec<Arc<String>>, Vec<SerialVal>)>,
     pub original_features: i64,
     pub unclipped_features: i64,
     pub minzoom_feature_pending: bool,
@@ -136,6 +142,7 @@ pub fn read_tile(ctx: &Ctx<'_>, input: TileInput, rp: &ReadParams) -> ReadTile {
         geom: Vec::new(),
         edges: Vec::new(),
         attr_lists: Vec::new(),
+        full: Vec::new(),
         original_features: 0,
         unclipped_features: 0,
         minzoom_feature_pending: false,
@@ -438,6 +445,7 @@ fn read_chunk(
             edge_start,
             edge_len: edge_nodes.len() as u32,
             attrs,
+            full: NO_LIST,
         });
     }
 

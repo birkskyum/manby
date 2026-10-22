@@ -131,3 +131,22 @@ layer-json-test: tippecanoe tippecanoe-decode
 # Use this target to regenerate the standards that the tests are compared against
 # after making a change that legitimately changes their output
 
+
+# Don't test overflow with geobuf, because it fails (https://github.com/mapbox/geobuf/issues/87)
+# Don't test stringids with geobuf, because it fails
+nogeobuf = tests/overflow/out/-z0.json $(wildcard tests/stringid/out/*.json)
+# tippecanoe-rs makes the same tiles as manby from these Geobuf inputs, and
+# neither matches the expected output
+nogeobuf += tests/coalesce-id/out/-z1_--coalesce_--reorder.json
+nogeobuf += tests/pointlm/out/-z15_-Z15_--drop-smallest-as-needed_-M300.json
+nogeobuf += tests/single-polygons/out/-Z21_-zg_-D10_-d10.json
+geobuf-test: tippecanoe-json-tool $(addsuffix .checkbuf,$(filter-out $(nogeobuf),$(TESTS)))
+
+# Run one at a time: the recipes rewrite the .geobuf files of their directory.
+%.json.checkbuf:
+	for i in $(wildcard $(subst $(SPACE),/,$(wordlist 1,2,$(subst /, ,$@)))/*.json); do ./tippecanoe-json-tool -w $$i | ./json2geobuf > $$i.geobuf; done
+	for i in $(wildcard $(subst $(SPACE),/,$(wordlist 1,2,$(subst /, ,$@)))/*.json.gz); do gzip -dc $$i | ./tippecanoe-json-tool -w | ./json2geobuf > $$i.geobuf; done
+	./tippecanoe -q -a@ -f -o $@.mbtiles $(call testargs,$(patsubst %.json.checkbuf,%,$(word 4,$(subst /, ,$@)))) $(foreach suffix,$(suffixes),$(addsuffix .geobuf,$(sort $(wildcard $(subst $(SPACE),/,$(wordlist 1,2,$(subst /, ,$@)))/*.$(suffix))))) < /dev/null
+	./tippecanoe-decode -x generator $@.mbtiles | sed 's/checkbuf/check/g' | sed 's/\.geobuf//g' > $@.out
+	cmp $@.out $(patsubst %.checkbuf,%,$@)
+	rm $@.out $@.mbtiles

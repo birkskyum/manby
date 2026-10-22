@@ -20,6 +20,7 @@
 pub mod chunk;
 pub mod csv;
 pub mod flatgeobuf;
+pub mod geobuf;
 pub mod geojson;
 pub mod json;
 pub mod serialize;
@@ -512,11 +513,32 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
             continue;
         }
         if format == "geobuf" || (name.len() > 7 && name.ends_with(".geobuf")) {
-            flush(&mut stderr);
-            return Err(Error::new(
-                EXIT_ARGS,
-                format!("{}: manby does not read geobuf yet", reading_name),
-            ));
+            let Some(map) = map else {
+                flush(&mut stderr);
+                return Err(Error::new(
+                    EXIT_MEMORY,
+                    format!(
+                        "{}: mmap: {}: {}",
+                        options.program,
+                        reading_name,
+                        tippecanoe::cstd::strerror(libc::EINVAL)
+                    ),
+                ));
+            };
+            let layername = sources[layer].layer.clone();
+            read_geobuf(
+                &mut parts,
+                &map,
+                &cfg,
+                &reading_name,
+                &layername,
+                &layer_names,
+                cpus,
+                &mut overall_offset,
+                &mut once,
+                &mut stderr,
+            )?;
+            continue;
         }
         if format == "csv" || (name.len() > 4 && name.ends_with(".csv")) {
             drop(map);
@@ -758,6 +780,120 @@ fn read_fgb(
         parts.dist_sum += seg_dist[i];
         // sic: tippecanoe assigns rather than adds the area sums of FlatGeobuf input
         parts.area_sum = seg_area[i];
+    }
+
+    for (chunk, r) in chunks {
+        print_messages(stderr, reading_name, &chunk.messages, 0, once);
+        if let Err(e) = r {
+            flush(stderr);
+            return Err(e);
+        }
+        parts.chunks.push(Accepted {
+            chunk,
+            unit: usize::MAX,
+            line_offset: 0,
+        });
+    }
+    flush(stderr);
+    Ok(())
+}
+
+/// Reads a Geobuf file, numbering its features in the batches and ranges that
+/// tippecanoe parses them in, and adding up the `-zg` sums as it does.
+#[allow(clippy::too_many_arguments)]
+fn read_geobuf(
+    parts: &mut Parts,
+    data: &[u8],
+    cfg: &Config<'_>,
+    reading_name: &str,
+    layername: &str,
+    layer_names: &[String],
+    cpus: usize,
+    overall_offset: &mut i64,
+    once: &mut HashSet<&'static str>,
+    stderr: &mut Vec<u8>,
+) -> crate::Result<()> {
+    let (events, keys) = geobuf::events(data, cpus)?;
+
+    // The chunks: each bare geometry, and each range of each batch.
+    let mut jobs: Vec<(usize, usize, usize)> = Vec::new();
+    for (ev, event) in events.iter().enumerate() {
+        match event {
+            geobuf::Event::Bare(_) => jobs.push((ev, 0, 0)),
+            geobuf::Event::Batch(q, _) => {
+                let size = q.len();
+                for i in 0..cpus {
+                    jobs.push((ev, size * i / cpus, size * (i + 1) / cpus));
+                }
+            }
+        }
+    }
+
+    let chunks: Vec<(Chunk, crate::Result<()>)> = jobs
+        .par_iter()
+        .map(|&(ev, a, b)| {
+            let mut chunk = Chunk::new(layer_names);
+            let r = match &events[ev] {
+                geobuf::Event::Bare(g) => {
+                    let mut p = g.p;
+                    geobuf::read_bare(&mut chunk, cfg, &mut p, g.dim, g.e, layername)
+                }
+                geobuf::Event::Batch(q, nkeys) => {
+                    let mut r = Ok(());
+                    for f in &q[a..b] {
+                        let mut p = f.p;
+                        r = geobuf::read_feature(
+                            &mut chunk,
+                            cfg,
+                            reading_name,
+                            &mut p,
+                            f.dim,
+                            f.e,
+                            &keys[..*nkeys],
+                            layername,
+                        );
+                        if r.is_err() {
+                            break;
+                        }
+                    }
+                    r
+                }
+            };
+            (chunk, r)
+        })
+        .collect();
+
+    let mut seg_dist = vec![0.0f64; cpus];
+    let mut seg_area = vec![0.0f64; cpus];
+    let mut l0 = *overall_offset;
+    let mut k = 0;
+    while k < jobs.len() {
+        let ev = jobs[k].0;
+        let n = if let geobuf::Event::Batch(..) = events[ev] {
+            cpus
+        } else {
+            1
+        };
+        let mut last_end = l0;
+        for (i, (chunk, _)) in chunks[k..k + n].iter().enumerate() {
+            let base = l0 + jobs[k + i].1 as i64;
+            parts.seq_base.push(base);
+            last_end = base + chunk.features.len() as i64;
+            for t in &chunk.dist_terms {
+                seg_dist[i] += t;
+            }
+            for t in &chunk.area_terms {
+                seg_area[i] += t;
+            }
+            parts.dist_count += chunk.dist_count;
+        }
+        l0 = last_end;
+        k += n;
+    }
+    *overall_offset = l0;
+    for i in 0..cpus {
+        parts.dist_sum += seg_dist[i];
+        parts.area_sum += seg_area[i];
     }
 
     for (chunk, r) in chunks {

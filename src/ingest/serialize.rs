@@ -576,20 +576,8 @@ pub fn serialize_feature(
 
     // The geometry as the tiling reads it back from the temporary files.
     let geom_start = chunk.geometry.len() as u64;
-    let mut bbox = [i64::MAX, i64::MAX, i64::MIN, i64::MIN];
-    for g in &scaled_geometry {
-        if g.op == VT_MOVETO || g.op == VT_LINETO {
-            let x = g.x * (1i64 << cfg.geometry_scale);
-            let y = g.y * (1i64 << cfg.geometry_scale);
-            bbox[0] = bbox[0].min(x);
-            bbox[1] = bbox[1].min(y);
-            bbox[2] = bbox[2].max(x);
-            bbox[3] = bbox[3].max(y);
-            chunk.geometry.push(Draw::new(g.op, x, y));
-        } else {
-            chunk.geometry.push(Draw::new(g.op, 0, 0));
-        }
-    }
+    crate::store::Geometry::encode(&mut chunk.geometry, &scaled_geometry);
+    chunk.geometry_vertices += scaled_geometry.len() as u64;
 
     let fb = &mut chunk.file_bbox;
     fb[0] = fb[0].min(sf_bbox[0]);

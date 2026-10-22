@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use tippecanoe::geometry::{Draw, VT_LINETO, VT_MOVETO};
+use tippecanoe::geometry::{Draw, DrawVec, VT_LINETO, VT_MOVETO};
 use tippecanoe::mbtiles::LayermapEntry;
 use tippecanoe::serial::SerialVal;
 
@@ -70,6 +70,220 @@ pub struct Attr {
 pub struct PoolOffsets {
     pub key: i64,
     pub value: i64,
+}
+
+/// A sequence kept as the vectors it was built in, so that joining the
+/// pieces that parallel jobs made does not copy them.
+#[derive(Clone)]
+pub struct Chunked<T> {
+    parts: Vec<Vec<T>>,
+    /// The end of each part in the whole sequence.
+    ends: Vec<usize>,
+}
+
+impl<T> Default for Chunked<T> {
+    fn default() -> Self {
+        Chunked {
+            parts: Vec::new(),
+            ends: Vec::new(),
+        }
+    }
+}
+
+impl<T> Chunked<T> {
+    pub fn len(&self) -> usize {
+        self.ends.last().copied().unwrap_or(0)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Appends a part.
+    pub fn append(&mut self, part: Vec<T>) {
+        if part.is_empty() {
+            return;
+        }
+        self.ends.push(self.len() + part.len());
+        self.parts.push(part);
+    }
+
+    pub fn push(&mut self, v: T) {
+        if self.parts.is_empty() {
+            self.parts.push(Vec::new());
+            self.ends.push(0);
+        }
+        self.parts.last_mut().unwrap().push(v);
+        *self.ends.last_mut().unwrap() += 1;
+    }
+
+    fn locate(&self, i: usize) -> (usize, usize) {
+        let p = if self.parts.len() == 1 {
+            0
+        } else {
+            self.ends.partition_point(|&e| e <= i)
+        };
+        let start = if p == 0 { 0 } else { self.ends[p - 1] };
+        (p, i - start)
+    }
+
+    /// `len` items from `start`, which lie in one part.
+    pub fn slice(&self, start: usize, len: usize) -> &[T] {
+        if len == 0 {
+            return &[];
+        }
+        let (p, off) = self.locate(start);
+        &self.parts[p][off..off + len]
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
+        self.parts.iter().flatten()
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.parts.iter_mut().flatten()
+    }
+}
+
+impl<T> std::ops::Index<usize> for Chunked<T> {
+    type Output = T;
+
+    fn index(&self, i: usize) -> &T {
+        let (p, off) = self.locate(i);
+        &self.parts[p][off]
+    }
+}
+
+impl<T: Clone> Chunked<T> {
+    pub fn extend_from_slice(&mut self, s: &[T]) {
+        for v in s {
+            self.push(v.clone());
+        }
+    }
+}
+
+impl<'a, T> IntoIterator for &'a Chunked<T> {
+    type Item = &'a T;
+    type IntoIter = std::iter::Flatten<std::slice::Iter<'a, Vec<T>>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.parts.iter().flatten()
+    }
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for Chunked<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
+}
+
+/// Feature geometry, packed as tippecanoe's temporary files keep it: for
+/// each vertex its op and the differences of its coordinates from the
+/// vertex before, in units of the geometry scale, as varints. The vertex
+/// codes are `zigzag(dx) << 2 | k`, where `k` is 0 for a move, 1 for a
+/// line, and 2 for any other op, which follows as a byte without
+/// coordinates; `zigzag(dy)` follows a move or line.
+#[derive(Clone, Debug, Default)]
+pub struct Geometry {
+    bytes: Chunked<u8>,
+    vertices: u64,
+}
+
+fn put_varint(out: &mut Vec<u8>, mut v: u64) {
+    while v >= 0x80 {
+        out.push(v as u8 | 0x80);
+        v >>= 7;
+    }
+    out.push(v as u8);
+}
+
+fn get_varint(data: &[u8], pos: &mut usize) -> u64 {
+    let mut v = 0u64;
+    let mut shift = 0;
+    loop {
+        let b = data[*pos];
+        *pos += 1;
+        v |= ((b & 0x7F) as u64) << shift;
+        if b < 0x80 {
+            return v;
+        }
+        shift += 7;
+    }
+}
+
+fn zigzag(v: i64) -> u64 {
+    ((v << 1) ^ (v >> 63)) as u64
+}
+
+fn unzigzag(v: u64) -> i64 {
+    (v >> 1) as i64 ^ -((v & 1) as i64)
+}
+
+impl Geometry {
+    /// Appends a feature's geometry, its coordinates already divided by the
+    /// geometry scale, to `out`.
+    pub fn encode(out: &mut Vec<u8>, g: &[Draw]) {
+        let (mut x, mut y) = (0i64, 0i64);
+        for d in g {
+            if d.op == VT_MOVETO || d.op == VT_LINETO {
+                let k = (d.op == VT_LINETO) as u64;
+                put_varint(out, zigzag(d.x - x) << 2 | k);
+                put_varint(out, zigzag(d.y - y));
+                x = d.x;
+                y = d.y;
+            } else {
+                put_varint(out, 2);
+                out.push(d.op as u8);
+            }
+        }
+    }
+
+    /// Appends the geometry that one reader wrote, with `vertices` vertices.
+    pub fn append(&mut self, part: Vec<u8>, vertices: u64) {
+        self.bytes.append(part);
+        self.vertices += vertices;
+    }
+
+    /// The bytes so far, where the next feature's geometry starts.
+    pub fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
+    /// The number of vertices.
+    pub fn vertices(&self) -> u64 {
+        self.vertices
+    }
+
+    /// Appends `n` vertices from byte `start` to `out`, in world coordinates.
+    pub fn decode(&self, start: u64, n: u32, geometry_scale: i32, out: &mut DrawVec) {
+        if n == 0 {
+            return;
+        }
+        let (p, off) = self.bytes.locate(start as usize);
+        let data = &self.bytes.parts[p][..];
+        let mut pos = off;
+        let (mut x, mut y) = (0i64, 0i64);
+        out.reserve(n as usize);
+        for _ in 0..n {
+            let c = get_varint(data, &mut pos);
+            match c & 3 {
+                2 => {
+                    out.push(Draw::new(data[pos] as i8, 0, 0));
+                    pos += 1;
+                }
+                k => {
+                    x += unzigzag(c >> 2);
+                    y += unzigzag(get_varint(data, &mut pos));
+                    let op = if k == 0 { VT_MOVETO } else { VT_LINETO };
+                    out.push(Draw::new(op, x << geometry_scale, y << geometry_scale));
+                }
+            }
+        }
+    }
 }
 
 /// A value: its type and its string, as tippecanoe's string pool keeps it.
@@ -150,8 +364,10 @@ pub struct FeatureStore {
     pub features: Vec<Feature>,
     /// World coordinates (2^32 per side at zoom 0), with tippecanoe's move and
     /// line ops, as `decode_geometry` returns them at zoom 0.
-    pub geometry: Vec<Draw>,
-    pub attrs: Vec<Attr>,
+    pub geometry: Geometry,
+    /// The geometry's coordinates are multiples of `2^geometry_scale`.
+    pub geometry_scale: i32,
+    pub attrs: Chunked<Attr>,
     /// Interned attribute keys.
     pub keys: Vec<String>,
     /// Interned attribute values, typed as tippecanoe's string pool types them.
@@ -195,15 +411,43 @@ pub struct FeatureStore {
 }
 
 impl FeatureStore {
-    pub fn feature_geometry(&self, f: &Feature) -> &[Draw] {
-        &self.geometry[f.geom_start as usize..f.geom_start as usize + f.geom_len as usize]
+    /// The feature's geometry, in world coordinates, as `decode_geometry`
+    /// reads it back at zoom 0.
+    pub fn feature_geometry(&self, f: &Feature) -> DrawVec {
+        let mut out = DrawVec::new();
+        self.geometry_into(f, &mut out);
+        out
+    }
+
+    /// Appends the feature's geometry to `out`.
+    pub fn geometry_into(&self, f: &Feature, out: &mut DrawVec) {
+        self.geometry
+            .decode(f.geom_start, f.geom_len, self.geometry_scale, out);
+    }
+
+    /// Appends world geometry, whose coordinates must be multiples of the
+    /// geometry scale, returning where it starts.
+    pub fn push_geometry(&mut self, g: &[Draw]) -> u64 {
+        let gs = self.geometry_scale;
+        let scaled: DrawVec = g
+            .iter()
+            .map(|d| {
+                debug_assert!(d.x % (1i64 << gs) == 0 && d.y % (1i64 << gs) == 0);
+                Draw::new(d.op, d.x >> gs, d.y >> gs)
+            })
+            .collect();
+        let start = self.geometry.len() as u64;
+        let mut part = Vec::new();
+        Geometry::encode(&mut part, &scaled);
+        self.geometry.append(part, g.len() as u64);
+        start
     }
 
     /// The bounds of the feature's points, min x, min y, max x, max y, as
     /// `decode_geometry` gives them at zoom 0.
     pub fn feature_bbox(&self, f: &Feature) -> [i64; 4] {
         let mut b = [i64::MAX, i64::MAX, i64::MIN, i64::MIN];
-        for d in self.feature_geometry(f) {
+        for d in &self.feature_geometry(f) {
             if d.op == VT_MOVETO || d.op == VT_LINETO {
                 b[0] = b[0].min(d.x);
                 b[1] = b[1].min(d.y);
@@ -215,7 +459,7 @@ impl FeatureStore {
     }
 
     pub fn feature_attrs(&self, f: &Feature) -> &[Attr] {
-        &self.attrs[f.attr_start as usize..f.attr_start as usize + f.attr_len as usize]
+        self.attrs.slice(f.attr_start as usize, f.attr_len as usize)
     }
 
     /// The layer statistics in the form tippecanoe-rs's metadata code takes.

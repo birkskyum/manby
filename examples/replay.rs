@@ -265,7 +265,10 @@ fn main() {
         .collect();
     let merged = tippecanoe::mbtiles::merge_layermaps(&layermaps);
 
-    let mut store = FeatureStore::default();
+    let mut store = FeatureStore {
+        geometry_scale: o.geometry_scale,
+        ..FeatureStore::default()
+    };
     let mut keys: HashMap<Vec<u8>, u32> = HashMap::new();
     let mut values: HashMap<(i8, Vec<u8>), u32> = HashMap::new();
     let mut layers: HashMap<String, u32> = HashMap::new();
@@ -312,15 +315,14 @@ fn main() {
             store.attrs.push(Attr { key, value });
         }
 
-        let geom_start = store.geometry.len() as u64;
-        for d in &sf.geometry {
-            let mut d = *d;
+        let mut world = sf.geometry.clone();
+        for d in world.iter_mut() {
             if d.op == VT_MOVETO || d.op == VT_LINETO {
                 d.x += ox;
                 d.y += oy;
             }
-            store.geometry.push(d);
         }
+        let geom_start = store.push_geometry(&world);
         store.features.push(Feature {
             keep_index: true,
             // the temporary file is already in order; the tiler does not read the sort key

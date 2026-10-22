@@ -17,7 +17,7 @@ use tippecanoe::write_json::{JsonWriter, layer_to_geojson};
 
 use super::engine::Ctx;
 use super::read::{Cand, Geoms, NO_LIST, ReadTile};
-use super::util::Chunked;
+use crate::store::Chunked;
 use crate::store::{Feature, FeatureStore, Layer};
 
 /// What the prefilter made of a tile's candidates: features of their own,

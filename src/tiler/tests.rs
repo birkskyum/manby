@@ -44,7 +44,10 @@ struct Builder {
 impl Builder {
     fn new(gs: i32) -> Builder {
         Builder {
-            store: FeatureStore::default(),
+            store: FeatureStore {
+                geometry_scale: gs,
+                ..FeatureStore::default()
+            },
             gs,
             keys: HashMap::new(),
             values: HashMap::new(),
@@ -88,8 +91,8 @@ impl Builder {
             }
         }
 
-        let geom_start = self.store.geometry.len() as u64;
         let mut bbox = [i64::MAX, i64::MAX, i64::MIN, i64::MIN];
+        let mut quantized = Vec::with_capacity(geom.len());
         for d in geom {
             if d.op == VT_MOVETO || d.op == VT_LINETO {
                 let x = self.q(d.x);
@@ -100,11 +103,12 @@ impl Builder {
                     bbox[2].max(x),
                     bbox[3].max(y),
                 ];
-                self.store.geometry.push(Draw::new(d.op, x, y));
+                quantized.push(Draw::new(d.op, x, y));
             } else {
-                self.store.geometry.push(Draw::new(d.op, 0, 0));
+                quantized.push(Draw::new(d.op, 0, 0));
             }
         }
+        let geom_start = self.store.push_geometry(&quantized);
 
         let attr_start = self.store.attrs.len() as u64;
         for &(k, ty, v) in attrs {

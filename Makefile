@@ -24,6 +24,10 @@ cargo-build:
 
 $(BINS): cargo-build ;
 
+# The test recipes below run ./tippecanoe and the other programs, so they have to
+# wait for the build, even with -j.
+$(addsuffix .check,$(wildcard tests/*/out/*.json)): | $(BINS)
+
 # The unit tests from unit.cpp live next to the code they test.
 .PHONY: unit
 unit:

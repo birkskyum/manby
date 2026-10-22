@@ -12,7 +12,7 @@ pub struct MallocConf(*const u8);
 unsafe impl Sync for MallocConf {}
 #[unsafe(export_name = "_rjem_malloc_conf")]
 pub static MALLOC_CONF: MallocConf =
-    MallocConf(c"narenas:4,dirty_decay_ms:0,muzzy_decay_ms:0".as_ptr() as *const u8);
+    MallocConf(c"narenas:4,dirty_decay_ms:0,muzzy_decay_ms:0,retain:true".as_ptr() as *const u8);
 
 fn main() {
     let argv: Vec<String> = std::env::args().collect();

@@ -6,6 +6,7 @@
 //! go into the tile, and retrying with stricter thresholds when it is too big,
 //! then works on those candidates without reading them again.
 
+mod accum;
 mod encode;
 mod engine;
 mod filter;

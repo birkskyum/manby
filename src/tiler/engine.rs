@@ -24,6 +24,7 @@ use crate::error::Error;
 use crate::mem::{Rest, Spool, Stored};
 use crate::sink::TileSink;
 use crate::store::FeatureStore;
+use rayon::prelude::*;
 
 /// What every tile of a run shares.
 pub struct Ctx<'a> {
@@ -37,6 +38,10 @@ pub struct Ctx<'a> {
     pub codes: ValueCodes,
     /// Each key's slot in tippecanoe's key dedup cache.
     pub key_slots: Vec<u32>,
+    /// `--accumulate-attribute`'s operation for each of the store's keys.
+    pub key_accum: Vec<Option<tippecanoe::attribute::AttributeOp>>,
+    /// With `--accumulate-attribute`, each value as `atof` reads it.
+    pub value_num: Buf<f64>,
     /// The threads that help with the work inside one tile.
     pub helpers: Arc<Helpers>,
     /// The memory for tile data that waits: inputs, and tiles not written yet.
@@ -66,10 +71,31 @@ impl<'a> Ctx<'a> {
 
         let codes = ValueCodes::new(&store.values);
         let key_slots = store.keys.iter().map(|k| key_slot(k)).collect();
+        let key_accum = store
+            .keys
+            .iter()
+            .map(|k| o.attribute_accum.get(k).copied())
+            .collect();
+        let value_num = if o.attribute_accum.is_empty() {
+            Buf::new()
+        } else {
+            let mut nums = Buf::with_capacity(store.values.len());
+            nums.resize(store.values.len(), 0.0);
+            nums.par_chunks_mut(1 << 14)
+                .enumerate()
+                .for_each(|(c, part)| {
+                    for (k, n) in part.iter_mut().enumerate() {
+                        *n = super::accum::to_double(store.values.get(((c << 14) + k) as u32).s);
+                    }
+                });
+            nums
+        };
 
         Ctx {
             codes,
             key_slots,
+            key_accum,
+            value_num,
             helpers,
             rest: Rest::new(o.rest_memory),
             counters: Default::default(),

@@ -4,7 +4,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use tippecanoe::attribute::preserve_attribute;
 use tippecanoe::clip::{
     close_poly, coalesce_polygon, get_mp_area as get_mp_area_vec, remove_noop, to_tile_scale,
 };
@@ -26,6 +25,7 @@ use tippecanoe::serial::{
 use tippecanoe::shared_borders::find_common_edges;
 use tippecanoe::tile::{Strategy, manage_gap};
 
+use super::accum;
 use super::encode::LayerEnc;
 use super::engine::Ctx;
 use super::filter::prefilter_tile;
@@ -140,6 +140,8 @@ struct TF {
     attrs: Option<Box<Vec<Attr>>>,
     full_keys: Lazy<Arc<String>>,
     full_values: Lazy<SerialVal>,
+    /// Accumulated numbers that `full_values` does not show yet.
+    accs: Lazy<accum::Acc>,
     extent: i64,
     index: u64,
     reduced: bool,
@@ -214,12 +216,22 @@ impl<'a> Attrs<'a> {
 
 /// `promote_attribute`: if the feature being merged into has this key as an
 /// attribute, makes it a full key so that it can be changed.
-fn promote_attribute(ax: &Attrs<'_>, key: &str, p: &mut TF, key_pool: &mut KeyPool) {
+/// `key_id` is the store's id of `key`, if it has one.
+fn promote_attribute(
+    ax: &Attrs<'_>,
+    key: &str,
+    key_id: Option<u32>,
+    p: &mut TF,
+    key_pool: &mut KeyPool,
+) {
     let found = ax
         .of(p)
         .iter()
         .filter(|a| ax.live(a))
-        .position(|a| ax.key(a) == key);
+        .position(|a| match key_id {
+            Some(k) => a.key == k,
+            None => ax.key(a) == key,
+        });
     if let Some(i) = found {
         ax.materialize(p);
         let list = p.attrs.as_mut().unwrap();
@@ -236,23 +248,44 @@ fn preserve_attributes(ax: &Attrs<'_>, c: usize, p: &mut TF, key_pool: &mut KeyP
         return;
     }
     for a in ax.cand(c) {
+        let Some(op) = &ax.ctx.key_accum[a.key as usize] else {
+            continue;
+        };
         if !ax.live(a) {
             continue;
         }
         let key = ax.key(a);
-        if let Some(op) = accum.get(key) {
-            let sv = ax.sval(a);
-            promote_attribute(ax, key, p, key_pool);
-            preserve_attribute(op, key, &sv, &mut p.full_keys, &mut p.full_values, key_pool);
-        }
+        let v = ax.ctx.store.values.get(a.value);
+        promote_attribute(ax, key, Some(a.key), p, key_pool);
+        accum::preserve(
+            op,
+            key,
+            v.type_,
+            v.s,
+            ax.ctx.value_num[a.value as usize],
+            &mut p.full_keys,
+            &mut p.full_values,
+            &mut p.accs,
+            key_pool,
+        );
     }
     let full = ax.rt.extra(c).full;
     if full != NO_LIST {
         let (keys, values) = &ax.rt.full[full as usize];
         for (key, sv) in keys.iter().zip(values.iter()) {
             if let Some(op) = accum.get(key.as_str()) {
-                promote_attribute(ax, key, p, key_pool);
-                preserve_attribute(op, key, sv, &mut p.full_keys, &mut p.full_values, key_pool);
+                promote_attribute(ax, key, None, p, key_pool);
+                accum::preserve(
+                    op,
+                    key,
+                    sv.type_,
+                    &sv.s,
+                    accum::to_double(&sv.s),
+                    &mut p.full_keys,
+                    &mut p.full_values,
+                    &mut p.accs,
+                    key_pool,
+                );
             }
         }
     }
@@ -1209,6 +1242,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                         attrs: None,
                         full_keys: full.0.into(),
                         full_values: full.1.into(),
+                        accs: Lazy(None),
                         extent,
                         index: f.index(),
                         reduced: false,
@@ -1362,6 +1396,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                         attrs: None,
                         full_keys: full.0.into(),
                         full_values: full.1.into(),
+                        accs: Lazy(None),
                         extent,
                         index: f.index(),
                         reduced: !still_need_simplification_after_reduction,
@@ -1454,6 +1489,12 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
         }
 
         shared_nodes.sort();
+
+        for l in layers.iter_mut().flatten() {
+            for p in l.features.iter_mut().filter(|p| !p.accs.is_empty()) {
+                accum::settle(&mut p.full_values, &mut p.accs);
+            }
+        }
 
         // the layers in the order of their names
         let mut layer_list: Vec<(u32, LayerFeatures)> = layers

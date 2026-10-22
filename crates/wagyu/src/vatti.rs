@@ -24,7 +24,9 @@ pub(crate) fn execute_vatti(
     let mut scanline_y = i64::MAX;
 
     let mut minima_sorted: Vec<LocalMinimumPtr> = (0..minima_list.len()).collect();
-    stable_sort(&mut minima_sorted, true, |&a, &b| local_minimum_sorter(&minima_list[a], &minima_list[b]));
+    stable_sort(&mut minima_sorted, true, |&a, &b| {
+        local_minimum_sorter(&minima_list[a], &minima_list[b])
+    });
     let mut current_lm = 0;
 
     setup_scanbeam(minima_list, &mut scanbeam);

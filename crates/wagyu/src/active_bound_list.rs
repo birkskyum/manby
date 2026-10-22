@@ -15,7 +15,11 @@ use crate::util::{greater_than, less_than, values_are_equal};
 
 pub(crate) type ActiveBoundList = Vec<BoundPtr>;
 
-pub(crate) fn is_even_odd_fill_type(bound: &Bound, subject_fill_type: FillType, clip_fill_type: FillType) -> bool {
+pub(crate) fn is_even_odd_fill_type(
+    bound: &Bound,
+    subject_fill_type: FillType,
+    clip_fill_type: FillType,
+) -> bool {
     if bound.poly_type == PolygonType::Subject {
         subject_fill_type == FillType::EvenOdd
     } else {
@@ -23,7 +27,11 @@ pub(crate) fn is_even_odd_fill_type(bound: &Bound, subject_fill_type: FillType, 
     }
 }
 
-pub(crate) fn is_even_odd_alt_fill_type(bound: &Bound, subject_fill_type: FillType, clip_fill_type: FillType) -> bool {
+pub(crate) fn is_even_odd_alt_fill_type(
+    bound: &Bound,
+    subject_fill_type: FillType,
+    clip_fill_type: FillType,
+) -> bool {
     if bound.poly_type == PolygonType::Subject {
         clip_fill_type == FillType::EvenOdd
     } else {
@@ -34,9 +42,15 @@ pub(crate) fn is_even_odd_alt_fill_type(bound: &Bound, subject_fill_type: FillTy
 fn bound_insert_location(bound2: &Bound, bound1: &Bound) -> bool {
     if values_are_equal(bound2.current_x, bound1.current_x) {
         if bound2.ce().top.y > bound1.ce().top.y {
-            less_than(bound2.ce().top.x as f64, get_current_x(bound1.ce(), bound2.ce().top.y))
+            less_than(
+                bound2.ce().top.x as f64,
+                get_current_x(bound1.ce(), bound2.ce().top.y),
+            )
         } else {
-            greater_than(bound1.ce().top.x as f64, get_current_x(bound2.ce(), bound1.ce().top.y))
+            greater_than(
+                bound1.ce().top.x as f64,
+                get_current_x(bound2.ce(), bound1.ce().top.y),
+            )
         }
     } else {
         bound2.current_x < bound1.current_x
@@ -88,9 +102,16 @@ pub(crate) fn next_edge_in_bound(bnd: &mut Bound, scanbeam: &mut ScanbeamList) {
     }
 }
 
-pub(crate) fn get_maxima_pair(bnd: usize, active_bounds: &ActiveBoundList, bnds: &[Bound]) -> usize {
+pub(crate) fn get_maxima_pair(
+    bnd: usize,
+    active_bounds: &ActiveBoundList,
+    bnds: &[Bound],
+) -> usize {
     let maximum = bnds[active_bounds[bnd]].maximum_bound;
-    active_bounds.iter().position(|&b| b == maximum).unwrap_or(active_bounds.len())
+    active_bounds
+        .iter()
+        .position(|&b| b == maximum)
+        .unwrap_or(active_bounds.len())
 }
 
 fn set_winding_count(
@@ -111,7 +132,9 @@ fn set_winding_count(
 
     // find the edge of the same polytype that immediately preceeds 'edge' in
     // AEL
-    while rev_bnd_itr >= 0 && bnds[active_bounds[rev_bnd_itr as usize]].poly_type != bnds[b].poly_type {
+    while rev_bnd_itr >= 0
+        && bnds[active_bounds[rev_bnd_itr as usize]].poly_type != bnds[b].poly_type
+    {
         rev_bnd_itr -= 1;
     }
     if rev_bnd_itr < 0 {
@@ -251,12 +274,23 @@ fn insert_lm_left_and_right_bound(
     // Both left and right bound
     let lb_abl_itr = insert_bound_into_abl(left_bound, right_bound, active_bounds, bnds);
     let rb_abl_itr = lb_abl_itr + 1;
-    set_winding_count(lb_abl_itr, active_bounds, bnds, subject_fill_type, clip_fill_type);
+    set_winding_count(
+        lb_abl_itr,
+        active_bounds,
+        bnds,
+        subject_fill_type,
+        clip_fill_type,
+    );
     let lb = active_bounds[lb_abl_itr];
     let rb = active_bounds[rb_abl_itr];
     bnds[rb].winding_count = bnds[lb].winding_count;
     bnds[rb].winding_count2 = bnds[lb].winding_count2;
-    if is_contributing(&bnds[left_bound], cliptype, subject_fill_type, clip_fill_type) {
+    if is_contributing(
+        &bnds[left_bound],
+        cliptype,
+        subject_fill_type,
+        clip_fill_type,
+    ) {
         let pt = bnds[lb].ce().bot;
         add_local_minimum_point(lb, rb, active_bounds, pt, bnds, rings);
     }

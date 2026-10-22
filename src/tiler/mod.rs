@@ -109,6 +109,10 @@ pub struct TileOptions {
     pub threads: usize,
     /// Compress with libdeflate instead of zlib (different tiles).
     pub fast: bool,
+    /// Report each zoom level's passes and compression to stderr.
+    pub timing: bool,
+    /// Report every attempt at every tile to stderr.
+    pub trace: bool,
 }
 
 impl Default for TileOptions {
@@ -158,6 +162,8 @@ impl Default for TileOptions {
             quiet: true,
             threads: 0,
             fast: false,
+            timing: false,
+            trace: false,
         }
     }
 }
@@ -212,6 +218,8 @@ impl TileOptions {
             quiet: o.quiet,
             threads: o.threads,
             fast: o.fast,
+            timing: false,
+            trace: false,
         }
     }
 
@@ -254,7 +262,7 @@ pub fn tile_with(
     let started = std::time::Instant::now();
     let ctx = pool.install(|| engine::Ctx::new(store, topts, threads));
     let root = pool.install(|| engine::root_input(&ctx));
-    if std::env::var_os("MANBY_TIMING").is_some() {
+    if topts.timing {
         eprintln!("setup {:.3}s", started.elapsed().as_secs_f64());
     }
     pool.in_place_scope(|scope| engine::drive(&ctx, root, sink, scope, threads))

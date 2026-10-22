@@ -39,6 +39,10 @@ pub struct Ctx<'a> {
     pub key_slots: Vec<u32>,
     /// How many threads the work inside one tile may use.
     pub threads: usize,
+    /// For `TileOptions::timing`: attempts, compressions, bytes compressed
+    /// and nanoseconds spent compressing.
+    pub counters: [std::sync::atomic::AtomicU64; 4],
+    pub started: std::time::Instant,
 }
 
 impl<'a> Ctx<'a> {
@@ -65,6 +69,8 @@ impl<'a> Ctx<'a> {
             codes,
             key_slots,
             threads,
+            counters: Default::default(),
+            started: std::time::Instant::now(),
             store,
             o,
             values,
@@ -353,7 +359,7 @@ pub fn drive<'s>(
         stats: TileStats::default(),
         tilestats: Vec::new(),
         error: None,
-        timing: std::env::var_os("MANBY_TIMING").is_some(),
+        timing: o.timing,
         started: std::time::Instant::now(),
     };
 
@@ -792,7 +798,9 @@ impl<'d, 's> Driver<'d, 's> {
 
         if self.timing {
             use std::sync::atomic::Ordering::Relaxed;
-            let c: Vec<u64> = super::make::COUNTERS
+            let c: Vec<u64> = self
+                .ctx
+                .counters
                 .iter()
                 .map(|c| c.swap(0, Relaxed))
                 .collect();

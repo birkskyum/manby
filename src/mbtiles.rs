@@ -1182,3 +1182,470 @@ pub fn add_to_tilestats(tilestats: &mut BTreeMap<String, Tilestat>, attrib: &str
 
     tsa.type_ |= 1 << val.type_;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    /// The generator of the C++ harness that made the expected values.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            self.0 >> 33
+        }
+
+        fn rstr(&mut self, len: usize) -> String {
+            const PALETTE: [&str; 19] = [
+                "a",
+                "b",
+                "c",
+                "x",
+                "y",
+                "z",
+                " ",
+                "\"",
+                "'",
+                "\\",
+                "/",
+                "\n",
+                "\t",
+                "\x01",
+                "\u{e9}",
+                "\u{20ac}",
+                "\u{1f600}",
+                "0",
+                "9",
+            ];
+            let mut s = String::new();
+            for _ in 0..len {
+                s += PALETTE[(self.next() % PALETTE.len() as u64) as usize];
+            }
+            s
+        }
+
+        fn rval(&mut self) -> SerialVal {
+            match self.next() % 6 {
+                0 | 1 => SerialVal::new(
+                    MVT_DOUBLE,
+                    &dtoa_milo((self.next() % 2000000) as i64 as f64 / 1000.0 - 1000.0),
+                ),
+                2 => SerialVal::new(
+                    MVT_BOOL,
+                    if self.next() % 2 != 0 {
+                        "true"
+                    } else {
+                        "false"
+                    },
+                ),
+                3 => {
+                    let n = (self.next() % 10) as usize;
+                    SerialVal::new(MVT_STRING, &self.rstr(n))
+                }
+                4 => {
+                    let n = 250 + (self.next() % 20) as usize;
+                    SerialVal::new(MVT_STRING, &self.rstr(n))
+                }
+                _ => SerialVal::new(MVT_NULL, "null"),
+            }
+        }
+
+        fn rmap(&mut self, which: i32) -> BTreeMap<String, LayermapEntry> {
+            let mut lm: BTreeMap<String, LayermapEntry> = BTreeMap::new();
+            for l in 0..7 {
+                let name = if l == 5 {
+                    "L".repeat(300) + &which.to_string()
+                } else if l == 6 {
+                    "q\"uote's \u{e9} ".to_string() + &(self.next() % 2).to_string()
+                } else {
+                    "layer".to_string() + &(self.next() % 7).to_string()
+                };
+                let id = lm.len();
+                let e = lm.entry(name).or_insert_with(|| LayermapEntry::new(id));
+                e.minzoom = (self.next() % 5) as i32;
+                e.maxzoom = 5 + (self.next() % 10) as i32;
+                e.description = {
+                    let n = (self.next() % 5) as usize;
+                    self.rstr(n)
+                };
+                e.points += (self.next() % 100) as usize;
+                e.lines += (self.next() % 100) as usize;
+                e.polygons += (self.next() % 100) as usize;
+                if l == 3 && which == 1 {
+                    e.points = 0;
+                    e.lines = 0;
+                    e.polygons = 0;
+                    e.retain = 1;
+                }
+                if l == 4 && which == 2 {
+                    e.points = 0;
+                    e.lines = 0;
+                    e.polygons = 0;
+                    e.retain = 0;
+                }
+
+                let mut nattr = self.next() % 20;
+                if l == 2 && which == 0 {
+                    nattr = 1200;
+                }
+                for a in 0..nattr {
+                    let an = if self.next() % 10 == 0 {
+                        "A".repeat(300) + &(self.next() % 3).to_string()
+                    } else if nattr > 100 {
+                        "attr".to_string() + &a.to_string()
+                    } else {
+                        "attr".to_string() + &(self.next() % 30).to_string()
+                    };
+                    let mut nval = self.next() % 50;
+                    if a == 1 && l == 1 {
+                        nval = 1500;
+                    }
+                    for _ in 0..nval {
+                        let v = self.rval();
+                        add_to_tilestats(&mut e.tilestats, &an, &v);
+                    }
+                }
+            }
+            lm
+        }
+    }
+
+    fn dump(out: &mut Vec<u8>, label: &str, m: &Metadata, dbname: &str) {
+        writeln!(out, "== {}", label).unwrap();
+        write!(
+            out,
+            "name={}\ndescription={}\nversion={}\ntype={}\nformat={}\n",
+            m.name, m.description, m.version, m.type_, m.format
+        )
+        .unwrap();
+        write!(out, "minzoom={}\nmaxzoom={}\n", m.minzoom, m.maxzoom).unwrap();
+        writeln!(
+            out,
+            "bounds={:x},{:x},{:x},{:x}",
+            m.minlat.to_bits(),
+            m.minlon.to_bits(),
+            m.maxlat.to_bits(),
+            m.maxlon.to_bits()
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "bounds2={:x},{:x},{:x},{:x}",
+            m.minlat2.to_bits(),
+            m.minlon2.to_bits(),
+            m.maxlat2.to_bits(),
+            m.maxlon2.to_bits()
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "center={:x},{:x},{}",
+            m.center_lon.to_bits(),
+            m.center_lat.to_bits(),
+            m.center_z
+        )
+        .unwrap();
+        write!(
+            out,
+            "attribution={}\ngenerator={}\ngenerator_options={}\n",
+            m.attribution, m.generator, m.generator_options
+        )
+        .unwrap();
+        writeln!(out, "strategies={}", m.strategies_json).unwrap();
+        writeln!(out, "vector_layers={}", m.vector_layers_json).unwrap();
+        writeln!(out, "tilestats={}", m.tilestats_json).unwrap();
+        writeln!(out, "decisions={}", m.decisions_json).unwrap();
+
+        let _ = std::fs::remove_file(dbname);
+        let argv = vec!["harness".to_string()];
+        let db = mbtiles_open(dbname, &argv, 0);
+        mbtiles_write_metadata(&db, m, false);
+        {
+            let mut stmt = db
+                .prepare("SELECT name, value, typeof(value) FROM metadata ORDER BY rowid")
+                .unwrap();
+            let mut rows = stmt.raw_query();
+            while let Ok(Some(row)) = rows.next() {
+                out.extend_from_slice(b"row ");
+                for i in 0..3 {
+                    if i > 0 {
+                        out.push(b'|');
+                    }
+                    out.extend_from_slice(row.get_ref(i).unwrap().as_bytes().unwrap());
+                }
+                out.push(b'\n');
+            }
+        }
+        mbtiles_close(db, "harness");
+        let _ = std::fs::remove_file(dbname);
+    }
+
+    fn fnv(s: &[u8]) -> u64 {
+        let mut h: u64 = 14695981039346656037;
+        for &c in s {
+            h ^= c as u64;
+            h = h.wrapping_mul(1099511628211);
+        }
+        h
+    }
+
+    /// Builds layermaps with `add_to_tilestats`, merges them, makes metadata
+    /// with `make_metadata`, writes it with `mbtiles_write_metadata`, and
+    /// compares a dump of all of it with the same dump from the C++.
+    #[test]
+    fn metadata_matches_cpp() {
+        let dir = std::env::temp_dir();
+        let dbname = dir
+            .join(format!(
+                "tippecanoe-rs-metadata-{}.mbtiles",
+                std::process::id()
+            ))
+            .to_string_lossy()
+            .into_owned();
+        let mut out: Vec<u8> = Vec::new();
+
+        let mut rng = Rng(42);
+        let maps: Vec<BTreeMap<String, LayermapEntry>> = (0..3).map(|i| rng.rmap(i)).collect();
+        let merged = merge_layermaps(&maps);
+        writeln!(out, "merged {}", merged.len()).unwrap();
+        for (name, l) in &merged {
+            writeln!(
+                out,
+                "layer {} id={} z={}-{} p={} l={} g={} attrs={}",
+                name,
+                l.id,
+                l.minzoom,
+                l.maxzoom,
+                l.points,
+                l.lines,
+                l.polygons,
+                l.tilestats.len()
+            )
+            .unwrap();
+            for (an, a) in &l.tilestats {
+                write!(
+                    out,
+                    "  attr {} type={} min={:x} max={:x} n={}",
+                    an,
+                    a.type_,
+                    a.min.to_bits(),
+                    a.max.to_bits(),
+                    a.sample_values.len()
+                )
+                .unwrap();
+                if let (Some(first), Some(last)) = (a.sample_values.first(), a.sample_values.last())
+                {
+                    write!(
+                        out,
+                        " first={}:{} last={}:{}",
+                        first.type_, first.s, last.type_, last.s
+                    )
+                    .unwrap();
+                }
+                writeln!(out).unwrap();
+            }
+        }
+
+        let mut strategies = vec![Strategy::default(); 4];
+        strategies[1].dropped_by_rate = 5;
+        strategies[1].tile_size = 123456;
+        strategies[2].coalesced_as_needed = 7;
+        strategies[2].detail_reduced = 1;
+        strategies[2].tiny_polygons = 3;
+        strategies[2].feature_count = 50000;
+        strategies[3].dropped_by_gamma = 2;
+        strategies[3].dropped_as_needed = 9;
+        strategies[3].truncated_zooms = 4;
+
+        let mut descs: BTreeMap<String, String> = BTreeMap::new();
+        descs.insert(
+            "attr3".to_string(),
+            "describe \"attr3\" \u{20ac}".to_string(),
+        );
+
+        let m1 = make_metadata(
+            "tileset 'one'",
+            0,
+            14,
+            37.1234567,
+            -122.4567891,
+            38.7654321,
+            -121.0000005,
+            -85.0511287798,
+            -180.0,
+            85.0511287798,
+            180.0,
+            37.5000005,
+            -122.0000004,
+            Some("\u{a9} OSM \"quotes\" 'single'"),
+            &merged,
+            true,
+            None,
+            true,
+            &descs,
+            "tippecanoe",
+            "tippecanoe -o x 'q'",
+            &strategies,
+            14,
+            2.5,
+            1,
+        );
+        dump(&mut out, "m1", &m1, &dbname);
+
+        let m2 = make_metadata(
+            "two",
+            3,
+            12,
+            -1e-7,
+            0.0000005,
+            1.5e-6,
+            -0.0000004,
+            1.0,
+            2.0,
+            3.0,
+            4.0,
+            0.4999995,
+            -0.4999995,
+            None,
+            &merged,
+            false,
+            Some("desc"),
+            false,
+            &descs,
+            "tile-join",
+            "",
+            &[Strategy::default(); 2],
+            12,
+            f64::INFINITY,
+            3,
+        );
+        dump(&mut out, "m2", &m2, &dbname);
+
+        let empty: BTreeMap<String, LayermapEntry> = BTreeMap::new();
+        let m3 = make_metadata(
+            "three",
+            0,
+            0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Some(""),
+            &empty,
+            true,
+            Some(""),
+            true,
+            &BTreeMap::new(),
+            "tippecanoe",
+            "cmd",
+            &[],
+            2,
+            2.5,
+            1,
+        );
+        dump(&mut out, "m3", &m3, &dbname);
+
+        let m4 = make_metadata(
+            "four",
+            0,
+            5,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            None,
+            &merged,
+            true,
+            None,
+            true,
+            &BTreeMap::new(),
+            "tippecanoe",
+            "cmd",
+            &[],
+            5,
+            1.0 / 3.0,
+            1,
+        );
+        dump(&mut out, "m4", &m4, &dbname);
+
+        if (out.len(), fnv(&out)) != (821378, 817193661739305252) {
+            let path = dir.join("tippecanoe-rs-metadata.out");
+            std::fs::write(&path, &out).unwrap();
+            panic!("metadata dump differs from the C++, see {}", path.display());
+        }
+    }
+
+    #[test]
+    fn tiles_in_mbtiles() {
+        let dir = std::env::temp_dir();
+        let dbname = dir
+            .join(format!(
+                "tippecanoe-rs-tiles-{}.mbtiles",
+                std::process::id()
+            ))
+            .to_string_lossy()
+            .into_owned();
+        let _ = std::fs::remove_file(&dbname);
+        let argv = vec!["harness".to_string()];
+        let db = mbtiles_open(&dbname, &argv, 0);
+        mbtiles_write_tile(&db, 0, 0, 0, b"zero");
+        mbtiles_write_tile(&db, 3, 1, 2, b"same");
+        mbtiles_write_tile(&db, 3, 2, 2, b"same");
+        mbtiles_write_tile(&db, 4, 5, 6, b"");
+        mbtiles_write_tile(&db, 4, 5, 7, b"four");
+        {
+            let mut stmt = db
+                .prepare("SELECT zoom_level, tile_column, tile_row, tile_data FROM tiles ORDER BY zoom_level, tile_column, tile_row")
+                .unwrap();
+            let rows: Vec<(i32, i32, i32, Vec<u8>)> = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
+            assert_eq!(
+                rows,
+                vec![
+                    (0, 0, 0, b"zero".to_vec()),
+                    (3, 1, 5, b"same".to_vec()),
+                    (3, 2, 5, b"same".to_vec()),
+                    (4, 5, 8, b"four".to_vec()),
+                    (4, 5, 9, b"".to_vec()),
+                ]
+            );
+            let images: i64 = db
+                .query_row("SELECT count(*) FROM images", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(images, 4);
+            let hash: String = db
+                .query_row("SELECT tile_id FROM map WHERE zoom_level = 0", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(hash, fnv1a(b"zero").to_string());
+        }
+        mbtiles_erase_zoom(&db, 3);
+        let left: i64 = db
+            .query_row("SELECT count(*) FROM tiles", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 3);
+        mbtiles_close(db, "harness");
+        let _ = std::fs::remove_file(&dbname);
+    }
+}

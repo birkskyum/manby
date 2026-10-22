@@ -53,8 +53,8 @@ use crate::plugin::{
 use crate::projection::decode_index;
 use crate::serial::{
     FEATURE_ADDED_FOR_MULTIPLIER_DENSITY, FEATURE_DROPPED, FEATURE_KEPT, KeyPool, Node,
-    SerialFeature, SerialFeaturePtr, SerialVal, StringPoolRef, deserialize_feature,
-    serialize_feature,
+    SerialFeature, SerialFeaturePtr, SerialVal, StringPoolRef, deserialize_feature, fserialize_int,
+    fserialize_uint, fwrite_check, serialize_feature,
 };
 use crate::shared_borders::find_common_edges;
 use crate::text::bit_reverse;
@@ -103,9 +103,11 @@ impl Strategy {
     }
 }
 
+#[allow(dead_code)]
 const CMD_BITS: i32 = 3;
 
 /// Offset coordinates to keep them positive
+#[allow(dead_code)]
 const COORD_OFFSET: i64 = 4i64 << 32;
 
 /// `SHIFT_RIGHT(a)`.
@@ -148,88 +150,6 @@ fn by_less<T>(less: impl Fn(&T, &T) -> bool) -> impl FnMut(&T, &T) -> std::cmp::
         } else {
             std::cmp::Ordering::Equal
         }
-    }
-}
-
-/// One of the temporary files that the next zoom level is written into: the
-/// C++ `compressor` with its `FILE *fp`.
-///
-/// The C++ writes the uncompressed header of each child tile to `fp` and then
-/// the compressed features through the same `FILE *`. Here the header goes to
-/// `fp` directly, and the compressed stream of each child tile gets a
-/// `Compressor` of its own over a duplicate of the descriptor, which is closed
-/// at the end of the stream, so that all of the stream is in the file before
-/// anything is written after it.
-struct Shard {
-    fp: File,
-    comp: Option<Compressor>,
-}
-
-impl Shard {
-    fn new(fp: File) -> Shard {
-        Shard { fp, comp: None }
-    }
-
-    /// `geomfile[j]->begin()`.
-    fn begin(&mut self) {
-        let f = match self.fp.try_clone() {
-            Ok(f) => f,
-            Err(_) => {
-                perror("dup geometry");
-                std::process::exit(EXIT_OPEN);
-            }
-        };
-        let mut comp = Compressor::new(f);
-        comp.begin();
-        self.comp = Some(comp);
-    }
-
-    fn comp(&mut self) -> &mut Compressor {
-        match self.comp.as_mut() {
-            Some(c) => c,
-            None => {
-                eprintln!("Internal error: compressed write outside a stream");
-                std::process::exit(EXIT_IMPOSSIBLE);
-            }
-        }
-    }
-
-    /// `geomfile[j]->end(fpos, fname)`, which also closes the stream's descriptor.
-    fn end(&mut self, fpos: &AtomicI64, fname: &str) {
-        let mut comp = match self.comp.take() {
-            Some(c) => c,
-            None => {
-                eprintln!("Internal error: end of a stream that was not begun");
-                std::process::exit(EXIT_IMPOSSIBLE);
-            }
-        };
-        comp.end(fpos, fname);
-        if comp.fclose() != 0 {
-            perror("close subfile");
-            std::process::exit(EXIT_CLOSE);
-        }
-    }
-
-    /// `fwrite_check(p, sizeof(char), p.size(), geomfile[j]->fp, fpos, fname)`, uncompressed.
-    fn fwrite_check(&mut self, p: &[u8], fpos: &AtomicI64, fname: &str) {
-        if let Err(e) = self.fp.write_all(p) {
-            eprintln!(
-                "{}: Write to temporary file failed: {}",
-                fname,
-                strerror(e.raw_os_error().unwrap_or(0))
-            );
-            std::process::exit(EXIT_WRITE);
-        }
-        fpos.fetch_add(p.len() as i64, Ordering::Relaxed);
-    }
-
-    /// `geomfile[j]->fclose()`.
-    fn fclose(self) -> i32 {
-        if let Some(mut comp) = self.comp {
-            comp.fclose();
-        }
-        // SAFETY: the descriptor came from into_raw_fd and is closed exactly once.
-        unsafe { libc::close(self.fp.into_raw_fd()) }
     }
 }
 
@@ -633,7 +553,7 @@ fn rewrite(
     within: &mut [bool],
     geompos: &[AtomicI64],
     start_geompos: &mut [i64],
-    geomfile: &mut [Shard],
+    geomfile: &mut [Compressor],
     fname: &str,
     child_shards: i32,
     max_zoom_increment: i32,
@@ -724,17 +644,27 @@ fn rewrite(
                         start_geompos[j] = geompos[j].load(Ordering::Relaxed); // no competition between threads
 
                         let estimated_complexity: i64 = 0; // placeholder, to be filled in later
-                        let mut header = estimated_complexity.to_ne_bytes().to_vec();
-                        crate::serial::serialize_int(&mut header, nextzoom);
-                        crate::serial::serialize_uint(
-                            &mut header,
+                        fwrite_check(
+                            &estimated_complexity.to_ne_bytes(),
+                            std::mem::size_of::<i64>(),
+                            1,
+                            geomfile[j].fp(),
+                            &geompos[j],
+                            fname,
+                        );
+                        fserialize_int(geomfile[j].fp(), nextzoom, &geompos[j], fname);
+                        fserialize_uint(
+                            geomfile[j].fp(),
                             tx.wrapping_mul(span as u32).wrapping_add(xo as u32),
+                            &geompos[j],
+                            fname,
                         );
-                        crate::serial::serialize_uint(
-                            &mut header,
+                        fserialize_uint(
+                            geomfile[j].fp(),
                             ty.wrapping_mul(span as u32).wrapping_add(yo as u32),
+                            &geompos[j],
+                            fname,
                         );
-                        geomfile[j].fwrite_check(&header, &geompos[j], fname);
                         geomfile[j].begin();
                     }
 
@@ -749,9 +679,8 @@ fn rewrite(
                     }
                     let feature = feature.as_ref().unwrap();
 
-                    let comp = geomfile[j].comp();
-                    comp.serialize_long_long(feature.len() as i64, &geompos[j], fname);
-                    comp.fwrite_check(feature, 1, feature.len(), &geompos[j], fname);
+                    geomfile[j].serialize_long_long(feature.len() as i64, &geompos[j], fname);
+                    geomfile[j].fwrite_check(feature, 1, feature.len(), &geompos[j], fname);
                 }
 
                 yo += 1;
@@ -1154,6 +1083,7 @@ fn calculate_drop_sequence(sf: &SerialFeature) -> u64 {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
+#[allow(dead_code)]
 struct Task {
     fileno: usize,
     todo: usize,
@@ -1166,6 +1096,7 @@ struct Task {
 // The _out parameters are thresholds calculated during tiling; they are collected
 // by the caller to determine whether the zoom level needs to be done over with
 // new thresholds.
+#[allow(dead_code)]
 struct WriteTileArgs<'a> {
     threadno: usize,
     /// The task list, behind what the C++ calls `task_lock`.
@@ -1177,7 +1108,7 @@ struct WriteTileArgs<'a> {
     buffer: i32,
     fname: &'a str,
     /// This thread's shards of the next zoom's temporary files.
-    geomfile: &'a mut [Shard],
+    geomfile: &'a mut [Compressor],
     geompos: &'a [AtomicI64],
     todo: f64,
     along: &'a AtomicI64,
@@ -1751,7 +1682,7 @@ struct RunPrefilterArgs<'a> {
     alongminus: i64,
     buffer: i32,
     within: &'a mut [bool],
-    geomfile: &'a mut [Shard],
+    geomfile: &'a mut [Compressor],
     geompos: &'a [AtomicI64],
     start_geompos: &'a mut [i64],
     oprogress: &'a AtomicF64,
@@ -1913,6 +1844,7 @@ fn promote_attribute(key: &str, p: &mut SerialFeature, key_pool: &mut KeyPool) {
     }
 }
 
+#[allow(dead_code)]
 fn promote_attribute_prefix(
     key: &str,
     prefixed_key: &str,
@@ -2128,32 +2060,9 @@ fn average_cluster_point(target: &mut SerialFeature, sf: &SerialFeature) {
     target.geometry[0].y = (y / (target.clustered + 1) as f64) as i64;
 }
 
-/// `fseek` of the input back to the start of the tile, for another try at it.
-/// The C++ ends and restarts the decompression and empties its buffers; here
-/// the decompressor is replaced with a new one reading from that position.
-fn rewind_geoms(geoms: &mut Decompressor, geoms_fp: &File, og: i64, compressed_input: bool) {
-    let mut f = match geoms_fp.try_clone() {
-        Ok(f) => f,
-        Err(_) => {
-            perror("fseek geom");
-            std::process::exit(EXIT_SEEK);
-        }
-    };
-    if f.seek(SeekFrom::Start(og as u64)).is_err() {
-        perror("fseek geom");
-        std::process::exit(EXIT_SEEK);
-    }
-
-    *geoms = Decompressor::new(f);
-    if compressed_input {
-        geoms.begin();
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn write_tile(
     geoms: &mut Decompressor,
-    geoms_fp: &File,
     geompos_in: &AtomicI64,
     z: i32,
     tx: u32,
@@ -2170,7 +2079,7 @@ fn write_tile(
     let outdir = arg.outdir;
     let buffer = arg.buffer;
     let fname = arg.fname;
-    let geomfile: &mut [Shard] = &mut *arg.geomfile;
+    let geomfile: &mut [Compressor] = &mut *arg.geomfile;
     let geompos = arg.geompos;
     let minzoom = arg.minzoom;
     let maxzoom = arg.maxzoom;
@@ -2251,9 +2160,8 @@ fn write_tile(
         .wrapping_mul((1i64 << (32 - z)) / 256 * cluster_distance as i64))
         as u64;
 
-    let first_detail = detail;
+    let mut first_detail = detail;
     let mut second_detail = detail - 1;
-    let mut first_detail = first_detail;
     let mut trying_to_stop_early = false;
     let mut can_stop_early = true;
     if additional(A_VARIABLE_DEPTH_PYRAMID) != 0
@@ -2344,8 +2252,21 @@ fn write_tile(
         let mut start_geompos: Vec<i64> = vec![-1; child_shards as usize];
 
         if geompos_in.load(Ordering::Relaxed) != og {
-            rewind_geoms(geoms, geoms_fp, og, compressed_input);
+            if compressed_input {
+                if geoms.within {
+                    geoms.end(geompos_in);
+                }
+
+                geoms.begin();
+            }
+
+            if geoms.fseek(og) != 0 {
+                perror("fseek geom");
+                std::process::exit(EXIT_SEEK);
+            }
+
             geompos_in.store(og, Ordering::Relaxed);
+            geoms.clear_avail();
         }
 
         let mut prefilter_write: i32 = -1;
@@ -3111,14 +3032,13 @@ fn write_tile(
                     estimated_complexity_out = 1i64 << 32;
                 }
 
-                geomfile[j]
-                    .comp()
-                    .serialize_long_long(0, &geompos[j], fname); // EOF
+                geomfile[j].serialize_long_long(0, &geompos[j], fname); // EOF
                 geomfile[j].end(&geompos[j], fname);
                 within[j] = false;
 
                 if additional(A_VARIABLE_DEPTH_PYRAMID) != 0 {
-                    match geomfile[j].fp.write_at(
+                    let _ = geomfile[j].fp().flush();
+                    match geomfile[j].fp().get_ref().write_at(
                         &estimated_complexity_out.to_ne_bytes(),
                         start_geompos[j] as u64,
                     ) {
@@ -4106,13 +4026,7 @@ fn run_thread(arg: &mut WriteTileArgs<'_>) -> Option<i32> {
         // SAFETY: geomfd[j] is an open descriptor that only this thread uses in this pass.
         let geom = unsafe { File::from_raw_fd(arg.geomfd[j].load(Ordering::Relaxed)) };
 
-        let mut dc = match geom.try_clone() {
-            Ok(f) => Decompressor::new(f),
-            Err(_) => {
-                perror("open geom");
-                std::process::exit(EXIT_OPEN);
-            }
-        };
+        let mut dc = Decompressor::new(geom);
 
         let geompos = AtomicI64::new(0);
         let mut prevgeom: i64 = 0;
@@ -4191,7 +4105,6 @@ fn run_thread(arg: &mut WriteTileArgs<'_>) -> Option<i32> {
                 let alongminus = geompos.load(Ordering::Relaxed);
                 len = write_tile(
                     &mut dc,
-                    &geom,
                     &geompos,
                     z,
                     x,
@@ -4256,11 +4169,10 @@ fn run_thread(arg: &mut WriteTileArgs<'_>) -> Option<i32> {
             arg.geomfd[j].store(newfd, Ordering::Relaxed);
         }
 
-        // SAFETY: the descriptor came from into_raw_fd and is closed exactly once.
-        if unsafe { libc::close(geom.into_raw_fd()) } != 0 {
-            perror("close geom");
-            std::process::exit(EXIT_CLOSE);
-        }
+        // PORT: the C++ checks the result of fclose(geom) here. Dropping the
+        // decompressor closes the descriptor without a way to see the result,
+        // which for a file that was only read cannot fail anyway.
+        drop(dc);
     }
 
     // PORT: the C++ says `arg->running--`, which decrements the pointer rather
@@ -4345,7 +4257,7 @@ pub fn traverse_zooms(
     while z <= *maxzoom {
         let most = AtomicI64::new(0);
 
-        let mut sub: Vec<Shard> = Vec::with_capacity(temp_files);
+        let mut sub: Vec<Compressor> = Vec::with_capacity(temp_files);
         let subpos: Vec<AtomicI64> = (0..temp_files).map(|_| AtomicI64::new(0)).collect();
         let mut subfd: Vec<i32> = vec![0; temp_files];
         for (j, subfd_j) in subfd.iter_mut().enumerate() {
@@ -4363,7 +4275,7 @@ pub fn traverse_zooms(
                     std::process::exit(EXIT_OPEN);
                 }
             };
-            sub.push(Shard::new(fp));
+            sub.push(Compressor::new(fp));
             let _ = std::fs::remove_file(&geomname);
         }
 
@@ -4659,14 +4571,14 @@ pub fn traverse_zooms(
 
         skip_children = std::mem::take(&mut skip_children_out);
 
-        for (j, shard) in sub.into_iter().enumerate() {
+        for (j, sub_j) in sub.iter_mut().enumerate() {
             // Can be < 0 if there is only one source file, at z0
             // SAFETY: closing a descriptor this function owns.
             if geomfd[j] >= 0 && unsafe { libc::close(geomfd[j]) } != 0 {
                 perror("close geom");
                 std::process::exit(EXIT_CLOSE);
             }
-            if shard.fclose() != 0 {
+            if sub_j.fclose() != 0 {
                 perror("close subfile");
                 std::process::exit(EXIT_CLOSE);
             }
@@ -4725,5 +4637,508 @@ impl AtomicStrategy {
             .fetch_add(src.tiny_polygons, Ordering::Relaxed);
         self.truncated_zooms
             .fetch_add(src.truncated_zooms, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::VT_CLOSEPATH;
+
+    /// What the C++ functions print for the cases in `harness_output`, from a
+    /// harness built with verbatim copies of them.
+    const EXPECTED: &str = "\
+gamma 0: (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000)
+gamma 0.5: (1 0 0000000000000000) (1 0 3df9000000000000) (0 1099511627776 0000000000000000) (1 1099511627776 3db4000000000000) (0 2199023255552 0000000000000000) (0 3298534883328 0000000000000000) (1 3298534883328 0000000000000000) (0 4398046511104 0000000000000000) (0 5 0000000000000000) (0 8796093022208 0000000000000000)
+gamma 1: (1 0 0000000000000000) (1 0 3df9000000000000) (0 1099511627776 0000000000000000) (1 1099511627776 3db4000000000000) (0 2199023255552 0000000000000000) (0 3298534883328 0000000000000000) (1 3298534883328 0000000000000000) (0 4398046511104 0000000000000000) (0 5 0000000000000000) (0 8796093022208 0000000000000000)
+gamma 1.5: (1 0 0000000000000000) (1 0 3df9000000000000) (0 1099511627776 0000000000000000) (1 1099511627776 3db4000000000000) (0 2199023255552 0000000000000000) (0 3298534883328 0000000000000000) (1 3298534883328 0000000000000000) (0 4398046511104 0000000000000000) (0 5 0000000000000000) (0 8796093022208 0000000000000000)
+gamma 2: (1 0 0000000000000000) (1 0 3df9000000000000) (0 1099511627776 0000000000000000) (1 1099511627776 3db4000000000000) (0 2199023255552 0000000000000000) (0 3298534883328 0000000000000000) (1 3298534883328 0000000000000000) (0 4398046511104 0000000000000000) (0 5 0000000000000000) (0 8796093022208 0000000000000000)
+gamma2 0: (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000)
+gamma2 0.5: (1 0 0000000000000000) (1 0 3fd0000000000000) (0 137438953472 0000000000000000) (1 137438953472 3fc0000000000000) (0 274877906944 0000000000000000) (0 824633720832 0000000000000000) (1 824633720832 3dbc000000000000) (0 1099511627776 0000000000000000) (1 1099511627776 3fd0000000000000) (0 549755813888 0000000000000000) (0 2199023255555 0000000000000000) (1 2199023255555 3fdffffffffd0000) (0 2473901162496 0000000000000000) (0 4398046511104 0000000000000000)
+gamma2 1: (1 0 0000000000000000) (1 0 3fd0000000000000) (0 137438953472 0000000000000000) (1 137438953472 3fc0000000000000) (0 274877906944 0000000000000000) (0 824633720832 0000000000000000) (1 824633720832 3dbc000000000000) (0 1099511627776 0000000000000000) (1 1099511627776 3fd0000000000000) (0 549755813888 0000000000000000) (0 2199023255555 0000000000000000) (1 2199023255555 3fdffffffffd0000) (0 2473901162496 0000000000000000) (0 4398046511104 0000000000000000)
+gamma2 1.5: (1 0 0000000000000000) (1 0 3fd0000000000000) (0 137438953472 0000000000000000) (1 137438953472 3fc0000000000000) (0 274877906944 0000000000000000) (0 824633720832 0000000000000000) (1 824633720832 3dbc000000000000) (0 1099511627776 0000000000000000) (1 1099511627776 3fd0000000000000) (0 549755813888 0000000000000000) (0 2199023255555 0000000000000000) (1 2199023255555 3fdffffffffd0000) (0 2473901162496 0000000000000000) (0 4398046511104 0000000000000000)
+gamma2 2: (1 0 0000000000000000) (1 0 3fd0000000000000) (0 137438953472 0000000000000000) (1 137438953472 3fc0000000000000) (0 274877906944 0000000000000000) (0 824633720832 0000000000000000) (1 824633720832 3dbc000000000000) (0 1099511627776 0000000000000000) (1 1099511627776 3fd0000000000000) (0 549755813888 0000000000000000) (0 2199023255555 0000000000000000) (1 2199023255555 3fdffffffffd0000) (0 2473901162496 0000000000000000) (0 4398046511104 0000000000000000)
+seq3: 137438953472 302365697638 384829069721 632219185970 645963081317 838377616177 1168231104509 1223206685897 1278182267285 1498084592840 1759218604436 1759218604436 1786706395130 1896657557907 2721291278739 2762522964780
+gamma3 0: (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000)
+gamma3 0.5: (1 0 3fe0000000000000) (0 302365697638 0000000000000000) (1 302365697638 3fd3333333330000) (0 632219185970 0000000000000000) (1 632219185970 3fa9999999980000) (0 838377616177 0000000000000000) (0 1168231104509 0000000000000000) (1 1168231104509 3fc9999999980000) (0 1278182267285 0000000000000000) (1 1278182267285 3fe9999999998000) (0 1759218604436 0000000000000000) (1 1759218604436 0000000000000000) (1 1759218604436 3fb9999999980000) (0 1896657557907 0000000000000000) (0 2721291278739 0000000000000000) (1 2721291278739 3fc3333333320000)
+gamma3 1: (1 0 3fe0000000000000) (0 302365697638 0000000000000000) (1 302365697638 3fd3333333330000) (0 632219185970 0000000000000000) (1 632219185970 3fa9999999980000) (0 838377616177 0000000000000000) (0 1168231104509 0000000000000000) (1 1168231104509 3fc9999999980000) (0 1278182267285 0000000000000000) (1 1278182267285 3fe9999999998000) (0 1759218604436 0000000000000000) (1 1759218604436 0000000000000000) (1 1759218604436 3fb9999999980000) (0 1896657557907 0000000000000000) (0 2721291278739 0000000000000000) (1 2721291278739 3fc3333333320000)
+gamma3 1.5: (1 0 3fe0000000000000) (0 302365697638 0000000000000000) (1 302365697638 3fd3333333330000) (0 632219185970 0000000000000000) (1 632219185970 3fa9999999980000) (0 838377616177 0000000000000000) (0 1168231104509 0000000000000000) (1 1168231104509 3fc9999999980000) (0 1278182267285 0000000000000000) (1 1278182267285 3fe9999999998000) (0 1759218604436 0000000000000000) (1 1759218604436 0000000000000000) (1 1759218604436 3fb9999999980000) (0 1896657557907 0000000000000000) (0 2721291278739 0000000000000000) (1 2721291278739 3fc3333333320000)
+gamma3 2: (1 0 3fe0000000000000) (0 302365697638 0000000000000000) (1 302365697638 3fd3333333330000) (0 632219185970 0000000000000000) (1 632219185970 3fa9999999980000) (0 838377616177 0000000000000000) (0 1168231104509 0000000000000000) (1 1168231104509 3fc9999999980000) (1 1168231104509 3fc9999999980000) (0 1498084592840 0000000000000000) (1 1498084592840 3fee666666660000) (1 1498084592840 3fee666666660000) (0 1786706395130 0000000000000000) (1 1786706395130 3fd9999999990000) (0 2721291278739 0000000000000000) (1 2721291278739 3fc3333333320000)
+mingap 0.8 0 -> 2
+mingap 0.8 3 -> 5
+mingap 0.8 8 -> 9
+mingap 0.8 9 -> 9
+mingap 0.5 0 -> 3
+mingap 0.5 3 -> 5
+mingap 0.5 8 -> 9
+mingap 0.5 9 -> 9
+mingap 0.1 0 -> 8
+mingap 0.1 3 -> 8
+mingap 0.1 8 -> 9
+mingap 0.1 9 -> 9
+mingap 0.95 0 -> 1
+mingap 0.95 3 -> 5
+mingap 0.95 8 -> 9
+mingap 0.95 9 -> 9
+mingap 0 0 -> 9
+mingap 0 3 -> 9
+mingap 0 8 -> 9
+mingap 0 9 -> 9
+minextent 0.8 0 -> 2
+minextent 0.8 3 -> 7
+minextent 0.8 50 -> 100
+minextent 0.8 100 -> 100
+minextent 0.5 0 -> 7
+minextent 0.5 3 -> 7
+minextent 0.5 50 -> 100
+minextent 0.5 100 -> 100
+minextent 0.1 0 -> 50
+minextent 0.1 3 -> 50
+minextent 0.1 50 -> 100
+minextent 0.1 100 -> 100
+minextent 0.95 0 -> 2
+minextent 0.95 3 -> 7
+minextent 0.95 50 -> 100
+minextent 0.95 100 -> 100
+minextent 0 0 -> 100
+minextent 0 3 -> 100
+minextent 0 50 -> 100
+minextent 0 100 -> 100
+mindrop 0.8 0 -> 2
+mindrop 0.8 3 -> 7
+mindrop 0.8 9 -> 18446744073709551610
+mindrop 0.5 0 -> 3
+mindrop 0.5 3 -> 7
+mindrop 0.5 9 -> 18446744073709551610
+mindrop 0.1 0 -> 9
+mindrop 0.1 3 -> 9
+mindrop 0.1 9 -> 18446744073709551610
+mindrop 0.95 0 -> 1
+mindrop 0.95 3 -> 7
+mindrop 0.95 9 -> 18446744073709551610
+mindrop 0 0 -> 18446744073709551610
+mindrop 0 3 -> 18446744073709551610
+mindrop 0 9 -> 18446744073709551610
+mindrop empty -> 18446744073709551615
+minattr 0.8 -inf 0 -> 4008000000000000
+minattr 0.8 -inf 1 -> fff0000000000000
+minattr 0.8 inf 0 -> 7ff0000000000000
+minattr 0.8 inf 1 -> 401d000000000000
+minattr 0.8 3 0 -> 4016000000000000
+minattr 0.8 3 1 -> 4000000000000000
+minattr 0.8 7 0 -> 401d000000000000
+minattr 0.8 7 1 -> 4016000000000000
+minattr 0.5 -inf 0 -> 4008000000000000
+minattr 0.5 -inf 1 -> fff0000000000000
+minattr 0.5 inf 0 -> 7ff0000000000000
+minattr 0.5 inf 1 -> 4008000000000000
+minattr 0.5 3 0 -> 4016000000000000
+minattr 0.5 3 1 -> 4000000000000000
+minattr 0.5 7 0 -> 401d000000000000
+minattr 0.5 7 1 -> 4008000000000000
+minattr 0.1 -inf 0 -> 4022000000000000
+minattr 0.1 -inf 1 -> fff0000000000000
+minattr 0.1 inf 0 -> 7ff0000000000000
+minattr 0.1 inf 1 -> bff0000000000000
+minattr 0.1 3 0 -> 4022000000000000
+minattr 0.1 3 1 -> bff0000000000000
+minattr 0.1 7 0 -> 4022000000000000
+minattr 0.1 7 1 -> bff0000000000000
+minattr 0.95 -inf 0 -> 4000000000000000
+minattr 0.95 -inf 1 -> fff0000000000000
+minattr 0.95 inf 0 -> 7ff0000000000000
+minattr 0.95 inf 1 -> 4020000000000000
+minattr 0.95 3 0 -> 4016000000000000
+minattr 0.95 3 1 -> 4000000000000000
+minattr 0.95 7 0 -> 401d000000000000
+minattr 0.95 7 1 -> 4016000000000000
+minattr 0 -inf 0 -> 4022000000000000
+minattr 0 -inf 1 -> fff0000000000000
+minattr 0 inf 0 -> 7ff0000000000000
+minattr 0 inf 1 -> bff0000000000000
+minattr 0 3 0 -> 4022000000000000
+minattr 0 3 1 -> bff0000000000000
+minattr 0 7 0 -> 4022000000000000
+minattr 0 7 1 -> bff0000000000000
+dropseq 0 0 -> 18446744073709551615
+dropseq 0 1 -> 18446744073709551615
+dropseq 0 12345678901234 -> 17873533690969063423
+dropseq 0 18446744073709551615 -> 17870283321406128128
+dropseq 3 0 -> 16717361816799281151
+dropseq 3 1 -> 16717361816799281151
+dropseq 3 12345678901234 -> 16144151434058792959
+dropseq 3 18446744073709551615 -> 16140901064495857664
+dropseq 31 0 -> 576460752303423487
+dropseq 31 1 -> 576460752303423487
+dropseq 31 12345678901234 -> 3250369562935295
+dropseq 31 18446744073709551615 -> 0
+dropseq 40 0 -> 576460752303423487
+dropseq 40 1 -> 576460752303423487
+dropseq 40 12345678901234 -> 3250369562935295
+dropseq 40 18446744073709551615 -> 0
+dropseq -1 0 -> 576460752303423487
+dropseq -1 1 -> 576460752303423487
+dropseq -1 12345678901234 -> 3250369562935295
+dropseq -1 18446744073709551615 -> 0
+dropseq 127 0 -> 576460752303423487
+dropseq 127 1 -> 576460752303423487
+dropseq 127 12345678901234 -> 3250369562935295
+dropseq 127 18446744073709551615 -> 0
+";
+
+    fn harness_output() -> String {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+
+        let scale = (1i64 << (64 - 2 * (5 + 8))) as f64;
+        let gammas = [0.0, 0.5, 1.0, 1.5, 2.0];
+        let run = |out: &mut String, label: &str, seq: &[u64]| {
+            for &g in &gammas {
+                let mut prev = 0u64;
+                let mut gap = 0.0;
+                write!(out, "{} {}:", label, g).unwrap();
+                for &i in seq {
+                    let r = manage_gap(i, &mut prev, scale, g, &mut gap);
+                    write!(out, " ({} {} {:016x})", r, prev, gap.to_bits()).unwrap();
+                }
+                writeln!(out).unwrap();
+            }
+        };
+
+        let idx = [
+            0,
+            100,
+            1u64 << 40,
+            (1u64 << 40) + 5,
+            1u64 << 41,
+            3u64 << 40,
+            3u64 << 40,
+            1u64 << 42,
+            5,
+            1u64 << 43,
+        ];
+        run(&mut out, "gamma", &idx);
+
+        let seq2 = [
+            0,
+            1u64 << 36,
+            1u64 << 37,
+            (1u64 << 37) + (1u64 << 35),
+            1u64 << 38,
+            3u64 << 38,
+            (3u64 << 38) + 7,
+            1u64 << 40,
+            (1u64 << 40) + (1u64 << 36),
+            1u64 << 39,
+            (1u64 << 41) + 3,
+            (1u64 << 41) + (1u64 << 37),
+            (1u64 << 41) + (1u64 << 38),
+            1u64 << 42,
+        ];
+        run(&mut out, "gamma2", &seq2);
+
+        let pcts: [u64; 16] = [
+            50, 60, 30, 90, 5, 70, 120, 20, 20, 80, 95, 0, 10, 40, 300, 15,
+        ];
+        let mut seq3 = Vec::new();
+        let mut acc = 0u64;
+        for p in pcts {
+            acc += p * (1u64 << 38) / 100;
+            seq3.push(acc);
+        }
+        write!(out, "seq3:").unwrap();
+        for i in &seq3 {
+            write!(out, " {}", i).unwrap();
+        }
+        writeln!(out).unwrap();
+        run(&mut out, "gamma3", &seq3);
+
+        let fs = [0.8, 0.5, 0.1, 0.95, 0.0];
+        let gaps: Vec<u64> = vec![5, 1, 9, 3, 3, 3, 7, 2, 8, 3];
+        for f in fs {
+            for e in [0u64, 3, 8, 9] {
+                let mut g2 = gaps.clone();
+                writeln!(
+                    out,
+                    "mingap {} {} -> {}",
+                    f,
+                    e,
+                    choose_mingap(&mut g2, f, e)
+                )
+                .unwrap();
+            }
+        }
+        let ext: Vec<i64> = vec![50, -1, 9, 3, 3, 30, 7, 2, 8, 3, 100];
+        for f in fs {
+            for e in [0i64, 3, 50, 100] {
+                let mut g2 = ext.clone();
+                writeln!(
+                    out,
+                    "minextent {} {} -> {}",
+                    f,
+                    e,
+                    choose_minextent(&mut g2, f, e)
+                )
+                .unwrap();
+            }
+        }
+        let ds: Vec<u64> = vec![u64::MAX - 5, 1, 9, 3, 3, 3, 7, 2, 8, 3];
+        for f in fs {
+            for e in [0u64, 3, 9] {
+                let mut g2 = ds.clone();
+                writeln!(
+                    out,
+                    "mindrop {} {} -> {}",
+                    f,
+                    e,
+                    choose_mindrop_sequence(&mut g2, f, e)
+                )
+                .unwrap();
+            }
+        }
+        writeln!(
+            out,
+            "mindrop empty -> {}",
+            choose_mindrop_sequence(&mut [], 0.5, 3)
+        )
+        .unwrap();
+        let av: Vec<f64> = vec![5.5, -1.0, 9.0, 3.0, 3.0, 3.0, 7.25, 2.0, 8.0, 3.0];
+        for f in fs {
+            for e in [f64::NEG_INFINITY, f64::INFINITY, 3.0, 7.0] {
+                for d in 0..2 {
+                    let mut g2 = av.clone();
+                    let m = choose_minattribute(&mut g2, f, e, d != 0);
+                    writeln!(out, "minattr {} {} {} -> {:016x}", f, e, d, m.to_bits()).unwrap();
+                }
+            }
+        }
+        for mz in [0i8, 3, 31, 40, -1, 127] {
+            for ix in [0u64, 1, 12345678901234, u64::MAX] {
+                let sf = SerialFeature {
+                    feature_minzoom: mz,
+                    index: ix,
+                    ..Default::default()
+                };
+                writeln!(
+                    out,
+                    "dropseq {} {} -> {}",
+                    mz,
+                    ix,
+                    calculate_drop_sequence(&sf)
+                )
+                .unwrap();
+            }
+        }
+
+        out
+    }
+
+    #[test]
+    fn matches_the_cpp_harness() {
+        let out = harness_output();
+        for (i, (a, b)) in out.lines().zip(EXPECTED.lines()).enumerate() {
+            assert_eq!(a, b, "line {}", i + 1);
+        }
+        assert_eq!(out.lines().count(), EXPECTED.lines().count());
+    }
+
+    #[test]
+    fn dropping_features_starts_at_the_thresholds_that_exclude_nothing() {
+        assert!(!dropping_features(0, 0, 0, f64::NEG_INFINITY, false));
+        assert!(!dropping_features(0, 0, 0, f64::INFINITY, true));
+        assert!(dropping_features(0, 0, 0, f64::INFINITY, false));
+        assert!(dropping_features(0, 0, 0, f64::NEG_INFINITY, true));
+        assert!(dropping_features(1, 0, 0, f64::NEG_INFINITY, false));
+        assert!(dropping_features(0, 1, 0, f64::NEG_INFINITY, false));
+        assert!(dropping_features(0, 0, 1, f64::NEG_INFINITY, false));
+        assert!(dropping_features(0, 0, 0, 3.5, false));
+    }
+
+    #[test]
+    fn add_sample_to_halves_the_sample_when_it_gets_too_big() {
+        let mut vals: Vec<usize> = Vec::new();
+        let mut increment = 1;
+        for seq in 0..100001 {
+            add_sample_to(&mut vals, seq, &mut increment, seq);
+        }
+        assert_eq!(increment, 2);
+        assert_eq!(vals.len(), 50001);
+        assert_eq!(vals[1], 2);
+        assert_eq!(*vals.last().unwrap(), 100000);
+
+        add_sample_to(&mut vals, 100001, &mut increment, 100001);
+        assert_eq!(vals.len(), 50001);
+        add_sample_to(&mut vals, 100002, &mut increment, 100002);
+        assert_eq!(vals.len(), 50002);
+    }
+
+    #[test]
+    fn revive_polygon_makes_a_square_of_the_lost_area() {
+        let geom = vec![
+            Draw::new(VT_MOVETO, 100, 100),
+            Draw::new(VT_LINETO, 300, 100),
+            Draw::new(VT_LINETO, 300, 300),
+            Draw::new(VT_LINETO, 100, 300),
+            Draw::new(VT_LINETO, 100, 100),
+            Draw::new(VT_CLOSEPATH, 0, 0),
+        ];
+        // z0 with 12 bits of detail: a tile pixel is 2^20 world units on a side
+        let out = revive_polygon(&geom, 9.0 * (1u64 << 40) as f64, 0, 12);
+        let xy: Vec<(i64, i64)> = out.iter().map(|d| (d.x, d.y)).collect();
+        // the center is (900 / 5, 900 / 5), and the square is 3 by 3
+        assert_eq!(
+            xy,
+            vec![(179, 179), (182, 179), (182, 182), (179, 182), (179, 179)]
+        );
+        assert_eq!(out[0].op, VT_MOVETO);
+        assert!(out[1..].iter().all(|d| d.op == VT_LINETO));
+
+        assert!(revive_polygon(&geom, 0.0, 0, 12).is_empty());
+        assert!(revive_polygon(&vec![], 5.0, 0, 12).is_empty());
+    }
+
+    #[test]
+    fn draws_something_needs_a_lineto_that_moves() {
+        let dot = vec![Draw::new(VT_MOVETO, 1, 1), Draw::new(VT_LINETO, 1, 1)];
+        assert!(!draws_something(&dot));
+        let line = vec![Draw::new(VT_MOVETO, 1, 1), Draw::new(VT_LINETO, 1, 2)];
+        assert!(draws_something(&line));
+        let jump = vec![Draw::new(VT_MOVETO, 1, 1), Draw::new(VT_MOVETO, 5, 5)];
+        assert!(!draws_something(&jump));
+    }
+
+    #[test]
+    fn coalcmp_compares_type_id_and_full_attributes() {
+        let mut key_pool = KeyPool::default();
+        let feature = |t: i8, id: Option<u64>, attrs: &[(&str, i32, &str)], kp: &mut KeyPool| {
+            let mut sf = SerialFeature {
+                t,
+                has_id: id.is_some(),
+                id: id.unwrap_or(0),
+                ..Default::default()
+            };
+            for &(k, ty, v) in attrs {
+                sf.full_keys.push(kp.pool(k));
+                sf.full_values.push(SerialVal::new(ty, v));
+            }
+            sf
+        };
+        let a = feature(1, None, &[("name", MVT_STRING, "a")], &mut key_pool);
+        let b = feature(1, None, &[("name", MVT_STRING, "a")], &mut key_pool);
+        let c = feature(1, None, &[("name", MVT_STRING, "b")], &mut key_pool);
+        let d = feature(2, None, &[("name", MVT_STRING, "a")], &mut key_pool);
+        let e = feature(1, Some(7), &[("name", MVT_STRING, "a")], &mut key_pool);
+        let f = feature(1, None, &[("name", MVT_DOUBLE, "a")], &mut key_pool);
+        let g = feature(1, None, &[], &mut key_pool);
+
+        assert_eq!(coalcmp(&a, &b), 0);
+        assert!(coalcmp(&a, &c) < 0 && coalcmp(&c, &a) > 0);
+        assert!(coalcmp(&a, &d) < 0 && coalcmp(&d, &a) > 0);
+        assert!(coalcmp(&a, &e) < 0 && coalcmp(&e, &a) > 0);
+        assert!(coalcmp(&a, &f) < 0 && coalcmp(&f, &a) > 0);
+        assert!(coalcmp(&g, &a) < 0 && coalcmp(&a, &g) > 0);
+
+        let mut a2 = feature(1, None, &[("name", MVT_STRING, "a")], &mut key_pool);
+        a2.index = 5;
+        a2.geometry = vec![Draw::new(VT_MOVETO, 0, 1)];
+        let mut b2 = feature(1, None, &[("name", MVT_STRING, "a")], &mut key_pool);
+        b2.index = 5;
+        b2.geometry = vec![Draw::new(VT_MOVETO, 0, 2)];
+        assert!(coalindexcmp(&a2, &b2) < 0);
+        b2.index = 4;
+        assert!(coalindexcmp(&a2, &b2) > 0);
+    }
+
+    #[test]
+    fn multiplier_clusters_put_the_marker_on_the_first_feature() {
+        let marker = "tippecanoe:retain_points_multiplier_first";
+        let mut key_pool = KeyPool::default();
+        let mut features: Vec<SerialFeaturePtr> = Vec::new();
+        for (seq, first) in [(0, true), (1, false), (2, false), (3, true), (4, false)] {
+            let mut sf = SerialFeature {
+                seq,
+                index: seq as u64 + 1,
+                ..Default::default()
+            };
+            sf.full_keys.push(key_pool.pool("n"));
+            sf.full_values
+                .push(SerialVal::new(MVT_DOUBLE, &seq.to_string()));
+            if first {
+                sf.full_keys.push(key_pool.pool(marker));
+                sf.full_values.push(SerialVal::new(MVT_BOOL, "true"));
+            }
+            features.push(Box::new(sf));
+        }
+
+        let clusters = assemble_multiplier_clusters(features);
+        assert_eq!(clusters.len(), 5); // retain_points_multiplier is 1 by default
+        let mut clusters: Vec<Vec<SerialFeaturePtr>> =
+            vec![clusters.into_iter().flatten().collect()];
+
+        // a cluster whose marker is on a later feature
+        clusters[0].swap(0, 1);
+        let out = disassemble_multiplier_clusters(clusters);
+        assert_eq!(out[0].seq, 1);
+        assert_eq!(*out[0].full_keys.last().unwrap().as_str(), *marker);
+        assert!(
+            out[1..]
+                .iter()
+                .filter(|f| f.full_keys.iter().any(|k| **k == marker))
+                .count()
+                == 1
+        );
+        // the rest are in drop sequence order, last-dropped first
+        let seqs: Vec<u64> = out[1..]
+            .iter()
+            .map(|f| calculate_drop_sequence(f))
+            .collect();
+        let mut sorted = seqs.clone();
+        sorted.sort_by(|a, b| b.cmp(a));
+        assert_eq!(seqs, sorted);
+    }
+
+    #[test]
+    fn layer_unmaps_reads_input_and_own_segments() {
+        let input = vec![
+            vec!["a".to_string(), "b".to_string()],
+            vec!["c".to_string()],
+        ];
+        let own = vec!["d".to_string()];
+        let lu = LayerUnmaps {
+            input: &input,
+            tiling_seg: 5,
+            own: &own,
+        };
+        assert_eq!(lu.get(0, 1), "b");
+        assert_eq!(lu.get(1, 0), "c");
+        assert_eq!(lu.get(5, 0), "d");
+    }
+
+    #[test]
+    fn atomic_strategy_adds_up() {
+        let s = AtomicStrategy::default();
+        let one = Strategy {
+            dropped_by_rate: 1,
+            dropped_by_gamma: 2,
+            dropped_as_needed: 3,
+            coalesced_as_needed: 4,
+            detail_reduced: 5,
+            tiny_polygons: 6,
+            truncated_zooms: 7,
+            tile_size: 100,
+            feature_count: 200,
+        };
+        s.add_from(&one);
+        s.add_from(&one);
+        let total = Strategy::new(&s, 9, 10);
+        assert_eq!(total.dropped_by_rate, 2);
+        assert_eq!(total.dropped_by_gamma, 4);
+        assert_eq!(total.dropped_as_needed, 6);
+        assert_eq!(total.coalesced_as_needed, 8);
+        assert_eq!(total.detail_reduced, 10);
+        assert_eq!(total.tiny_polygons, 12);
+        assert_eq!(total.truncated_zooms, 14);
+        assert_eq!(total.tile_size, 9);
+        assert_eq!(total.feature_count, 10);
     }
 }

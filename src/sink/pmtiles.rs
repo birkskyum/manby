@@ -14,7 +14,8 @@
 //! - At `finish`, the tiles are sorted by tile id and the data is laid out in
 //!   the order tippecanoe's conversion uses: each distinct tile where it is
 //!   first used. Runs and directories are built as tippecanoe builds them,
-//!   and the archive is written once, front to back.
+//!   with the leaves compressed in parallel, and the archive is written once,
+//!   the tile data in pieces written in parallel at their final offsets.
 //!
 //! Because the layout depends only on the set of tiles, the archive does not
 //! depend on the order the tiles arrived in or on the number of threads.
@@ -356,20 +357,20 @@ impl TileSink for PmtilesSink {
 
         // The tile data, in pieces written in parallel at their final offsets.
         let len = |&(s, n): &(u32, u32)| shards[s as usize].contents[n as usize].len as u64;
-        let mut pieces: Vec<(usize, usize, u64)> = Vec::new();
+        let mut pieces: Vec<(usize, usize, u64, u64)> = Vec::new();
         let (mut start, mut at, mut bytes) = (0, front.len() as u64, 0u64);
         for (i, item) in layout.order.iter().enumerate() {
             if bytes >= PIECE {
-                pieces.push((start, i, at));
+                pieces.push((start, i, at, bytes));
                 (start, at, bytes) = (i, at + bytes, 0);
             }
             bytes += len(item);
         }
-        pieces.push((start, layout.order.len(), at));
+        pieces.push((start, layout.order.len(), at, bytes));
         pieces
             .into_par_iter()
-            .try_for_each(|(from, to, at)| {
-                let mut buf = Vec::with_capacity(PIECE as usize * 2);
+            .try_for_each(|(from, to, at, bytes)| {
+                let mut buf = Vec::with_capacity(bytes as usize);
                 for &(s, n) in &layout.order[from..to] {
                     let shard = &shards[s as usize];
                     buf.extend_from_slice(shard.data(&shard.contents[n as usize], spill));

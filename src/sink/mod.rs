@@ -7,25 +7,31 @@
 //!
 //! # Other cloud-native outputs worth adding
 //!
-//! - **MapLibre Tiles (MLT) in PMTiles.** PMTiles has no tile type for MLT
-//!   yet, so this needs a type number agreed with the PMTiles spec, then the
-//!   same writer with MLT-encoded tiles. MLT's column layout also compresses
-//!   better, so the archive shrinks without gzip.
-//! - **Straight to object storage.** The PMTiles writer already knows every
-//!   offset before it writes a byte of tile data, so `finish` could stream
-//!   the archive into an S3 or GCS multipart upload (5 MiB parts, uploaded
-//!   in parallel) instead of a local file, with no local copy at all.
-//! - **Brotli or zstd inside PMTiles.** The header already has codes for
-//!   both; zstd at a low level decodes several times faster than gzip in
-//!   browsers that support it, for archives that are not checked against
-//!   tippecanoe.
-//! - **Clustered spill without a copy.** When the tiler can emit tiles in
-//!   tile-id order (it walks the quadtree, which is close), most tiles could go
-//!   straight to their final place in the archive; APFS `clonefile` and Linux
-//!   `copy_file_range` only help when whole files or block-aligned ranges move,
-//!   which tile data in a PMTiles archive never is.
+//! - **Straight to object storage.** The PMTiles writer knows every offset
+//!   before it writes a byte of tile data, so `finish` could stream the
+//!   archive into an S3 (or S3-compatible, or GCS) multipart upload instead of
+//!   a local file: the header and directories as the first part, then tile
+//!   data in parts of at least 5 MiB uploaded in parallel, with no local copy.
+//!   Uploading could even start before `finish` for tiles whose place is
+//!   already fixed, once the tiler reports that a zoom level is done.
+//! - **MapLibre Tiles (MLT) in PMTiles.** The same writer, with MLT-encoded
+//!   tiles and the tile type the PMTiles spec assigns to MLT. MLT's columnar
+//!   layout makes smaller tiles that decode faster, and needs no gzip.
+//! - **Brotli or zstd inside PMTiles.** The header has codes for both, and
+//!   both make smaller archives than gzip at similar or better decoding speed.
+//!   Clients need a decoder for them, so this would be opt-in and checked
+//!   against tippecanoe only after decoding.
+//! - **Several outputs in one run.** A sink that forwards each tile to two
+//!   sinks, for example PMTiles for serving and a directory for inspection.
 //! - **Versatiles or COMTiles.** Other single-file formats for HTTP range
-//!   reads, which could share the dedup and ordering of the PMTiles writer.
+//!   requests, which could reuse the PMTiles writer's dedup and ordering.
+//!
+//! APFS `clonefile` and Linux `copy_file_range` or reflinks do not help with
+//! the PMTiles spill file: they move whole files or block-aligned ranges, and
+//! tile data in an archive is neither, because tippecanoe's layout puts the
+//! tiles in tile-id order behind directories whose size is known only at the
+//! end. Batched positioned writes and an mmap at `finish` already make
+//! spilling cost little (see `pmtiles.rs`).
 
 pub mod dir;
 pub mod mbtiles;

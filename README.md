@@ -10,14 +10,16 @@ manby -zg --drop-densest-as-needed -o places.pmtiles places.geojson
 
 ## Speed
 
-On an Apple M5 Max with 18 cores, average of two runs, writing PMTiles. For every run the tiles decode to exactly what tippecanoe makes.
+On an Apple M5 Max with 18 cores, median of three alternating runs, writing PMTiles. For every run the tiles decode to exactly what tippecanoe makes.
 
 | Benchmark | tippecanoe | manby | |
 | --- | --- | --- | --- |
-| 4 million points, `-zg --drop-densest-as-needed` | 59.7 s | 3.7 s | 16x |
-| 17,522 roads at `-z14`, 122,725 tiles | 10.0 s | 0.72 s | 14x |
-| 85,186 census tracts at `-z12`, 312,073 tiles | 51.2 s | 3.8 s | 13.5x |
-| 85,186 census tracts, `-zg --coalesce-densest-as-needed` | 25.1 s | 2.5 s | 10x |
+| 4 million points, `-zg --drop-densest-as-needed` | 56.5 s, 2.02 GB | 3.2 s, 1.42 GB | 17.5x |
+| 17,522 roads at `-z14`, 122,725 tiles | 9.7 s, 0.31 GB | 0.81 s, 0.23 GB | 12x |
+| 85,186 census tracts at `-z12`, 312,073 tiles | 43.3 s, 0.56 GB | 4.0 s, 0.41 GB | 11x |
+| 85,186 census tracts, `-zg --coalesce-densest-as-needed` | 24.9 s, 0.54 GB | 2.3 s, 0.41 GB | 10.7x |
+
+The memory figures are peak resident memory. manby also uses less processor time in total, a fifth of tippecanoe's on the points.
 
 The tippecanoe column is [tippecanoe-rs](../tippecanoe-rs), the faithful Rust port, which runs at the same speed as the C++. `bench/` has the data and the script.
 

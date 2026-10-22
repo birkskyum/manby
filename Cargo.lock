@@ -578,6 +578,7 @@ dependencies = [
  "mlt-core",
  "rayon",
  "rusqlite",
+ "rustc-hash",
  "tikv-jemallocator",
  "tippecanoe",
  "xxhash-rust",

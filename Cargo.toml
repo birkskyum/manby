@@ -16,6 +16,7 @@ rayon = "1.12.0"
 rusqlite = { version = "0.40", features = ["bundled"] }
 tippecanoe = { version = "2.82.0", path = "../tippecanoe-rs" }
 xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
+rustc-hash = "2.1"
 
 [dev-dependencies]
 libz-sys = "1.1"

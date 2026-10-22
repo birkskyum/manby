@@ -7,9 +7,8 @@
 //! encoded bytes and merged when equal before they are written, so they can
 //! be deduped any way at all on the way in.
 
-use std::collections::HashMap;
-
 use rayon::prelude::*;
+use rustc_hash::FxHashMap;
 use tippecanoe::geometry::DrawVec;
 use tippecanoe::mvt::{
     MVT_BOOL, MVT_CLOSEPATH, MVT_DOUBLE, MVT_FLOAT, MVT_INT, MVT_LINETO, MVT_MOVETO, MVT_SINT,
@@ -160,10 +159,10 @@ pub struct LayerEnc<'c> {
     name: String,
     extent: i64,
     keys: Vec<String>,
-    key_cache: HashMap<u32, u32>,
+    key_cache: FxHashMap<u32, u32>,
     vals: Vec<Val>,
-    store_vals: HashMap<u32, u32>,
-    extra_vals: HashMap<Vec<u8>, u32>,
+    store_vals: FxHashMap<u32, u32>,
+    extra_vals: FxHashMap<Vec<u8>, u32>,
     feats: Vec<Feat>,
     /// Key index and local value index, alternating, for each feature in turn.
     tags: Vec<u32>,
@@ -176,10 +175,10 @@ impl<'c> LayerEnc<'c> {
             name: name.to_string(),
             extent,
             keys: Vec::new(),
-            key_cache: HashMap::new(),
+            key_cache: FxHashMap::default(),
             vals: Vec::new(),
-            store_vals: HashMap::new(),
-            extra_vals: HashMap::new(),
+            store_vals: FxHashMap::default(),
+            extra_vals: FxHashMap::default(),
             feats: Vec::new(),
             tags: Vec::new(),
         }

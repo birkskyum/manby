@@ -104,6 +104,8 @@ pub struct TileInput {
     /// The first tile reads every feature of the store.
     pub root: bool,
     data: Stored,
+    /// The parts that the parent's read chunks wrote, until they are stored.
+    parts: Vec<Buf<u8>>,
     runs: Vec<Run>,
     count: usize,
     vertices: u64,
@@ -127,6 +129,7 @@ impl TileInput {
             y,
             root: true,
             data: Stored::Mem(Buf::new()),
+            parts: Vec::new(),
             runs: Vec::new(),
             count: features,
             vertices: 0,
@@ -144,6 +147,7 @@ impl TileInput {
             y,
             root: false,
             data: Stored::Mem(Buf::new()),
+            parts: Vec::new(),
             runs: Vec::new(),
             count: 0,
             vertices: 0,
@@ -166,10 +170,7 @@ impl TileInput {
 
     /// Appends a part that one read chunk of the parent wrote.
     fn append(&mut self, part: ChildPart) {
-        let Stored::Mem(data) = &mut self.data else {
-            unreachable!("inputs are complete before they are spooled");
-        };
-        let off = data.len() as u64;
+        let off: u64 = self.parts.iter().map(|p| p.len() as u64).sum();
         let mut first = true;
         for mut r in part.runs {
             r.start += off;
@@ -179,10 +180,8 @@ impl TileInput {
             }
             self.runs.push(r);
         }
-        if data.is_empty() {
-            *data = part.data;
-        } else {
-            data.extend_from_slice(&part.data);
+        if !part.data.is_empty() {
+            self.parts.push(part.data);
         }
         self.count += part.count;
         self.vertices += part.vertices;
@@ -285,17 +284,23 @@ pub fn store_inputs(inputs: &mut [TileInput], spool: &Arc<Spool>) -> crate::Resu
         return Ok(());
     }
     for t in inputs.iter_mut() {
-        let Stored::Mem(data) = &t.data else {
-            unreachable!("inputs are spooled once");
-        };
-        if data.in_file() {
-            // already out of memory
+        let parts = std::mem::take(&mut t.parts);
+        if parts.iter().any(|p| p.in_file()) {
+            // already out of memory: kept there, in one piece
+            let mut data = Buf::with_capacity(parts.iter().map(|p| p.len()).sum());
+            for p in &parts {
+                data.extend_from_slice(p);
+            }
+            t.data = Stored::Mem(data);
             continue;
         }
         let mut header = Vec::new();
         t.encode_runs(&mut header);
-        t.data = spool.store_parts(&[&header, data])?;
+        let mut pieces: Vec<&[u8]> = vec![&header];
+        pieces.extend(parts.iter().map(|p| &p[..]));
+        t.data = spool.store_parts(&pieces)?;
         t.runs = Vec::new();
+        drop(parts);
         crate::buf::relieve();
     }
     Ok(())
@@ -485,8 +490,10 @@ impl GeomPart {
         self.bytes.len()
     }
 
-    fn reserve(&mut self, vertices: usize) {
-        self.bytes.reserve(vertices * 4);
+    /// Room for `features` with `vertices` in all: points take about 11
+    /// bytes, other vertices fewer. Room that is not written takes no memory.
+    fn reserve(&mut self, features: usize, vertices: usize) {
+        self.bytes.reserve(features * 3 + vertices * 8);
     }
 
     fn extend(&mut self, g: &[Draw]) {
@@ -1010,7 +1017,7 @@ fn read_chunk(ctx: &Ctx<'_>, input: &TileInput, source: Source<'_>, rp: &ReadPar
     if gaps {
         out.gaps.reserve(features);
     }
-    out.geom.reserve(vertices);
+    out.geom.reserve(features, vertices);
 
     let (mut root, mut cursor) = match source {
         Source::Root(r, _) => (Some(r), None),

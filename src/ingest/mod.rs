@@ -18,6 +18,8 @@
 //! of the unit, so the result is always what the unit's own parse gives.
 
 pub mod chunk;
+pub mod csv;
+pub mod flatgeobuf;
 pub mod geojson;
 pub mod json;
 pub mod serialize;
@@ -469,22 +471,6 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
         };
         let layer = layer_source[&src.layer];
 
-        let format = src.format.as_str();
-        let file = src.file.as_str();
-        if format == "fgb"
-            || (file.len() > 4 && file.ends_with(".fgb"))
-            || format == "geobuf"
-            || (file.len() > 7 && file.ends_with(".geobuf"))
-            || format == "csv"
-            || (file.len() > 4 && file.ends_with(".csv"))
-        {
-            flush(&mut stderr);
-            return Err(Error::new(
-                EXIT_ARGS,
-                format!("{}: manby reads only GeoJSON so far", reading_name),
-            ));
-        }
-
         let (file, map) = match open_source(src) {
             Ok(fm) => fm,
             Err(e) => {
@@ -494,6 +480,80 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
                 continue;
             }
         };
+
+        let format = src.format.as_str();
+        let name = src.file.as_str();
+        if format == "fgb" || (name.len() > 4 && name.ends_with(".fgb")) {
+            let Some(map) = map else {
+                flush(&mut stderr);
+                return Err(Error::new(
+                    EXIT_MEMORY,
+                    format!(
+                        "{}: mmap: {}: {}",
+                        options.program,
+                        reading_name,
+                        tippecanoe::cstd::strerror(libc::EINVAL)
+                    ),
+                ));
+            };
+            let layername = sources[layer].layer.clone();
+            read_fgb(
+                &mut parts,
+                &map,
+                &cfg,
+                &reading_name,
+                &layername,
+                &layer_names,
+                cpus,
+                &mut overall_offset,
+                &mut once,
+                &mut stderr,
+            )?;
+            continue;
+        }
+        if format == "geobuf" || (name.len() > 7 && name.ends_with(".geobuf")) {
+            flush(&mut stderr);
+            return Err(Error::new(
+                EXIT_ARGS,
+                format!("{}: manby does not read geobuf yet", reading_name),
+            ));
+        }
+        if format == "csv" || (name.len() > 4 && name.ends_with(".csv")) {
+            drop(map);
+            let mut chunk = Chunk::new(&layer_names);
+            let r = match file {
+                Some(f) => csv::parse(
+                    &mut std::io::BufReader::new(f),
+                    &src.file,
+                    &cfg,
+                    &sources[layer].layer,
+                    &mut chunk,
+                ),
+                None => csv::parse(
+                    &mut std::io::stdin().lock(),
+                    &src.file,
+                    &cfg,
+                    &sources[layer].layer,
+                    &mut chunk,
+                ),
+            };
+            print_messages(&mut stderr, &reading_name, &chunk.messages, 0, &mut once);
+            flush(&mut stderr);
+            r?;
+            // tippecanoe does not add up the -zg sums of CSV input
+            chunk.dist_terms.clear();
+            chunk.dist_count = 0;
+            chunk.area_terms.clear();
+            let n = chunk.features.len() as i64;
+            parts.seq_base.push(overall_offset);
+            parts.chunks.push(Accepted {
+                chunk,
+                unit: usize::MAX,
+                line_offset: 0,
+            });
+            overall_offset += n;
+            continue;
+        }
 
         let mut read_parallel_this: u8 = if options.read_parallel { b'\n' } else { 0 };
         let mut data: Option<Data> = None;
@@ -622,6 +682,98 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
     flush(&mut stderr);
 
     Ok(merge(parts, &sources, &layer_names, &layer_source, options))
+}
+
+/// Reads a FlatGeobuf file, numbering its features in the batches and ranges
+/// that tippecanoe parses them in, and adding up the `-zg` sums as it does.
+#[allow(clippy::too_many_arguments)]
+fn read_fgb(
+    parts: &mut Parts,
+    data: &[u8],
+    cfg: &Config<'_>,
+    reading_name: &str,
+    layername: &str,
+    layer_names: &[String],
+    cpus: usize,
+    overall_offset: &mut i64,
+    once: &mut HashSet<&'static str>,
+    stderr: &mut Vec<u8>,
+) -> crate::Result<()> {
+    let h = flatgeobuf::read_header(data, cfg.o.quiet)?;
+
+    // The batches: tippecanoe runs its queue when it holds more than CPUS * 500.
+    let batch = cpus * 500 + 1;
+    let mut ranges: Vec<(usize, usize, usize)> = Vec::new();
+    let mut start = 0;
+    while start < h.features.len() {
+        let end = (start + batch).min(h.features.len());
+        let size = end - start;
+        for i in 0..cpus {
+            ranges.push((start + size * i / cpus, start + size * (i + 1) / cpus, i));
+        }
+        start = end;
+    }
+
+    let chunks: Vec<(Chunk, crate::Result<()>)> = ranges
+        .par_iter()
+        .map(|&(a, b, _)| {
+            let mut chunk = Chunk::new(layer_names);
+            let mut r = Ok(());
+            for f in a..b {
+                let id = if h.sequence_ids { f as i64 } else { -1 };
+                r = flatgeobuf::read_feature(&mut chunk, cfg, &h, h.features[f], id, layername);
+                if r.is_err() {
+                    break;
+                }
+            }
+            (chunk, r)
+        })
+        .collect();
+
+    let mut seg_dist = vec![0.0f64; cpus];
+    let mut seg_area = vec![0.0f64; cpus];
+    let mut batch_base = *overall_offset;
+    let mut k = 0;
+    while k < ranges.len() {
+        let size_start = ranges[k].0;
+        let mut last_end = batch_base;
+        for (j, (chunk, _)) in chunks[k..k + cpus].iter().enumerate() {
+            let (a, _, i) = ranges[k + j];
+            let base = batch_base + (a - size_start) as i64;
+            parts.seq_base.push(base);
+            last_end = base + chunk.features.len() as i64;
+            for t in &chunk.dist_terms {
+                seg_dist[i] += t;
+            }
+            for t in &chunk.area_terms {
+                seg_area[i] += t;
+            }
+            parts.dist_count += chunk.dist_count;
+        }
+        batch_base = last_end;
+        k += cpus;
+    }
+    *overall_offset = batch_base;
+    for i in 0..cpus {
+        parts.dist_sum += seg_dist[i];
+        // sic: tippecanoe assigns rather than adds the area sums of FlatGeobuf input
+        parts.area_sum = seg_area[i];
+    }
+
+    for (chunk, r) in chunks {
+        print_messages(stderr, reading_name, &chunk.messages, 0, once);
+        if let Err(e) = r {
+            flush(stderr);
+            return Err(e);
+        }
+        parts.chunks.push(Accepted {
+            chunk,
+            unit: usize::MAX,
+            line_offset: 0,
+        });
+    }
+    flush(stderr);
+    Ok(())
 }
 
 fn flush(stderr: &mut Vec<u8>) {

@@ -2,7 +2,7 @@
 # Times manby against tippecanoe on the benchmarks, alternating runs, and checks
 # that manby's tiles decode to the same output as tippecanoe's.
 #
-#   bench/run.sh [benchmark ...]     (default: points tracts tracts-z12 roads-z14)
+#   bench/run.sh [benchmark ...]     (default: points tracts tracts-z12 roads-z14 points-cluster)
 #
 # TIPPECANOE: the reference tippecanoe (default: ../tippecanoe-rs/target/release/tippecanoe)
 # MANBY: the manby to test (default: target/release/manby)
@@ -23,6 +23,7 @@ args_for() {
 	tracts) echo "-zg --coalesce-densest-as-needed -P $D/cb_2023_us_tract_500k.geojsonl" ;;
 	tracts-z12) echo "-z12 -Z0 --coalesce-densest-as-needed -P $D/cb_2023_us_tract_500k.geojsonl" ;;
 	roads-z14) echo "-z14 -Z0 --drop-densest-as-needed -P $D/tl_2024_us_primaryroads.geojsonl" ;;
+	points-cluster) echo "-zg -r1 --cluster-distance=10 --cluster-densest-as-needed --accumulate-attribute=value:sum -P $D/points4m.geojsonl" ;;
 	esac
 }
 
@@ -38,7 +39,7 @@ timed() {
 }
 
 names="$*"
-[ -z "$names" ] && names="points tracts tracts-z12 roads-z14"
+[ -z "$names" ] && names="points tracts tracts-z12 roads-z14 points-cluster"
 
 printf "%-12s %-10s %8s %8s %8s\n" benchmark program wall user sys
 for name in $names; do

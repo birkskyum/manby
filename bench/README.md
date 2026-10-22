@@ -10,6 +10,8 @@
 | `points4m.geojsonl` | 4 million clustered random points (`points.py`) | 556 MB |
 
 `run.sh` times manby against tippecanoe-rs, alternating the two, and checks the tiles match.
+`points-cluster` clusters the points within 10 pixels and sums their `value` attribute
+(`-zg -r1 --cluster-distance=10 --cluster-densest-as-needed --accumulate-attribute=value:sum`).
 Build both in release mode first (`cargo build --release` in each repository).
 
 `large.sh` runs manby with a memory budget (`BUDGET`, default 1G) on inputs several times

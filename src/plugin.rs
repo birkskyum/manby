@@ -191,14 +191,8 @@ fn parse_layers(
     // SAFETY: fd is the read end of the filter's output pipe, owned here.
     let mut f = unsafe { File::from_raw_fd(fd) };
 
-    let out = crate::read_json::parse_layers(
-        Box::new(BufReader::new(&mut f)),
-        z,
-        x,
-        y,
-        extent,
-        false,
-    );
+    let out =
+        crate::read_json::parse_layers(Box::new(BufReader::new(&mut f)), z, x, y, extent, false);
 
     // SAFETY: the descriptor came from into_raw_fd and is closed exactly once.
     if unsafe { libc::close(f.into_raw_fd()) } != 0 {
@@ -306,7 +300,10 @@ pub fn parse_feature(
             let geometry = match j.hash_get("geometry") {
                 Some(g) => g,
                 None => {
-                    eprint!("Filter output:{}: filtered feature with no geometry: ", jp.line);
+                    eprint!(
+                        "Filter output:{}: filtered feature with no geometry: ",
+                        jp.line
+                    );
                     json_context(j);
                     std::process::exit(EXIT_JSON);
                 }
@@ -315,7 +312,10 @@ pub fn parse_feature(
             let properties = match j.hash_get("properties") {
                 Some(p) if p.type_() == JsonType::Hash || p.type_() == JsonType::Null => p,
                 _ => {
-                    eprint!("Filter output:{}: feature without properties hash: ", jp.line);
+                    eprint!(
+                        "Filter output:{}: feature without properties hash: ",
+                        jp.line
+                    );
                     json_context(j);
                     std::process::exit(EXIT_JSON);
                 }
@@ -342,7 +342,10 @@ pub fn parse_feature(
             let coordinates = match geometry.hash_get("coordinates") {
                 Some(c) if c.type_() == JsonType::Array => c,
                 _ => {
-                    eprint!("Filter output:{}: feature without coordinates array: ", jp.line);
+                    eprint!(
+                        "Filter output:{}: feature without coordinates array: ",
+                        jp.line
+                    );
                     json_context(j);
                     std::process::exit(EXIT_JSON);
                 }

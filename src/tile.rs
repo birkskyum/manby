@@ -460,9 +460,10 @@ fn metacmp(one: &SerialFeature, two: &SerialFeature) -> i32 {
 
 /// `mvt_value v; v.type = type;` with the numeric value left at zero.
 fn mvt_value_of_type(type_: i32) -> MvtValue {
-    let mut v = MvtValue::default();
-    v.type_ = type_;
-    v
+    MvtValue {
+        type_,
+        ..Default::default()
+    }
 }
 
 // Retrieve the value of an attribute or pseudo-attribute (ORDER_BY_SIZE) for --order purposes.
@@ -641,18 +642,16 @@ fn rewrite(
     initial_y: &[u32],
 ) {
     if !osf.geometry.is_empty()
-        && (nextzoom <= maxzoom
-            || additional(A_EXTEND_ZOOMS) != 0
-            || get(&EXTEND_ZOOMS_MAX) > 0)
+        && (nextzoom <= maxzoom || additional(A_EXTEND_ZOOMS) != 0 || get(&EXTEND_ZOOMS_MAX) > 0)
     {
         let span: i32 = 1 << (nextzoom - z);
 
         // Get the feature bounding box in pixel (256) coordinates at the child zoom
         // in order to calculate which sub-tiles it can touch including the buffer.
         let mut bbox2 = [0i64; 4];
-        for k in 0..4 {
+        for (b, &o) in bbox2.iter_mut().zip(osf.bbox.iter()) {
             // Division instead of right-shift because coordinates can be negative
-            bbox2[k] = osf.bbox[k] / 1i32.wrapping_shl((32 - nextzoom - 8) as u32) as i64;
+            *b = o / 1i32.wrapping_shl((32 - nextzoom - 8) as u32) as i64;
         }
         // Decrement the top and left edges so that any features that are
         // touching the edge can potentially be included in the adjacent tiles too.
@@ -811,16 +810,17 @@ fn revive_polygon(geom: &DrawVec, mut area: f64, z: i32, detail: i32) -> DrawVec
         let width = width as i64;
         let height = height as i64;
 
-        let mut out = DrawVec::new();
-        out.push(Draw::new(VT_MOVETO, sx - (width / 2), sy - (height / 2)));
-        out.push(Draw::new(VT_LINETO, sx - (width / 2) + width, sy - (height / 2)));
-        out.push(Draw::new(
-            VT_LINETO,
-            sx - (width / 2) + width,
-            sy - (height / 2) + height,
-        ));
-        out.push(Draw::new(VT_LINETO, sx - (width / 2), sy - (height / 2) + height));
-        out.push(Draw::new(VT_LINETO, sx - (width / 2), sy - (height / 2)));
+        let out: DrawVec = vec![
+            Draw::new(VT_MOVETO, sx - (width / 2), sy - (height / 2)),
+            Draw::new(VT_LINETO, sx - (width / 2) + width, sy - (height / 2)),
+            Draw::new(
+                VT_LINETO,
+                sx - (width / 2) + width,
+                sy - (height / 2) + height,
+            ),
+            Draw::new(VT_LINETO, sx - (width / 2), sy - (height / 2) + height),
+            Draw::new(VT_LINETO, sx - (width / 2), sy - (height / 2)),
+        ];
 
         out
     } else {
@@ -1086,11 +1086,7 @@ fn choose_minextent(extents: &mut [i64], f: f64, existing_extent: i64) -> i64 {
     extents[ix]
 }
 
-fn choose_mindrop_sequence(
-    drop_sequences: &mut [u64],
-    f: f64,
-    existing_drop_sequence: u64,
-) -> u64 {
+fn choose_mindrop_sequence(drop_sequences: &mut [u64], f: f64, existing_drop_sequence: u64) -> u64 {
     if drop_sequences.is_empty() {
         return u64::MAX;
     }
@@ -1150,7 +1146,8 @@ fn choose_minattribute(
 }
 
 fn calculate_drop_sequence(sf: &SerialFeature) -> u64 {
-    let zoom: u64 = (sf.feature_minzoom as i64 as u64).max(0).min(31);
+    // std::max with 0ULL does nothing to an unsigned value
+    let zoom: u64 = (sf.feature_minzoom as i64 as u64).min(31);
     let mut out: u64 = zoom << (64 - 5); // top bits are the zoom level: top-priority features are those that appear in the low zooms
     out |= bit_reverse(sf.index) & !(31u64 << (64 - 5)); // remaining bits are from the inverted indes, which should incrementally fill in spatially
     !out // lowest numbered feature gets dropped first
@@ -1975,11 +1972,9 @@ fn promote_attribute_prefix(
 
         p.full_keys.push(key_pool.pool(prefixed_key));
         p.full_values.push(sv);
-
-        return;
     }
 
-    // it does not exist, so preserve_attribute() will create it
+    // otherwise it does not exist, so preserve_attribute() will create it
 }
 
 // accumulate attribute values from sf onto p
@@ -2433,7 +2428,8 @@ fn write_tile(
                     rpa.prefilter_fp = Some(PipeWriter::fdopen(prefilter_write));
 
                     // this does need to be a real thread, so we can pipe both to and from it
-                    match std::thread::Builder::new().spawn_scoped(scope, move || run_prefilter(rpa))
+                    match std::thread::Builder::new()
+                        .spawn_scoped(scope, move || run_prefilter(rpa))
                     {
                         Ok(w) => prefilter_writer = Some(w),
                         Err(_) => {
@@ -2673,8 +2669,7 @@ fn write_tile(
                                 continue;
                             }
                         }
-                    } else if z <= cluster_maxzoom && additional(A_CLUSTER_DENSEST_AS_NEEDED) != 0
-                    {
+                    } else if z <= cluster_maxzoom && additional(A_CLUSTER_DENSEST_AS_NEEDED) != 0 {
                         // this is now just like coalesce-densest, except that instead of unioning the geometry,
                         // it averages the point locations
                         add_sample_to(&mut gaps, sf.gap, &mut gaps_increment, seq);
@@ -2884,8 +2879,13 @@ fn write_tile(
                     // that standard, so that duplicates aren't reported as infinitely dense.
 
                     let o_density_previndex = density_previndex as f64;
-                    if manage_gap(sf.index, &mut density_previndex, scale, 1.0, &mut density_gap)
-                        == 0
+                    if manage_gap(
+                        sf.index,
+                        &mut density_previndex,
+                        scale,
+                        1.0,
+                        &mut density_gap,
+                    ) == 0
                     {
                         spacing = (sf.index as f64 - o_density_previndex) / scale;
                     }
@@ -2939,19 +2939,15 @@ fn write_tile(
 
                     let mut adjusted_max_tile_size = max_tile_size;
                     if lead_features_count > 0 {
-                        adjusted_max_tile_size = adjusted_max_tile_size
-                            .wrapping_mul(
-                                lead_features_count + other_multiplier_cluster_features_count,
-                            )
-                            / lead_features_count;
+                        adjusted_max_tile_size = adjusted_max_tile_size.wrapping_mul(
+                            lead_features_count + other_multiplier_cluster_features_count,
+                        ) / lead_features_count;
                     }
                     let mut adjusted_max_tile_features = max_tile_features;
                     if lead_features_count > 0 {
-                        adjusted_max_tile_features = adjusted_max_tile_features
-                            .wrapping_mul(
-                                lead_features_count + other_multiplier_cluster_features_count,
-                            )
-                            / lead_features_count;
+                        adjusted_max_tile_features = adjusted_max_tile_features.wrapping_mul(
+                            lead_features_count + other_multiplier_cluster_features_count,
+                        ) / lead_features_count;
                     }
 
                     // The number of features in the tile, meanwhile, is inflated
@@ -3122,10 +3118,10 @@ fn write_tile(
                 within[j] = false;
 
                 if additional(A_VARIABLE_DEPTH_PYRAMID) != 0 {
-                    match geomfile[j]
-                        .fp
-                        .write_at(&estimated_complexity_out.to_ne_bytes(), start_geompos[j] as u64)
-                    {
+                    match geomfile[j].fp.write_at(
+                        &estimated_complexity_out.to_ne_bytes(),
+                        start_geompos[j] as u64,
+                    ) {
                         Ok(8) => {}
                         _ => {
                             perror("pwrite complexity");
@@ -3241,7 +3237,14 @@ fn write_tile(
             }
 
             if additional(A_DETECT_SHARED_BORDERS) != 0 {
-                find_common_edges(features, z, line_detail, simplification, maxzoom, merge_fraction);
+                find_common_edges(
+                    features,
+                    z,
+                    line_detail,
+                    simplification,
+                    maxzoom,
+                    merge_fraction,
+                );
             }
 
             let mut tasks =
@@ -3433,9 +3436,9 @@ fn write_tile(
                 ..Default::default()
             };
 
-            for x in 0..layer_features.len() {
+            for slot in layer_features.iter_mut() {
                 let mut feature = MvtFeature::default();
-                let f = &mut layer_features[x];
+                let f = &mut **slot;
                 let t = f.t as i32;
 
                 if t == VT_LINE || t == VT_POLYGON {
@@ -3443,7 +3446,7 @@ fn write_tile(
                 }
 
                 if f.geometry.is_empty() {
-                    layer_features[x] = Box::default();
+                    *slot = Box::default();
                     continue;
                 }
 
@@ -3492,7 +3495,7 @@ fn write_tile(
                 }
 
                 layer.features.push(feature);
-                layer_features[x] = Box::default();
+                *slot = Box::default();
             }
 
             if !layer.features.is_empty() {
@@ -3518,8 +3521,8 @@ fn write_tile(
             && unclipped_features < original_features / 2
             && CLIPBBOXES.read().unwrap().is_empty()
         {
-            eprint!("\n\nMore than half the features were clipped away at zoom level 0.\n");
-            eprint!("Is your data in the wrong projection? It should be in WGS84/EPSG:4326.\n");
+            eprintln!("\n\nMore than half the features were clipped away at zoom level 0.");
+            eprintln!("Is your data in the wrong projection? It should be in WGS84/EPSG:4326.");
         }
 
         report_progress(
@@ -3556,7 +3559,12 @@ fn write_tile(
                 if quiet == 0 {
                     eprintln!(
                         "tile {}/{}/{} has {} (estimated {}) features, >{}    ",
-                        z, tx, ty, feature_count, adjusted_feature_count, adjusted_max_tile_features
+                        z,
+                        tx,
+                        ty,
+                        feature_count,
+                        adjusted_feature_count,
+                        adjusted_max_tile_features
                     );
                 }
 
@@ -3684,7 +3692,11 @@ fn write_tile(
                         minattribute,
                         desc,
                     );
-                    let better = if desc { m < minattribute } else { m > minattribute };
+                    let better = if desc {
+                        m < minattribute
+                    } else {
+                        m > minattribute
+                    };
                     if better {
                         minattribute = m;
                         let propagate = if desc {
@@ -3935,7 +3947,11 @@ fn write_tile(
                         minattribute,
                         desc2,
                     );
-                    let better2 = if desc2 { m < minattribute } else { m > minattribute };
+                    let better2 = if desc2 {
+                        m < minattribute
+                    } else {
+                        m > minattribute
+                    };
                     if better2 {
                         minattribute = m;
                         let propagate2 = if desc2 {
@@ -4240,7 +4256,6 @@ fn run_thread(arg: &mut WriteTileArgs<'_>) -> Option<i32> {
             arg.geomfd[j].store(newfd, Ordering::Relaxed);
         }
 
-        drop(dc);
         // SAFETY: the descriptor came from into_raw_fd and is closed exactly once.
         if unsafe { libc::close(geom.into_raw_fd()) } != 0 {
             perror("close geom");
@@ -4333,11 +4348,11 @@ pub fn traverse_zooms(
         let mut sub: Vec<Shard> = Vec::with_capacity(temp_files);
         let subpos: Vec<AtomicI64> = (0..temp_files).map(|_| AtomicI64::new(0)).collect();
         let mut subfd: Vec<i32> = vec![0; temp_files];
-        for j in 0..temp_files {
+        for (j, subfd_j) in subfd.iter_mut().enumerate() {
             let mut geomname = format!("{}/geom{}.XXXXXXXX", tmpdir, j);
-            subfd[j] = mkstemp_cloexec(&mut geomname);
+            *subfd_j = mkstemp_cloexec(&mut geomname);
             // printf("%s\n", geomname.c_str());
-            if subfd[j] < 0 {
+            if *subfd_j < 0 {
                 perror(&geomname);
                 std::process::exit(EXIT_OPEN);
             }
@@ -4444,7 +4459,8 @@ pub fn traverse_zooms(
             // must be recreate with each pass, since child threads consume it
             let pass_dispatch = Mutex::new(dispatch.clone());
 
-            let geomfd_shared: Vec<AtomicI32> = geomfd.iter().map(|&fd| AtomicI32::new(fd)).collect();
+            let geomfd_shared: Vec<AtomicI32> =
+                geomfd.iter().map(|&fd| AtomicI32::new(fd)).collect();
 
             let child_shards = temp_files / threads;
             let (input_unmaps, tiling_unmaps) = layer_unmaps.split_at_mut(layermaps_off);

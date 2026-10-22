@@ -6,8 +6,7 @@ use std::sync::Arc;
 
 use tippecanoe::attribute::preserve_attribute;
 use tippecanoe::clip::{
-    close_poly, coalesce_polygon, get_mp_area, line_is_too_small, reduce_tiny_poly, remove_noop,
-    to_tile_scale,
+    close_poly, coalesce_polygon, get_mp_area as get_mp_area_vec, remove_noop, to_tile_scale,
 };
 use tippecanoe::geometry::{
     DrawVec, VT_LINE, VT_POINT, VT_POLYGON, check_polygon, checkerboard_anchors, reorder_lines,
@@ -27,6 +26,7 @@ use tippecanoe::tile::{Strategy, manage_gap};
 
 use super::encode::LayerEnc;
 use super::engine::Ctx;
+use super::geom::{get_mp_area, line_is_too_small, reduce_tiny_poly};
 use super::read::{Cand, NO_LIST, ReadTile};
 use super::util::*;
 use crate::store::Attr;
@@ -451,7 +451,7 @@ fn simplify_feature(
 
     let mut area = 0.0;
     if t == VT_POLYGON {
-        area = get_mp_area(&geom);
+        area = get_mp_area_vec(&geom);
     }
 
     if (t == VT_LINE || t == VT_POLYGON)
@@ -772,14 +772,14 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
             }
 
             if t as i32 == VT_POLYGON && o.a(A_GENERATE_POLYGON_LABEL_POINTS) {
-                let mut g: DrawVec = rt.cand_geom(c).to_vec();
-                if line_is_too_small(&g, z, line_detail) {
+                if line_is_too_small(rt.cand_geom(c), z, line_detail) {
                     continue;
                 }
-                if get_mp_area(&g) <= 0.0 {
+                if get_mp_area(rt.cand_geom(c)) <= 0.0 {
                     continue;
                 }
 
+                let mut g: DrawVec = rt.cand_geom(c).to_vec();
                 let ngeom = simplify_lines(
                     &mut g,
                     z,
@@ -887,7 +887,7 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
                 ($w:expr, $add_area:expr) => {{
                     let g = sf_geom!();
                     let target = &mut layer.features[$w];
-                    if t as i32 == VT_POINT || !line_is_too_small(&g.to_vec(), z, line_detail) {
+                    if t as i32 == VT_POINT || !line_is_too_small(g, z, line_detail) {
                         target.geometry.extend_from_slice(g);
                     }
                     target.coalesced = true;
@@ -1069,7 +1069,7 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
                     || (o.p(P_TINY_POLYGON_REDUCTION_AT_MAXZOOM) && z == maxzoom);
                 if !prevent_tiny && !o.a(A_GRID_LOW_ZOOMS) {
                     let reduced = reduce_tiny_poly(
-                        &sf_geom!().to_vec(),
+                        sf_geom!(),
                         z,
                         line_detail,
                         &mut still_need_simplification_after_reduction,
@@ -1092,7 +1092,7 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
             }
 
             if (t as i32 == VT_POLYGON || t as i32 == VT_LINE)
-                && line_is_too_small(&sf_geom!().to_vec(), z, line_detail)
+                && line_is_too_small(sf_geom!(), z, line_detail)
             {
                 continue;
             }
@@ -1191,17 +1191,21 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
                     if unsimplified_geometry_size > 10 * 1024 * 1024
                         && !o.a(A_DETECT_SHARED_BORDERS)
                     {
-                        while simplified_geometry_through < layer.features.len() {
-                            let f2 = &mut layer.features[simplified_geometry_through];
-                            simplify_feature(ctx, f2, z, tx, ty, maxzoom, &shared_nodes);
+                        // each feature on its own, so they can be done in parallel
+                        if simplified_geometry_through < layer.features.len() {
+                            let shared_nodes = &shared_nodes;
+                            par_each_mut(
+                                &mut layer.features[simplified_geometry_through..],
+                                ctx.threads,
+                                |_, f2| {
+                                    simplify_feature(ctx, f2, z, tx, ty, maxzoom, shared_nodes);
 
-                            if f2.t as i32 == VT_POLYGON {
-                                let mut to_clean = f2.geometry.clone();
-                                coalesce_polygon(&mut to_clean, false);
-                                f2.geometry = to_clean;
-                            }
-
-                            simplified_geometry_through += 1;
+                                    if f2.t as i32 == VT_POLYGON {
+                                        coalesce_polygon(&mut f2.geometry, false);
+                                    }
+                                },
+                            );
+                            simplified_geometry_through = layer.features.len();
                         }
 
                         unsimplified_geometry_size = 0;
@@ -1213,6 +1217,7 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
             coalesced_area = 0.0;
         }
 
+        let trace_loop = trace_start.elapsed().as_secs_f64();
         let mut adjusted_max_tile_size = max_tile_size;
         if lead_features_count > 0 {
             adjusted_max_tile_size = adjusted_max_tile_size
@@ -1304,17 +1309,15 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
 
             {
                 let shared_nodes = &shared_nodes;
-                let heavy = features.iter().any(|f| f.t as i32 != VT_POINT);
-                par_chunks_mut(
-                    features,
-                    if heavy { 2048 } else { 1 << 20 },
-                    ctx.threads,
-                    |start, part| {
-                        for (k, f) in part.iter_mut().enumerate() {
-                            simplify_and_scale(ctx, start + k, f, z, tx, ty, maxzoom, shared_nodes);
-                        }
-                    },
-                );
+                if features.len() >= 64 && features.iter().any(|f| f.t as i32 != VT_POINT) {
+                    par_each_mut(features, ctx.threads, |i, f| {
+                        simplify_and_scale(ctx, i, f, z, tx, ty, maxzoom, shared_nodes)
+                    });
+                } else {
+                    for (i, f) in features.iter_mut().enumerate() {
+                        simplify_and_scale(ctx, i, f, z, tx, ty, maxzoom, shared_nodes);
+                    }
+                }
             }
 
             for f in features.iter_mut() {
@@ -1600,7 +1603,7 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
                 static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
                 let t0 = *T0.get_or_init(std::time::Instant::now);
                 eprintln!(
-                    "trace {:.3} {}/{}/{} mingap {} cands {} kept {} skipped {} features {}: select {:.3} build {:.3} encode {:.3} gzip {:.3}; {} -> {} bytes",
+                    "trace {:.3} {}/{}/{} mingap {} cands {} kept {} skipped {} features {}: loop {:.3} layers {:.3} build {:.3} encode {:.3} gzip {:.3}; {} -> {} bytes",
                     t0.elapsed().as_secs_f64(),
                     z,
                     tx,
@@ -1610,7 +1613,8 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
                     kept,
                     skipped,
                     feature_count,
-                    trace_select,
+                    trace_loop,
+                    trace_select - trace_loop,
                     trace_build - trace_select,
                     trace_encode - trace_build,
                     trace_start.elapsed().as_secs_f64() - trace_encode,

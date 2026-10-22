@@ -27,7 +27,11 @@ impl Default for Wagyu {
 
 impl Wagyu {
     pub fn new() -> Self {
-        Wagyu { minima_list: Vec::new(), bounds: Vec::new(), reverse_output: false }
+        Wagyu {
+            minima_list: Vec::new(),
+            bounds: Vec::new(),
+            reverse_output: false,
+        }
     }
 
     /// Adds a ring. Returns false if the ring has too few distinct, non-collinear points.

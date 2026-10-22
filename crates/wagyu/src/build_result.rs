@@ -4,7 +4,12 @@ use crate::geometry::{LinearRing, MultiPolygon, Point, Polygon};
 use crate::point::{NIL, RingPtr};
 use crate::ring::RingManager;
 
-fn push_ring_to_polygon(poly: &mut Polygon, r: RingPtr, manager: &RingManager, reverse_output: bool) {
+fn push_ring_to_polygon(
+    poly: &mut Polygon,
+    r: RingPtr,
+    manager: &RingManager,
+    reverse_output: bool,
+) {
     let pts = &manager.points;
     let ring = &manager.rings[r];
     let mut lr: LinearRing = Vec::with_capacity(ring.size_ + 1);
@@ -31,7 +36,12 @@ fn push_ring_to_polygon(poly: &mut Polygon, r: RingPtr, manager: &RingManager, r
     poly.push(lr);
 }
 
-fn build_result_polygons(solution: &mut MultiPolygon, rings: &[RingPtr], manager: &RingManager, reverse_output: bool) {
+fn build_result_polygons(
+    solution: &mut MultiPolygon,
+    rings: &[RingPtr],
+    manager: &RingManager,
+    reverse_output: bool,
+) {
     for &r in rings {
         if r == NIL {
             continue;
@@ -52,7 +62,12 @@ fn build_result_polygons(solution: &mut MultiPolygon, rings: &[RingPtr], manager
                 continue;
             }
             if !manager.rings[c].children.is_empty() {
-                build_result_polygons(solution, &manager.rings[c].children, manager, reverse_output);
+                build_result_polygons(
+                    solution,
+                    &manager.rings[c].children,
+                    manager,
+                    reverse_output,
+                );
             }
         }
     }

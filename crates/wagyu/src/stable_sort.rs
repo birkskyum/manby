@@ -77,7 +77,12 @@ fn insertion_sort_move<T: Copy, F: FnMut(&T, &T) -> bool>(src: &[T], dst: &mut [
     }
 }
 
-fn merge_move_construct<T: Copy, F: FnMut(&T, &T) -> bool>(a: &[T], b: &[T], out: &mut [T], comp: &mut F) {
+fn merge_move_construct<T: Copy, F: FnMut(&T, &T) -> bool>(
+    a: &[T],
+    b: &[T],
+    out: &mut [T],
+    comp: &mut F,
+) {
     let (mut i, mut j, mut r) = (0, 0, 0);
     loop {
         if i == a.len() {
@@ -107,7 +112,12 @@ fn merge_move_construct<T: Copy, F: FnMut(&T, &T) -> bool>(a: &[T], b: &[T], out
     }
 }
 
-fn merge_move_assign<T: Copy, F: FnMut(&T, &T) -> bool>(a: &[T], b: &[T], out: &mut [T], comp: &mut F) {
+fn merge_move_assign<T: Copy, F: FnMut(&T, &T) -> bool>(
+    a: &[T],
+    b: &[T],
+    out: &mut [T],
+    comp: &mut F,
+) {
     let (mut i, mut j, mut r) = (0, 0, 0);
     while i != a.len() {
         if j == b.len() {
@@ -134,7 +144,12 @@ fn merge_move_assign<T: Copy, F: FnMut(&T, &T) -> bool>(a: &[T], b: &[T], out: &
     }
 }
 
-fn stable_sort_move<T: Copy, F: FnMut(&T, &T) -> bool>(src: &mut [T], comp: &mut F, dst: &mut [T], switch: usize) {
+fn stable_sort_move<T: Copy, F: FnMut(&T, &T) -> bool>(
+    src: &mut [T],
+    comp: &mut F,
+    dst: &mut [T],
+    switch: usize,
+) {
     let len = src.len();
     match len {
         0 => return,
@@ -169,7 +184,12 @@ fn stable_sort_move<T: Copy, F: FnMut(&T, &T) -> bool>(src: &mut [T], comp: &mut
     merge_move_construct(s1, s2, dst, comp);
 }
 
-fn stable_sort_impl<T: Copy, F: FnMut(&T, &T) -> bool>(v: &mut [T], comp: &mut F, buff: &mut [T], switch: usize) {
+fn stable_sort_impl<T: Copy, F: FnMut(&T, &T) -> bool>(
+    v: &mut [T],
+    comp: &mut F,
+    buff: &mut [T],
+    switch: usize,
+) {
     let len = v.len();
     match len {
         0 | 1 => return,
@@ -211,7 +231,9 @@ mod tests {
             for &tca in &[true, false] {
                 let mut v: Vec<(u32, usize)> = (0..len)
                     .map(|i| {
-                        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                        seed = seed
+                            .wrapping_mul(6364136223846793005)
+                            .wrapping_add(1442695040888963407);
                         (((seed >> 33) % 17) as u32, i)
                     })
                     .collect();

@@ -1,8 +1,9 @@
 //! Port of `process_maxima.hpp`.
 
 use crate::active_bound_list::{
-    ActiveBoundList, current_edge_is_horizontal, get_maxima_pair, insert_horizontal_local_minima_into_abl,
-    is_intermediate, is_maxima, next_edge_in_bound, next_edge_is_horizontal,
+    ActiveBoundList, current_edge_is_horizontal, get_maxima_pair,
+    insert_horizontal_local_minima_into_abl, is_intermediate, is_maxima, next_edge_in_bound,
+    next_edge_is_horizontal,
 };
 use crate::bound::Bound;
 use crate::config::{ClipType, Error, FillType, Result};

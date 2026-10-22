@@ -116,6 +116,11 @@ pub struct TileOptions {
     pub timing: bool,
     /// Report every attempt at every tile to stderr.
     pub trace: bool,
+    /// `-t`: where temporary files go.
+    pub tmpdir: std::path::PathBuf,
+    /// Bytes of tile data kept in memory while it waits for its tile to be
+    /// read or written out; the rest waits in temporary files.
+    pub rest_memory: usize,
 }
 
 impl Default for TileOptions {
@@ -168,6 +173,8 @@ impl Default for TileOptions {
             fast: false,
             timing: false,
             trace: false,
+            tmpdir: std::path::PathBuf::from("/tmp"),
+            rest_memory: 128 << 20,
         }
     }
 }
@@ -225,6 +232,8 @@ impl TileOptions {
             fast: o.fast,
             timing: false,
             trace: false,
+            tmpdir: std::path::PathBuf::from(&o.tmpdir),
+            rest_memory: 128 << 20,
         }
     }
 

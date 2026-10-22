@@ -73,6 +73,12 @@ pub struct MakeResult {
     /// detail with no detail reduced before it, which is when the same
     /// attempt would come first in another pass.
     pub reusable: Option<Thresholds>,
+    /// For `reusable`: the smallest gap of a kept candidate that is not
+    /// below the gap threshold, and the smallest drop sequence above the
+    /// drop sequence threshold. A higher threshold that stays at or below
+    /// them leaves the tile as it is.
+    pub reuse_gap: u64,
+    pub reuse_drop_sequence: u64,
     /// With `-at`: the tile fit at the detail meant for overzooming, so its
     /// children are left out (tippecanoe's `skip_children_out`).
     pub truncated: bool,
@@ -760,6 +766,8 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
         tilestats: BTreeMap::new(),
         error: None,
         reusable: None,
+        reuse_gap: u64::MAX,
+        reuse_drop_sequence: u64::MAX,
         truncated: false,
         children_must_go_on: false,
         skipped: false,
@@ -1985,12 +1993,14 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                 res.tile = Some(compressed);
                 res.strategy = Some(strategy);
                 res.reusable = reusable_at!(line_detail, detail_reduced);
+                reuse_bounds(octx, ort, &mut res);
                 return res;
             }
         } else {
             res.len = count;
             res.strategy = Some(strategy);
             res.reusable = reusable_at!(line_detail, detail_reduced);
+            reuse_bounds(octx, ort, &mut res);
             return res;
         }
 
@@ -2233,15 +2243,36 @@ fn retry_threshold(
     }
 }
 
+/// Fills in the bounds that `reuse` checks.
+fn reuse_bounds(ctx: &Ctx<'_>, rt: &ReadTile, res: &mut MakeResult) {
+    let Some(old) = res.reusable else {
+        return;
+    };
+    let o = ctx.o;
+    let sequences =
+        o.a(A_COALESCE_FRACTION_AS_NEEDED) || o.a(A_DROP_FRACTION_AS_NEEDED) || o.p(P_DYNAMIC_DROP);
+    let store = ctx.store;
+    for c in &rt.cands {
+        if c.dropped != FEATURE_KEPT {
+            continue;
+        }
+        if c.gap >= old.mingap {
+            res.reuse_gap = res.reuse_gap.min(c.gap);
+        }
+        if sequences {
+            let f = &store.features[c.fi as usize];
+            let ds = calculate_drop_sequence(f.feature_minzoom, f.index);
+            if ds > old.mindrop_sequence {
+                res.reuse_drop_sequence = res.reuse_drop_sequence.min(ds);
+            }
+        }
+    }
+}
+
 /// Whether a tile that succeeded with `prev`'s thresholds would make the
 /// same selection with `th`, so that its result can stand for the attempt
 /// tippecanoe would make with `th`. Thresholds only ever grow within a zoom.
-pub fn reuse(
-    ctx: &Ctx<'_>,
-    rt: &ReadTile,
-    prev: MakeResult,
-    th: &Thresholds,
-) -> Option<MakeResult> {
+pub fn reuse(ctx: &Ctx<'_>, prev: MakeResult, th: &Thresholds) -> Option<MakeResult> {
     // the filters add to the layer statistics on every attempt
     if ctx.o.prefilter.is_some() || ctx.o.postfilter.is_some() {
         return None;
@@ -2251,29 +2282,10 @@ pub fn reuse(
     {
         return None;
     }
-    if old.mingap != th.mingap || old.mindrop_sequence != th.mindrop_sequence {
-        // Only candidates still kept when the thresholds are compared can be
-        // affected, and only by values between the old and new thresholds.
-        let store = ctx.store;
-        let affected = rt.cands.iter().any(|c| {
-            if c.dropped != FEATURE_KEPT {
-                return false;
-            }
-            if c.gap >= old.mingap && c.gap < th.mingap {
-                return true;
-            }
-            if old.mindrop_sequence != th.mindrop_sequence {
-                let f = &store.features[c.fi as usize];
-                let ds = calculate_drop_sequence(f.feature_minzoom, f.index);
-                if ds > old.mindrop_sequence && ds <= th.mindrop_sequence {
-                    return true;
-                }
-            }
-            false
-        });
-        if affected {
-            return None;
-        }
+    // Only kept candidates can be affected, and only by values between the
+    // old and new thresholds.
+    if prev.reuse_gap < th.mingap || prev.reuse_drop_sequence <= th.mindrop_sequence {
+        return None;
     }
 
     Some(MakeResult {
@@ -2287,6 +2299,8 @@ pub fn reuse(
         tilestats: BTreeMap::new(),
         error: None,
         reusable: Some(*th),
+        reuse_gap: prev.reuse_gap,
+        reuse_drop_sequence: prev.reuse_drop_sequence,
         truncated: false,
         children_must_go_on: prev.children_must_go_on,
         skipped: false,

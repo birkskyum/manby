@@ -601,3 +601,191 @@ pub fn pmtilesmeta2tmp(fname: &str, pmtiles_map: &[u8]) -> Connection {
 
     db
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dirtiles::{
+        check_dir, dir_erase_zoom, dir_read_tile, dir_write_metadata, dir_write_tile, dirmeta2tmp,
+        enumerate_dirtiles,
+    };
+    use crate::mbtiles::tests::{Rng, fnv, make_all};
+    use crate::mbtiles::{mbtiles_close, mbtiles_open, mbtiles_write_metadata, merge_layermaps};
+
+    fn rows(db: &Connection, out: &mut Vec<u8>) {
+        let mut stmt = db
+            .prepare("SELECT name, value FROM metadata ORDER BY rowid")
+            .unwrap();
+        let mut rows = stmt.raw_query();
+        while let Ok(Some(row)) = rows.next() {
+            out.extend_from_slice(b"row ");
+            out.extend_from_slice(&column_bytes(row.get_ref(0).unwrap()));
+            out.push(b'|');
+            out.extend_from_slice(&column_bytes(row.get_ref(1).unwrap()));
+            out.push(b'\n');
+        }
+    }
+
+    fn rblob(rng: &mut Rng) -> Vec<u8> {
+        let n = rng.next() % 300;
+        (0..n).map(|_| (rng.next() & 0xFF) as u8).collect()
+    }
+
+    /// Writes tile directories and PMTiles archives for the metadata of the
+    /// C++ harness, reads them back, and compares a dump of all of it with the
+    /// same dump from the C++.
+    #[test]
+    fn storage_matches_cpp() {
+        let tmp =
+            std::env::temp_dir().join(format!("tippecanoe-rs-storage-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        let base = tmp.join("out").to_string_lossy().into_owned();
+        let mut out: Vec<u8> = Vec::new();
+
+        let mut rng = Rng(42);
+        let maps: Vec<_> = (0..3).map(|i| rng.rmap(i)).collect();
+        let ms = make_all(&merge_layermaps(&maps));
+        let av = vec!["harness".to_string()];
+
+        for (mi, m) in ms.iter().enumerate() {
+            writeln!(out, "== m{}", mi + 1).unwrap();
+
+            // directory output
+            let dir = base.clone() + "-dir" + &mi.to_string();
+            check_dir(&dir, &av, true, false);
+            let ntiles = if mi == 0 { 40 } else { 5 };
+            for _ in 0..ntiles {
+                let z = (rng.next() % 6) as i32;
+                let x = (rng.next() % (1 << z)) as i32;
+                let y = (rng.next() % (1 << z)) as i32;
+                let fname = format!("{}/{}/{}/{}.pbf", dir, z, x, y);
+                if fs::metadata(&fname).is_ok() {
+                    continue;
+                }
+                let blob = rblob(&mut rng);
+                dir_write_tile(&dir, z, x, y, &blob);
+            }
+            // a .mvt tile and some names to skip
+            let _ = fs::create_dir(dir.clone() + "/2");
+            let _ = fs::create_dir(dir.clone() + "/2/1");
+            fs::write(dir.clone() + "/2/1/3.mvt", "mvt").unwrap();
+            fs::write(dir.clone() + "/2/1/notes.txt", "x").unwrap();
+            fs::write(dir.clone() + "/2/1/3.pbf.bak", "x").unwrap();
+            let _ = fs::create_dir(dir.clone() + "/x7");
+            dir_write_metadata(&dir, m);
+            out.extend_from_slice(b"metadata.json=");
+            out.extend_from_slice(&fs::read(dir.clone() + "/metadata.json").unwrap());
+
+            let tiles = enumerate_dirtiles(&dir, 1, 4);
+            for t in &tiles {
+                writeln!(out, "tile {} {}", t.path(), fnv(&dir_read_tile(&dir, t))).unwrap();
+            }
+            dir_erase_zoom(&dir, 2);
+            let tiles = enumerate_dirtiles(&dir, 0, 100);
+            writeln!(out, "after erase {}", tiles.len()).unwrap();
+            for t in &tiles {
+                writeln!(out, "tile {}", t.path()).unwrap();
+            }
+
+            let db = dirmeta2tmp(&dir);
+            rows(&db, &mut out);
+            drop(db);
+
+            fs::remove_file(dir.clone() + "/2/1/notes.txt").unwrap();
+            fs::remove_file(dir.clone() + "/2/1/3.pbf.bak").unwrap();
+            check_dir(&dir, &av, true, false);
+            let tiles = enumerate_dirtiles(&dir, 0, 100);
+            writeln!(out, "after check_dir {}", tiles.len()).unwrap();
+
+            // pmtiles output
+            let pm = base.clone() + &mi.to_string() + ".pmtiles";
+            let _ = fs::remove_file(&pm);
+            let outdb = mbtiles_open(&pm, &av, 0);
+            let n = if mi == 0 {
+                30000
+            } else if mi == 2 {
+                0
+            } else {
+                60
+            };
+            let mut id: u64 = 5 + rng.next() % 1000;
+            let pool: Vec<Vec<u8>> = (0..20).map(|_| rblob(&mut rng)).collect();
+            let mut prev = rblob(&mut rng);
+            for _ in 0..n {
+                let data = match rng.next() % 10 {
+                    0..=2 => prev.clone(),
+                    3..=5 => pool[(rng.next() % pool.len() as u64) as usize].clone(),
+                    _ => rblob(&mut rng),
+                };
+                let t = pmtiles::tileid_to_zxy(id);
+                crate::mbtiles::mbtiles_write_tile(
+                    &outdb, t.z as i32, t.x as i32, t.y as i32, &data,
+                );
+                prev = data;
+                id += 1 + if rng.next() % 10 == 0 {
+                    rng.next() % 5000
+                } else {
+                    0
+                };
+            }
+            mbtiles_write_metadata(&outdb, m, false);
+            mbtiles_close(outdb, "harness");
+            mbtiles_map_image_to_pmtiles(&pm, m.clone(), mi != 1, true, true);
+            let archive = fs::read(&pm).unwrap();
+            writeln!(out, "pmtiles {} {}", archive.len(), fnv(&archive)).unwrap();
+            let h = pmtiles::deserialize_header(&archive[..127]);
+            writeln!(
+                out,
+                "header root={} json={} leaves={} data={} addressed={} entries={} contents={}",
+                h.root_dir_bytes,
+                h.json_metadata_bytes,
+                h.leaf_dirs_bytes,
+                h.tile_data_bytes,
+                h.addressed_tiles_count,
+                h.tile_entries_count,
+                h.tile_contents_count
+            )
+            .unwrap();
+
+            let db = pmtilesmeta2tmp(&pm, &archive);
+            rows(&db, &mut out);
+            drop(db);
+
+            let entries = pmtiles_entries_tms(&archive, 0, 32);
+            let mut text = String::new();
+            for e in &entries {
+                text += &format!("{}/{}/{}@{}+{},", e.z, e.x, e.y, e.offset, e.length);
+            }
+            writeln!(out, "entries {} {}", entries.len(), fnv(text.as_bytes())).unwrap();
+            let entries = pmtiles_entries_tms(&archive, 7, 12);
+            writeln!(out, "entries 7-12 {}", entries.len()).unwrap();
+            let mut i = 0;
+            while i < entries.len() {
+                let e = entries[i];
+                let r = pmtiles_get_tile(&archive, e.z as i32, e.x as i32, e.y as i32);
+                writeln!(out, "get {}/{}/{} {} {}", e.z, e.x, e.y, r.0, r.1).unwrap();
+                i += 1 + entries.len() / 7;
+            }
+            let r = pmtiles_get_tile(&archive, 3, 1, 1);
+            writeln!(out, "get 3/1/1 {} {}", r.0, r.1).unwrap();
+            fs::remove_file(&pm).unwrap();
+        }
+
+        let _ = fs::remove_dir_all(&tmp);
+        if (out.len(), fnv(&out)) != (637502, 6648167400525258637) {
+            let path = std::env::temp_dir().join("tippecanoe-rs-storage.out");
+            fs::write(&path, &out).unwrap();
+            panic!("storage dump differs from the C++, see {}", path.display());
+        }
+    }
+
+    #[test]
+    fn suffix() {
+        assert!(pmtiles_has_suffix("a.pmtiles"));
+        assert!(pmtiles_has_suffix(".pmtiles"));
+        assert!(!pmtiles_has_suffix("pmtiles"));
+        assert!(!pmtiles_has_suffix("a.mbtiles"));
+        assert!(!pmtiles_has_suffix("a.pmtiles.tmp"));
+    }
+}

@@ -41,6 +41,7 @@ use std::path::PathBuf;
 
 use tippecanoe::mbtiles::Metadata;
 
+use crate::mlt::TileFormat;
 use crate::options::Output;
 
 /// Receives finished tiles from any number of threads, in any order.
@@ -73,6 +74,9 @@ pub struct SinkSettings {
     pub memory_budget: usize,
     /// Directory output: threads creating the tile files.
     pub file_writers: usize,
+    /// MVT or MapLibre Tiles, which decides the metadata's `format`, the
+    /// PMTiles tile type and the extension of tile files.
+    pub tile_format: TileFormat,
     /// `argv[0]`, which starts the second line of some messages, as in tippecanoe.
     pub program: String,
 }
@@ -86,6 +90,7 @@ impl Default for SinkSettings {
             tmpdir: PathBuf::from("/tmp"),
             memory_budget: physical_memory() / 4,
             file_writers: 4,
+            tile_format: TileFormat::Mvt,
             program: "tippecanoe".to_string(),
         }
     }
@@ -117,6 +122,21 @@ pub fn open(output: &Output, settings: &SinkSettings) -> crate::Result<Box<dyn T
             tippecanoe::errors::EXIT_ARGS,
             "must specify -o out.mbtiles or -e directory",
         )),
+    }
+}
+
+/// `m` with the `format` of `tile_format`. `make_metadata` writes "pbf".
+pub(crate) fn tileset_metadata(
+    m: &Metadata,
+    tile_format: TileFormat,
+) -> std::borrow::Cow<'_, Metadata> {
+    match tile_format {
+        TileFormat::Mvt => std::borrow::Cow::Borrowed(m),
+        TileFormat::Mlt => {
+            let mut m = m.clone();
+            m.format = tile_format.metadata_format().to_string();
+            std::borrow::Cow::Owned(m)
+        }
     }
 }
 

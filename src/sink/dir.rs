@@ -23,7 +23,8 @@ use tippecanoe::errors::{
 use tippecanoe::mbtiles::Metadata;
 use tippecanoe::write_json::JsonWriter;
 
-use super::{SinkSettings, TileSink, check_tile, io_message, to_string_double};
+use super::{SinkSettings, TileSink, check_tile, io_message, tileset_metadata, to_string_double};
+use crate::mlt::TileFormat;
 use crate::{Error, Result};
 
 enum Job {
@@ -41,6 +42,7 @@ type Failure = Arc<Mutex<Option<(i32, String)>>>;
 
 pub struct DirSink {
     dir: String,
+    tile_format: TileFormat,
     senders: Vec<SyncSender<Job>>,
     writers: Vec<JoinHandle<()>>,
     /// The first error a writer met.
@@ -66,7 +68,7 @@ impl DirSink {
         }
 
         if !settings.allow_existing {
-            for tile in enumerate_dirtiles(dir, i32::MIN, i32::MAX)? {
+            for tile in enumerate_dirtiles(dir, i32::MIN, i32::MAX, settings.tile_format)? {
                 let path = dir.to_string() + "/" + &tile;
                 if settings.force {
                     fs::remove_file(&path)
@@ -83,9 +85,10 @@ impl DirSink {
         for i in 0..settings.file_writers.max(1) {
             let (sender, receiver) = sync_channel(1024);
             let (dir, failure) = (dir.to_string(), failure.clone());
+            let extension = settings.tile_format.extension();
             let writer = std::thread::Builder::new()
                 .name(format!("tile files {}", i))
-                .spawn(move || write_files(&dir, receiver, &failure))
+                .spawn(move || write_files(&dir, extension, receiver, &failure))
                 .map_err(|e| Error::new(EXIT_IMPOSSIBLE, format!("tile file writer: {}", e)))?;
             senders.push(sender);
             writers.push(writer);
@@ -93,6 +96,7 @@ impl DirSink {
 
         Ok(DirSink {
             dir: dir.to_string(),
+            tile_format: settings.tile_format,
             senders,
             writers,
             failure,
@@ -138,7 +142,7 @@ impl Drop for DirSink {
 }
 
 /// One writer thread: writes the tiles it is sent until the sink closes.
-fn write_files(dir: &str, receiver: Receiver<Job>, failure: &Failure) {
+fn write_files(dir: &str, extension: &str, receiver: Receiver<Job>, failure: &Failure) {
     let mut zooms = [false; 32];
     let mut columns: HashSet<(u8, u32)> = HashSet::new();
     for job in receiver.iter() {
@@ -147,7 +151,8 @@ fn write_files(dir: &str, receiver: Receiver<Job>, failure: &Failure) {
                 if failure.lock().unwrap_or_else(|p| p.into_inner()).is_some() {
                     continue;
                 }
-                if let Err(e) = write_file(dir, z, x, y, &data, &mut zooms, &mut columns) {
+                if let Err(e) = write_file(dir, extension, z, x, y, &data, &mut zooms, &mut columns)
+                {
                     let mut f = failure.lock().unwrap_or_else(|p| p.into_inner());
                     if f.is_none() {
                         *f = Some((e.exit_code, e.message));
@@ -162,8 +167,10 @@ fn write_files(dir: &str, receiver: Receiver<Job>, failure: &Failure) {
 }
 
 /// tippecanoe's `dir_write_tile`, returning errors instead of exiting.
+#[allow(clippy::too_many_arguments)]
 fn write_file(
     dir: &str,
+    extension: &str,
     z: u8,
     x: u32,
     y: u32,
@@ -184,7 +191,7 @@ fn write_file(
         let _ = fs::create_dir(&column_dir);
     }
 
-    let path = format!("{}/{}.pbf", column_dir, y);
+    let path = format!("{}/{}{}", column_dir, y, extension);
     let mut f = match OpenOptions::new().write(true).create_new(true).open(&path) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -231,7 +238,7 @@ impl TileSink for DirSink {
 
     fn erase_zoom(&self, z: u8) -> Result<()> {
         self.flush()?;
-        dir_erase_zoom(&self.dir, z as i32)
+        dir_erase_zoom(&self.dir, z as i32, self.tile_format)
     }
 
     fn finish(mut self: Box<Self>, metadata: &Metadata) -> Result<()> {
@@ -239,7 +246,7 @@ impl TileSink for DirSink {
         if let Some(e) = self.failed() {
             return Err(e);
         }
-        dir_write_metadata(&self.dir, metadata)
+        dir_write_metadata(&self.dir, &tileset_metadata(metadata, self.tile_format))
     }
 }
 
@@ -247,9 +254,12 @@ fn numeric(s: &[u8]) -> bool {
     !s.is_empty() && s.iter().all(|c| c.is_ascii_digit())
 }
 
-fn pbfname(s: &[u8]) -> bool {
+/// Whether `s` names a tile file: digits, then `.pbf` or `.mvt` as in
+/// tippecanoe, or `.mlt` when writing MapLibre Tiles.
+fn tilename(s: &[u8], tile_format: TileFormat) -> bool {
     let digits = s.iter().take_while(|c| c.is_ascii_digit()).count();
-    &s[digits..] == b".pbf" || &s[digits..] == b".mvt"
+    let ext = &s[digits..];
+    ext == b".pbf" || ext == b".mvt" || (tile_format == TileFormat::Mlt && ext == b".mlt")
 }
 
 fn atoi(s: &[u8]) -> i32 {
@@ -271,7 +281,12 @@ fn read_names(dir: &str, must: bool) -> Result<Vec<Vec<u8>>> {
 
 /// tippecanoe's `enumerate_dirtiles`, returning the `z/x/y.ext` paths in its
 /// order and errors instead of exiting.
-pub fn enumerate_dirtiles(dir: &str, minzoom: i32, maxzoom: i32) -> Result<Vec<String>> {
+pub fn enumerate_dirtiles(
+    dir: &str,
+    minzoom: i32,
+    maxzoom: i32,
+    tile_format: TileFormat,
+) -> Result<Vec<String>> {
     let mut tiles: Vec<(i64, i64, i64, String)> = Vec::new();
     for zname in read_names(dir, false)? {
         let tz = atoi(&zname);
@@ -286,10 +301,12 @@ pub fn enumerate_dirtiles(dir: &str, minzoom: i32, maxzoom: i32) -> Result<Vec<S
             let tx = atoi(&xname);
             let x = format!("{}/{}", z, String::from_utf8_lossy(&xname));
             for yname in read_names(&x, true)? {
-                if pbfname(&yname) {
+                if tilename(&yname, tile_format) {
                     let ty = atoi(&yname);
                     let ext = if yname.windows(4).any(|w| w == b".mvt") {
                         ".mvt"
+                    } else if yname.ends_with(b".mlt") {
+                        ".mlt"
                     } else {
                         ".pbf"
                     };
@@ -309,7 +326,7 @@ pub fn enumerate_dirtiles(dir: &str, minzoom: i32, maxzoom: i32) -> Result<Vec<S
 }
 
 /// tippecanoe's `dir_erase_zoom`, returning errors instead of exiting.
-pub fn dir_erase_zoom(dir: &str, zoom: i32) -> Result<()> {
+pub fn dir_erase_zoom(dir: &str, zoom: i32, tile_format: TileFormat) -> Result<()> {
     for zname in read_names(dir, false)? {
         if !numeric(&zname) || atoi(&zname) != zoom {
             continue;
@@ -321,7 +338,7 @@ pub fn dir_erase_zoom(dir: &str, zoom: i32) -> Result<()> {
             }
             let x = format!("{}/{}", z, String::from_utf8_lossy(&xname));
             for yname in read_names(&x, true)? {
-                if pbfname(&yname) {
+                if tilename(&yname, tile_format) {
                     let y = format!("{}/{}", x, String::from_utf8_lossy(&yname));
                     fs::remove_file(&y).map_err(|e| Error::new(EXIT_UNLINK, io_message(&y, &e)))?;
                 }

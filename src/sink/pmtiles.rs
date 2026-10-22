@@ -34,9 +34,16 @@ use tippecanoe::mbtiles::Metadata;
 use tippecanoe::pmtiles::{self, EntryV3, HeaderV3};
 use tippecanoe::write_json::JsonWriter;
 
-use super::{SinkSettings, TileSink, check_tile, first_tile_id, io_message, to_string_double};
+use super::{
+    SinkSettings, TileSink, check_tile, first_tile_id, io_message, tileset_metadata,
+    to_string_double,
+};
 use crate::compress::gzip;
 use crate::{Error, Result};
+
+/// The PMTiles tile type of MapLibre Tiles, added to the spec after
+/// tippecanoe's `pmtiles.hpp`.
+pub const TILETYPE_MLT: u8 = 0x6;
 
 const SHARDS: usize = 64;
 const CHUNK: usize = 4 << 20;
@@ -141,6 +148,7 @@ pub struct PmtilesSink {
     path: PathBuf,
     file: File,
     tile_compression: bool,
+    tile_format: crate::mlt::TileFormat,
     tmpdir: PathBuf,
     memory_budget: usize,
     shards: Vec<Mutex<Shard>>,
@@ -179,6 +187,7 @@ impl PmtilesSink {
             path: PathBuf::from(path),
             file,
             tile_compression: settings.tile_compression,
+            tile_format: settings.tile_format,
             tmpdir: settings.tmpdir.clone(),
             memory_budget: settings.memory_budget,
             shards: (0..SHARDS).map(|_| Mutex::default()).collect(),
@@ -341,7 +350,8 @@ impl TileSink for PmtilesSink {
         let spill: &[u8] = spill_map.as_deref().unwrap_or(&[]);
 
         let layout = Layout::new(&shards)?;
-        let archive = Archive::new(&layout, metadata, this.tile_compression);
+        let metadata = tileset_metadata(metadata, this.tile_format);
+        let archive = Archive::new(&layout, &metadata, this.tile_compression);
 
         let write_error = |e: std::io::Error| {
             Error::new(EXIT_WRITE, io_message(&this.path.to_string_lossy(), &e))
@@ -489,6 +499,8 @@ impl Archive {
                 pmtiles::TILETYPE_MVT
             } else if m.format == "png" {
                 pmtiles::TILETYPE_PNG
+            } else if m.format == "mlt" {
+                TILETYPE_MLT
             } else {
                 pmtiles::TILETYPE_UNKNOWN
             },

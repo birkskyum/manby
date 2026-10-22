@@ -7,6 +7,7 @@
 pub mod compress;
 pub mod error;
 pub mod ingest;
+pub mod mlt;
 pub mod options;
 pub mod order;
 pub mod sink;
@@ -60,6 +61,7 @@ pub fn run(options: &Options) -> Result<Summary> {
             tile_compression: !o.prevent.get(P_TILE_COMPRESSION),
             tmpdir: o.tmpdir.clone().into(),
             program: o.program.clone(),
+            tile_format: o.tile_format,
             ..Default::default()
         },
     )?;

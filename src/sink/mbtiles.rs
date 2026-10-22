@@ -18,7 +18,7 @@ use tippecanoe::mbtiles::{Metadata, c_str, sqlite3_errmsg, sqlite3_exec, sqlite3
 use tippecanoe::text::fnv1a;
 use tippecanoe::write_json::JsonWriter;
 
-use super::{SinkSettings, TileSink, check_tile};
+use super::{SinkSettings, TileSink, check_tile, tileset_metadata};
 use crate::{Error, Result};
 
 /// Tiles or bytes after which the writer commits and starts a new transaction.
@@ -62,6 +62,7 @@ pub struct MbtilesSink {
     writer: Option<JoinHandle<Result<()>>>,
     /// The writer's error, once it has stopped because of one.
     failure: Arc<Mutex<Option<(i32, String)>>>,
+    tile_format: crate::mlt::TileFormat,
 }
 
 fn sqlite_error(message: String) -> Error {
@@ -97,6 +98,7 @@ impl MbtilesSink {
             sender: Some(sender),
             writer: Some(writer),
             failure,
+            tile_format: settings.tile_format,
         })
     }
 
@@ -146,7 +148,7 @@ impl TileSink for MbtilesSink {
 
     fn finish(mut self: Box<Self>, metadata: &Metadata) -> Result<()> {
         let sent = self.send(Message::Finish {
-            metadata: Box::new(metadata.clone()),
+            metadata: Box::new(tileset_metadata(metadata, self.tile_format).into_owned()),
         });
         self.sender.take();
         let joined = match self.writer.take() {

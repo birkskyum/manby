@@ -116,6 +116,8 @@ pub struct TileOptions {
     pub timing: bool,
     /// Report every attempt at every tile to stderr.
     pub trace: bool,
+    /// Write MapLibre Tiles instead of MVT (`--tile-format=mlt`).
+    pub mlt: Option<crate::mlt::MltSettings>,
 }
 
 impl Default for TileOptions {
@@ -168,6 +170,7 @@ impl Default for TileOptions {
             fast: false,
             timing: false,
             trace: false,
+            mlt: None,
         }
     }
 }
@@ -225,6 +228,12 @@ impl TileOptions {
             fast: o.fast,
             timing: false,
             trace: false,
+            mlt: (o.tile_format == crate::mlt::TileFormat::Mlt).then_some(
+                crate::mlt::MltSettings {
+                    profile: o.mlt_profile,
+                    gzipped: !o.prevent.get(tippecanoe::options::P_TILE_COMPRESSION),
+                },
+            ),
         }
     }
 

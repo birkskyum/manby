@@ -390,15 +390,69 @@ impl Value<'_> {
     }
 }
 
+/// Increasing offsets in 4 bytes each, and where they pass each multiple
+/// of 2^32.
+#[derive(Clone, Default, PartialEq, Eq)]
+struct Ends {
+    low: Buf<u32>,
+    /// For each multiple of 2^32 passed, the first offset past it.
+    wraps: Vec<u32>,
+}
+
+impl Ends {
+    fn get(&self, i: usize) -> u64 {
+        let hi = if self.wraps.is_empty() {
+            0
+        } else {
+            self.wraps.partition_point(|&w| w as usize <= i)
+        };
+        (hi as u64) << 32 | self.low[i] as u64
+    }
+
+    fn push(&mut self, e: u64) {
+        while self.wraps.len() < (e >> 32) as usize {
+            self.wraps.push(self.low.len() as u32);
+        }
+        self.low.push(e as u32);
+    }
+
+    fn reserve(&mut self, n: usize) {
+        self.low.reserve(n);
+    }
+}
+
 /// The interned values, packed: a type and the end of its string per value.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Values {
     types: Buf<i8>,
-    ends: Buf<u64>,
+    ends: Ends,
     bytes: Buf<u8>,
 }
 
 impl Values {
+    /// Room for `n` values with `bytes` of strings.
+    pub fn with_capacity(n: usize, bytes: usize) -> Values {
+        let mut v = Values {
+            types: Buf::with_capacity(n),
+            ends: Ends::default(),
+            bytes: Buf::with_capacity(bytes),
+        };
+        v.ends.reserve(n);
+        v
+    }
+
+    /// Appends values from their types, the ends of their strings within
+    /// `bytes`, and the strings, which must be UTF-8.
+    pub fn append(&mut self, types: &[i8], ends: &[usize], bytes: &[u8]) {
+        debug_assert!(std::str::from_utf8(bytes).is_ok());
+        let base = self.bytes.len() as u64;
+        self.types.extend_from_slice(types);
+        for &e in ends {
+            self.ends.push(base + e as u64);
+        }
+        self.bytes.extend_from_slice(bytes);
+    }
+
     pub fn len(&self) -> usize {
         self.types.len()
     }
@@ -409,8 +463,12 @@ impl Values {
 
     pub fn get(&self, i: u32) -> Value<'_> {
         let i = i as usize;
-        let start = if i == 0 { 0 } else { self.ends[i - 1] as usize };
-        let bytes = &self.bytes[start..self.ends[i] as usize];
+        let start = if i == 0 {
+            0
+        } else {
+            self.ends.get(i - 1) as usize
+        };
+        let bytes = &self.bytes[start..self.ends.get(i) as usize];
         Value {
             type_: self.types[i] as i32,
             // SAFETY: only strings are pushed.
@@ -435,10 +493,20 @@ impl Values {
         ends: impl Into<Buf<u64>>,
         bytes: impl Into<Buf<u8>>,
     ) -> Values {
-        let (types, ends, bytes) = (types.into(), ends.into(), bytes.into());
+        let (types, ends, bytes): (Buf<i8>, Buf<u64>, Buf<u8>) =
+            (types.into(), ends.into(), bytes.into());
         assert_eq!(types.len(), ends.len());
         assert!(std::str::from_utf8(&bytes).is_ok());
-        Values { types, ends, bytes }
+        let mut e = Ends::default();
+        e.reserve(ends.len());
+        for &x in ends.iter() {
+            e.push(x);
+        }
+        Values {
+            types,
+            ends: e,
+            bytes,
+        }
     }
 }
 
@@ -737,8 +805,8 @@ impl FeatureStore {
 
         let old = &self.values;
         let span = |o: usize| {
-            let start = if o == 0 { 0 } else { old.ends[o - 1] };
-            (start as usize, old.ends[o] as usize)
+            let start = if o == 0 { 0 } else { old.ends.get(o - 1) };
+            (start as usize, old.ends.get(o) as usize)
         };
         let mut types: Buf<i8> = Buf::with_capacity(nv);
         types.resize(nv, 0);
@@ -793,7 +861,17 @@ impl FeatureStore {
         }
         // SAFETY: every byte was written above.
         unsafe { bytes.set_len(total as usize) };
-        self.values = Values { types, ends, bytes };
+        let mut packed = Ends::default();
+        packed.reserve(nv);
+        for &e in ends.iter() {
+            packed.push(e);
+        }
+        drop(ends);
+        self.values = Values {
+            types,
+            ends: packed,
+            bytes,
+        };
     }
 
     pub fn feature_attrs(&self, f: &Feature) -> &[Attr] {
@@ -827,4 +905,29 @@ fn permute<T: Copy + Default>(column: &mut Buf<T>, order: &[u32]) {
     }
     column.resize(order.len(), T::default());
     *column = order.iter().map(|&i| column[i as usize]).collect();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ends_past_4_gb() {
+        let all = [
+            0,
+            5,
+            (1 << 32) - 1,
+            1 << 32,
+            (1 << 32) + 7,
+            (3 << 32) + 1,
+            3 << 33,
+        ];
+        let mut e = Ends::default();
+        for &x in &all {
+            e.push(x);
+        }
+        for (i, &x) in all.iter().enumerate() {
+            assert_eq!(e.get(i), x);
+        }
+    }
 }

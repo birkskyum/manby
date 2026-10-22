@@ -998,17 +998,15 @@ fn merge_tables(mut tables: Vec<Interner>) -> Merged {
         .collect();
 
     drop(tables);
-    let mut types: Buf<i8> = Buf::with_capacity(n as usize);
-    let mut ends: Buf<u64> = Buf::with_capacity(n as usize);
-    let mut bytes: Buf<u8> = Buf::with_capacity(shards.iter().map(|(t, _, _)| t.bytes.len()).sum());
+    let mut values = Values::with_capacity(
+        n as usize,
+        shards.iter().map(|(t, _, _)| t.bytes.len()).sum(),
+    );
     for (t, _, _) in shards {
-        let base = bytes.len() as u64;
-        types.extend_from_slice(&t.types);
-        ends.extend(t.ends.iter().map(|&e| base + e as u64));
-        bytes.extend_from_slice(&t.bytes);
+        values.append(&t.types, &t.ends, &t.bytes);
     }
 
-    (Values::from_parts(types, ends, bytes), remap)
+    (values, remap)
 }
 
 /// The chunks' columns that are empty while all their items are 0, joined

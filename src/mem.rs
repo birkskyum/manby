@@ -73,7 +73,6 @@ pub fn peak_resident() -> Option<u64> {
     }
 }
 
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::os::unix::fs::FileExt;
@@ -84,6 +83,7 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use tippecanoe::errors::{EXIT_OPEN, EXIT_READ, EXIT_WRITE};
 
 use crate::Error;
+use crate::buf::Buf;
 
 /// How many bytes a spool collects in one buffer.
 const REGION: usize = 256 << 10;
@@ -186,10 +186,27 @@ impl Spool {
 
     /// Stores `data`, returning where it is.
     pub fn store(self: &Arc<Self>, data: &[u8]) -> crate::Result<Stored> {
-        let len = data.len();
+        self.store_parts(&[data])
+    }
+
+    /// Stores the parts one after the other, returning where they are.
+    pub fn store_parts(self: &Arc<Self>, parts: &[&[u8]]) -> crate::Result<Stored> {
+        let len: usize = parts.iter().map(|p| p.len()).sum();
         if len >= REGION / 4 {
             let at = self.len.fetch_add(len as u64, Relaxed);
-            self.retire(at, data.to_vec())?;
+            if self.rest.take(len) {
+                self.kept_bytes.fetch_add(len as u64, Relaxed);
+                self.kept.write().unwrap().insert(at, parts.concat());
+            } else {
+                let mut off = at;
+                for p in parts {
+                    self.file()?.write_all_at(p, off).map_err(|e| {
+                        Error::new(EXIT_WRITE, format!("{}: {}", self.dir.display(), e))
+                    })?;
+                    off += p.len() as u64;
+                }
+                self.written.write().unwrap().insert(at, len);
+            }
             return Ok(Stored::Spooled {
                 spool: self.clone(),
                 shard: NO_SHARD,
@@ -215,7 +232,9 @@ impl Spool {
         }
         let r = region.as_mut().unwrap();
         let at = r.start + r.buf.len() as u64;
-        r.buf.extend_from_slice(data);
+        for p in parts {
+            r.buf.extend_from_slice(p);
+        }
         Ok(Stored::Spooled {
             spool: self.clone(),
             shard: shard as u32,
@@ -301,7 +320,7 @@ impl Drop for Spool {
 
 /// Bytes in memory, or stored in a spool.
 pub enum Stored {
-    Mem(Vec<u8>),
+    Mem(Buf<u8>),
     Spooled {
         spool: Arc<Spool>,
         /// The buffer it went through, if any.
@@ -323,29 +342,47 @@ impl Stored {
         self.len() == 0
     }
 
-    pub fn load(&self) -> crate::Result<Cow<'_, [u8]>> {
+    pub fn load(&self) -> crate::Result<Loaded<'_>> {
         self.load1(false)
     }
 
     /// `load`, for a reader that goes through a spool in about the order it
     /// was written.
-    pub fn load_sequential(&self) -> crate::Result<Cow<'_, [u8]>> {
+    pub fn load_sequential(&self) -> crate::Result<Loaded<'_>> {
         self.load1(true)
     }
 
-    fn load1(&self, sequential: bool) -> crate::Result<Cow<'_, [u8]>> {
+    fn load1(&self, sequential: bool) -> crate::Result<Loaded<'_>> {
         match self {
-            Stored::Mem(v) => Ok(Cow::Borrowed(v)),
+            Stored::Mem(v) => Ok(Loaded::Borrowed(v)),
             Stored::Spooled {
                 spool,
                 shard,
                 at,
                 len,
             } => {
-                let mut out = vec![0u8; *len];
+                let mut out = Buf::with_capacity(*len);
+                out.resize(*len, 0u8);
                 spool.read(*shard, *at, &mut out, sequential)?;
-                Ok(Cow::Owned(out))
+                Ok(Loaded::Owned(out))
             }
+        }
+    }
+}
+
+/// Stored bytes at hand.
+pub enum Loaded<'a> {
+    Borrowed(&'a [u8]),
+    Owned(Buf<u8>),
+}
+
+impl std::ops::Deref for Loaded<'_> {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match self {
+            Loaded::Borrowed(b) => b,
+            Loaded::Owned(b) => b,
         }
     }
 }

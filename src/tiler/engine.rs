@@ -132,6 +132,13 @@ pub fn root_input(ctx: &Ctx<'_>) -> Option<TileInput> {
     ))
 }
 
+/// How many tiles may be made at once within the memory budget, each
+/// holding up to a full tile's features while it is made.
+fn tiles_at_once(o: &TileOptions) -> usize {
+    let per_tile = o.max_tile_features as u64 * 200 + o.max_tile_size as u64 * 8;
+    (o.memory_budget / 2 / per_tile.max(1)).clamp(2, usize::MAX as u64) as usize
+}
+
 /// How many zoom levels the tiles may run ahead of the last finished level.
 const LOOKAHEAD: usize = 3;
 
@@ -493,7 +500,7 @@ pub fn drive<'s>(
         tx,
         ready: BinaryHeap::new(),
         seq: 0,
-        max_in_flight: threads.max(1) * 4,
+        max_in_flight: (threads.max(1) * 4).min(tiles_at_once(o)),
         levels: Vec::new(),
         maxzoom: o.maxzoom,
         extend_zooms_max: o.extend_zooms_max,
@@ -678,7 +685,11 @@ impl<'d, 's> Driver<'d, 's> {
             level: k,
             idx,
             pass,
-            big: if ws >= BIG_TASK { ws } else { 0 },
+            big: if ws >= BIG_TASK.min(self.big_memory / 64) {
+                ws
+            } else {
+                0
+            },
             spool: level.spool.clone(),
             child_spool: level.child_spool.clone(),
             input: slot.input.clone(),

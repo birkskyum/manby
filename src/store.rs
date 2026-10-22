@@ -192,12 +192,32 @@ pub struct Geometry {
     vertices: u64,
 }
 
-pub(crate) fn put_varint(out: &mut Vec<u8>, mut v: u64) {
+/// Where bytes can be appended.
+pub trait Bytes {
+    fn put(&mut self, b: u8);
+}
+
+impl Bytes for Vec<u8> {
+    #[inline]
+    fn put(&mut self, b: u8) {
+        self.push(b);
+    }
+}
+
+impl Bytes for Buf<u8> {
+    #[inline]
+    fn put(&mut self, b: u8) {
+        self.push(b);
+    }
+}
+
+#[inline]
+pub(crate) fn put_varint(out: &mut impl Bytes, mut v: u64) {
     while v >= 0x80 {
-        out.push(v as u8 | 0x80);
+        out.put(v as u8 | 0x80);
         v >>= 7;
     }
-    out.push(v as u8);
+    out.put(v as u8);
 }
 
 #[inline(always)]
@@ -231,7 +251,7 @@ fn unzigzag(v: u64) -> i64 {
 impl Geometry {
     /// Appends a feature's geometry, its coordinates already divided by the
     /// geometry scale, to `out`.
-    pub fn encode(out: &mut Vec<u8>, g: &[Draw]) {
+    pub fn encode(out: &mut impl Bytes, g: &[Draw]) {
         let (mut x, mut y) = (0i64, 0i64);
         for d in g {
             if d.op == VT_MOVETO || d.op == VT_LINETO {
@@ -242,7 +262,7 @@ impl Geometry {
                 y = d.y;
             } else {
                 put_varint(out, 2);
-                out.push(d.op as u8);
+                out.put(d.op as u8);
             }
         }
     }

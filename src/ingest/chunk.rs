@@ -8,6 +8,7 @@ use tippecanoe::mbtiles::{LayermapEntry, Tilestat};
 use tippecanoe::mvt::{MVT_DOUBLE, MVT_NULL};
 use tippecanoe::serial::SerialVal;
 
+use crate::buf::Buf;
 use crate::store::{Attr, Feature};
 
 /// Number of shards of the global value table, which are built in parallel.
@@ -20,14 +21,14 @@ pub fn hash_bytes(type_: i32, s: &[u8]) -> u64 {
 /// An interned string or typed value: its type and the bytes of its string.
 #[derive(Default)]
 pub struct Interner {
-    pub types: Vec<i8>,
-    pub hashes: Vec<u64>,
+    pub types: Buf<i8>,
+    pub hashes: Buf<u64>,
     /// End offsets in `bytes`; entry `i` is `bytes[ends[i-1]..ends[i]]`.
-    pub ends: Vec<usize>,
-    pub bytes: Vec<u8>,
-    table: Vec<u32>,
+    pub ends: Buf<usize>,
+    pub bytes: Buf<u8>,
+    table: Buf<u32>,
     /// For each shard, the entries that hash into it, in order.
-    pub shards: Vec<Vec<u32>>,
+    pub shards: Vec<Buf<u32>>,
 }
 
 const EMPTY: u32 = u32::MAX;
@@ -58,7 +59,8 @@ impl Interner {
         } else {
             self.table.len() * 2
         };
-        self.table = vec![EMPTY; n];
+        self.table = Buf::new();
+        self.table.resize(n, EMPTY);
         let mask = n - 1;
         for (i, &h) in self.hashes.iter().enumerate() {
             let mut slot = (h as usize) & mask;
@@ -97,7 +99,7 @@ impl Interner {
         self.bytes.extend_from_slice(s);
         self.ends.push(self.bytes.len());
         if self.shards.is_empty() {
-            self.shards = vec![Vec::new(); SHARDS];
+            self.shards = (0..SHARDS).map(|_| Buf::new()).collect();
         }
         self.shards[(h >> 58) as usize % SHARDS].push(id);
         id
@@ -240,11 +242,11 @@ pub enum MessageKind {
 pub struct Chunk {
     /// `seq` is the feature's rank within the chunk, `layer` an index into
     /// `layers`, and the attributes point into `keys` and `values`.
-    pub features: Vec<Feature>,
+    pub features: Buf<Feature>,
     /// The features' geometry, packed as `store::Geometry` keeps it.
-    pub geometry: Vec<u8>,
+    pub geometry: Buf<u8>,
     pub geometry_vertices: u64,
-    pub attrs: Vec<Attr>,
+    pub attrs: Buf<Attr>,
     pub keys: Interner,
     pub values: Interner,
     pub layers: Vec<ChunkLayer>,
@@ -265,9 +267,9 @@ pub struct Chunk {
     pub initial: Option<(u32, u32)>,
 
     /// The terms tippecanoe adds to `dist_sum` and `area_sum`, in order, for `-zg`.
-    pub dist_terms: Vec<f64>,
+    pub dist_terms: Buf<f64>,
     pub dist_count: usize,
-    pub area_terms: Vec<f64>,
+    pub area_terms: Buf<f64>,
 
     pub messages: Vec<Message>,
     /// A problem that stops tippecanoe: its exit status and message.

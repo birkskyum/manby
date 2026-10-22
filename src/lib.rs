@@ -54,6 +54,8 @@ pub fn run(options: &Options) -> Result<Summary> {
     }
     // TRANSITIONAL: see set_tippecanoe_globals.
     options::set_tippecanoe_globals(&o, o.cluster_maxzoom);
+    let budget = o.memory_budget();
+    buf::set_budget(budget, std::path::Path::new(&o.tmpdir));
 
     let sink = sink::open(
         &o.output,
@@ -62,7 +64,7 @@ pub fn run(options: &Options) -> Result<Summary> {
             allow_existing: o.forcetable,
             tile_compression: !o.prevent.get(P_TILE_COMPRESSION),
             tmpdir: o.tmpdir.clone().into(),
-            memory_budget: 16 << 20,
+            memory_budget: (budget / 64).clamp(1 << 20, 16 << 20) as usize,
             program: o.program.clone(),
             tile_format: o.tile_format,
             ..Default::default()

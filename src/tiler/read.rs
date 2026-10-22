@@ -26,6 +26,7 @@ use tippecanoe::text::bit_reverse;
 
 use super::engine::Ctx;
 use super::util::{par_ranges, shift_right};
+use crate::buf::Buf;
 use crate::mem::{Spool, Stored};
 use crate::store::Attr;
 use crate::store::{Chunked, Geometry, get_varint, put_varint};
@@ -123,7 +124,7 @@ impl TileInput {
             x,
             y,
             root: true,
-            data: Stored::Mem(Vec::new()),
+            data: Stored::Mem(Buf::new()),
             runs: Vec::new(),
             count: features,
             vertices: 0,
@@ -140,7 +141,7 @@ impl TileInput {
             x,
             y,
             root: false,
-            data: Stored::Mem(Vec::new()),
+            data: Stored::Mem(Buf::new()),
             runs: Vec::new(),
             count: 0,
             vertices: 0,
@@ -217,17 +218,14 @@ impl TileInput {
         }
     }
 
-    /// The bytes it is stored as: the runs, then the features.
-    fn encode(&self, out: &mut Vec<u8>) {
+    /// The runs, as they go before the features in its stored bytes.
+    fn encode_runs(&self, out: &mut Vec<u8>) {
         put_varint(out, self.runs.len() as u64);
         for r in &self.runs {
             put_varint(out, r.start);
             put_varint(out, r.count as u64);
             put_varint(out, r.vertices as u64);
             put_varint(out, r.prev.wrapping_add(1) as u64);
-        }
-        if let Stored::Mem(d) = &self.data {
-            out.extend_from_slice(d);
         }
     }
 }
@@ -267,7 +265,7 @@ impl Layout<'_> {
     }
 }
 
-fn put_zigzag(out: &mut Vec<u8>, v: i64) {
+fn put_zigzag(out: &mut impl crate::store::Bytes, v: i64) {
     put_varint(out, ((v << 1) ^ (v >> 63)) as u64);
 }
 
@@ -281,25 +279,15 @@ pub fn store_inputs(inputs: &mut [TileInput], spool: &Arc<Spool>) -> crate::Resu
     if inputs.is_empty() {
         return Ok(());
     }
-    let mut all = Vec::new();
-    let mut ends = Vec::with_capacity(inputs.len());
-    for t in inputs.iter() {
-        t.encode(&mut all);
-        ends.push(all.len());
-    }
-    let Stored::Spooled { shard, at, .. } = spool.store(&all)? else {
-        unreachable!();
-    };
-    let mut from = 0;
-    for (t, end) in inputs.iter_mut().zip(ends) {
-        t.data = Stored::Spooled {
-            spool: spool.clone(),
-            shard,
-            at: at + from as u64,
-            len: end - from,
+    for t in inputs.iter_mut() {
+        let mut header = Vec::new();
+        t.encode_runs(&mut header);
+        let Stored::Mem(data) = &t.data else {
+            unreachable!("inputs are spooled once");
         };
+        t.data = spool.store_parts(&[&header, data])?;
         t.runs = Vec::new();
-        from = end;
+        crate::buf::relieve();
     }
     Ok(())
 }
@@ -452,7 +440,7 @@ impl ReadTile {
 /// the zigzag deltas of x and y. A candidate whose deltas are wider, or that
 /// has other ops, is written as `store::Geometry` writes it after `PLAIN`.
 pub struct GeomPart {
-    bytes: Vec<u8>,
+    bytes: Buf<u8>,
 }
 
 const PLAIN: u8 = 0xFF;
@@ -463,7 +451,7 @@ const PADDING: usize = 8;
 
 impl GeomPart {
     fn new() -> GeomPart {
-        GeomPart { bytes: Vec::new() }
+        GeomPart { bytes: Buf::new() }
     }
 
     /// Where the next candidate's geometry starts.
@@ -550,7 +538,7 @@ impl GeomPart {
 /// The geometry of a read tile's candidates, as the read chunks wrote it.
 #[derive(Default)]
 pub struct Geoms {
-    parts: Vec<Vec<u8>>,
+    parts: Vec<Buf<u8>>,
     ends: Vec<usize>,
 }
 
@@ -614,7 +602,7 @@ pub struct ReadParams {
 struct ChildPart {
     x: u32,
     y: u32,
-    data: Vec<u8>,
+    data: Buf<u8>,
     runs: Vec<Run>,
     count: usize,
     vertices: u64,
@@ -624,10 +612,10 @@ struct ChildPart {
 }
 
 struct ChunkOut {
-    cands: Vec<Cand>,
-    extras: Vec<CandExtra>,
+    cands: Buf<Cand>,
+    extras: Buf<CandExtra>,
     geom: GeomPart,
-    edges: Vec<Draw>,
+    edges: Buf<Draw>,
     attr_lists: Vec<Vec<Attr>>,
     children: Vec<ChildPart>,
     original_features: i64,
@@ -964,10 +952,10 @@ fn read_chunk(ctx: &Ctx<'_>, input: &TileInput, source: Source<'_>, rp: &ReadPar
     // shared nodes and attribute filters need more about each candidate
     let extras = o.p(P_SIMPLIFY_SHARED_NODES) || ctx.filter.is_some();
     let mut out = ChunkOut {
-        cands: Vec::new(),
-        extras: Vec::new(),
+        cands: Buf::new(),
+        extras: Buf::new(),
         geom: GeomPart::new(),
-        edges: Vec::new(),
+        edges: Buf::new(),
         attr_lists: Vec::new(),
         children: Vec::new(),
         original_features: 0,
@@ -1015,7 +1003,12 @@ fn read_chunk(ctx: &Ctx<'_>, input: &TileInput, source: Source<'_>, rp: &ReadPar
     let mut geometry = DrawVec::new();
     let mut edge_nodes = DrawVec::new();
 
+    let mut n = 0u32;
     loop {
+        n = n.wrapping_add(1);
+        if n % 4096 == 0 {
+            crate::buf::relieve();
+        }
         geometry.clear();
         let mut bbox = [0i64; 4];
         let (fi, mut gap) = if let Some(r) = root.as_mut() {
@@ -1383,7 +1376,7 @@ fn rewrite(
                     children.push(ChildPart {
                         x: cx,
                         y: cy,
-                        data: Vec::new(),
+                        data: Buf::new(),
                         runs: Vec::new(),
                         count: 0,
                         vertices: 0,

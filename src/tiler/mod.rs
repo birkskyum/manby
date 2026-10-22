@@ -124,6 +124,9 @@ pub struct TileOptions {
     /// Memory for the tiles with the most data, which run together only as
     /// far as this allows.
     pub big_memory: usize,
+    /// The run's memory budget, which also bounds how many tiles are made at
+    /// once.
+    pub memory_budget: u64,
     /// Write MapLibre Tiles instead of MVT (`--tile-format=mlt`).
     pub mlt: Option<crate::mlt::MltSettings>,
 }
@@ -181,6 +184,7 @@ impl Default for TileOptions {
             tmpdir: std::path::PathBuf::from("/tmp"),
             rest_memory: 16 << 20,
             big_memory: 1 << 30,
+            memory_budget: u64::MAX,
             mlt: None,
         }
     }
@@ -240,8 +244,9 @@ impl TileOptions {
             timing: false,
             trace: false,
             tmpdir: std::path::PathBuf::from(&o.tmpdir),
-            rest_memory: 16 << 20,
-            big_memory: 1 << 30,
+            rest_memory: (o.memory_budget() / 64).min(16 << 20) as usize,
+            big_memory: (o.memory_budget() / 4).min(1 << 30) as usize,
+            memory_budget: o.memory_budget(),
             mlt: (o.tile_format == crate::mlt::TileFormat::Mlt).then_some(
                 crate::mlt::MltSettings {
                     profile: o.mlt_profile,

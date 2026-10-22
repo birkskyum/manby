@@ -944,18 +944,18 @@ fn flush(stderr: &mut Vec<u8>) {
 }
 
 /// The merged table, and for each chunk its ids in it.
-type Merged = (Values, Vec<Vec<u32>>);
+type Merged = (Values, Vec<Buf<u32>>);
 
 /// Interns the entries of every chunk's table in one table, in parallel by
 /// shard. Returns the table and, for each chunk, its ids in the table.
 fn merge_tables(tables: &[&Interner]) -> Merged {
-    let shards: Vec<(Interner, Vec<Vec<u32>>)> = (0..SHARDS)
+    let shards: Vec<(Interner, Vec<Buf<u32>>)> = (0..SHARDS)
         .into_par_iter()
         .map(|s| {
             let mut table = Interner::default();
-            let mut ids: Vec<Vec<u32>> = Vec::with_capacity(tables.len());
+            let mut ids: Vec<Buf<u32>> = Vec::with_capacity(tables.len());
             for t in tables {
-                let mut out = Vec::new();
+                let mut out = Buf::new();
                 if let Some(list) = t.shards.get(s) {
                     out.reserve(list.len());
                     for &local in list {
@@ -976,11 +976,12 @@ fn merge_tables(tables: &[&Interner]) -> Merged {
         n += t.len() as u32;
     }
 
-    let remap: Vec<Vec<u32>> = tables
+    let remap: Vec<Buf<u32>> = tables
         .par_iter()
         .enumerate()
         .map(|(c, t)| {
-            let mut m = vec![0u32; t.len()];
+            let mut m = Buf::new();
+            m.resize(t.len(), 0u32);
             for s in 0..SHARDS {
                 if let Some(list) = t.shards.get(s) {
                     for (k, &local) in list.iter().enumerate() {
@@ -992,9 +993,9 @@ fn merge_tables(tables: &[&Interner]) -> Merged {
         })
         .collect();
 
-    let mut types = Vec::with_capacity(n as usize);
-    let mut ends = Vec::with_capacity(n as usize);
-    let mut bytes = Vec::with_capacity(shards.iter().map(|(t, _)| t.bytes.len()).sum());
+    let mut types: Buf<i8> = Buf::with_capacity(n as usize);
+    let mut ends: Buf<u64> = Buf::with_capacity(n as usize);
+    let mut bytes: Buf<u8> = Buf::with_capacity(shards.iter().map(|(t, _)| t.bytes.len()).sum());
     for (t, _) in &shards {
         let base = bytes.len() as u64;
         types.extend_from_slice(&t.types);
@@ -1013,8 +1014,8 @@ fn merge(
     options: &Options,
 ) -> FeatureStore {
     // the geometry and attributes go into the store as they are, not copied
-    let mut geometries: Vec<(Vec<u8>, u64)> = Vec::with_capacity(parts.chunks.len());
-    let mut chunk_attrs: Vec<Vec<Attr>> = Vec::with_capacity(parts.chunks.len());
+    let mut geometries: Vec<(Buf<u8>, u64)> = Vec::with_capacity(parts.chunks.len());
+    let mut chunk_attrs: Vec<Buf<Attr>> = Vec::with_capacity(parts.chunks.len());
     for a in parts.chunks.iter_mut() {
         geometries.push((
             std::mem::take(&mut a.chunk.geometry),
@@ -1126,15 +1127,18 @@ fn merge(
             let seq_base = parts.seq_base[ci];
             let segment = parts.segment[ci];
             let lr = &layer_remap[ci];
-            for (o, f) in out.iter_mut().zip(&c.features) {
-                o.write(Feature {
-                    seq: (seq_base + f.seq as i64) as u64,
-                    layer: lr[f.layer as usize],
-                    geom_start: f.geom_start + geom_off[ci],
-                    attr_start: f.attr_start + attr_off[ci],
-                    segment,
-                    ..*f
-                });
+            for (block, fs) in out.chunks_mut(1 << 14).zip(c.features.chunks(1 << 14)) {
+                for (o, f) in block.iter_mut().zip(fs) {
+                    o.write(Feature {
+                        seq: (seq_base + f.seq as i64) as u64,
+                        layer: lr[f.layer as usize],
+                        geom_start: f.geom_start + geom_off[ci],
+                        attr_start: f.attr_start + attr_off[ci],
+                        segment,
+                        ..*f
+                    });
+                }
+                crate::buf::relieve();
             }
             for &i in &c.generate_ids {
                 // SAFETY: every feature of the chunk was written just above.
@@ -1156,9 +1160,12 @@ fn merge(
         .enumerate()
         .for_each(|(ci, attrs)| {
             let (kr, vr) = (&key_remap[ci], &value_remap[ci]);
-            for a in attrs.iter_mut() {
-                a.key = kr[a.key as usize];
-                a.value = vr[a.value as usize];
+            for block in attrs.chunks_mut(1 << 16) {
+                for a in block {
+                    a.key = kr[a.key as usize];
+                    a.value = vr[a.value as usize];
+                }
+                crate::buf::relieve();
             }
         });
     let attr_lens: Vec<usize> = chunk_attrs.iter().map(|a| a.len()).collect();

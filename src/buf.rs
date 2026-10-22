@@ -16,17 +16,19 @@ use std::mem::{ManuallyDrop, MaybeUninit, needs_drop, size_of};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::{Mutex, Once};
 
 /// Vectors smaller than this always take heap memory.
-const FILE_MIN: usize = 1 << 20;
+const FILE_MIN: usize = 64 << 10;
 /// File regions are multiples of this.
 const GRANULE: usize = 1 << 16;
-const PAGER_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+const PAGER_INTERVAL: std::time::Duration = std::time::Duration::from_millis(2);
 
 struct Pager {
     budget: AtomicU64,
+    /// Whether any file storage is mapped, for a check without the lock.
+    mapping: AtomicBool,
     /// Heap bytes held by vectors of at least `FILE_MIN` bytes.
     heap: AtomicU64,
     trims: AtomicU64,
@@ -42,11 +44,14 @@ struct PagerState {
     next: u64,
     /// Mapped regions by address: their offset in the file and length.
     regions: BTreeMap<usize, (u64, usize)>,
+    /// Where the next trim starts.
+    cursor: usize,
     mapped: u64,
 }
 
 static PAGER: Pager = Pager {
     budget: AtomicU64::new(u64::MAX),
+    mapping: AtomicBool::new(false),
     heap: AtomicU64::new(0),
     trims: AtomicU64::new(0),
     state: Mutex::new(PagerState {
@@ -55,6 +60,7 @@ static PAGER: Pager = Pager {
         failed: false,
         next: 0,
         regions: BTreeMap::new(),
+        cursor: 0,
         mapped: 0,
     }),
     started: Once::new(),
@@ -70,9 +76,10 @@ pub fn set_budget(budget: u64, dir: &Path) {
 /// What the file holds and how often the pager took its pages out of
 /// memory: mapped bytes, and trims.
 pub fn file_use() -> (u64, u64) {
+    let s = PAGER.state.lock().unwrap();
     (
-        PAGER.state.lock().unwrap().mapped,
-        PAGER.trims.load(Relaxed),
+        s.mapped,
+        PAGER.trims.load(Relaxed) | (s.regions.len() as u64) << 32,
     )
 }
 
@@ -125,6 +132,7 @@ fn file_alloc(bytes: usize) -> Option<NonNull<u8>> {
     s.next += len as u64;
     s.mapped += len as u64;
     s.regions.insert(p as usize, (off, len));
+    PAGER.mapping.store(true, Relaxed);
     NonNull::new(p as *mut u8)
 }
 
@@ -173,18 +181,54 @@ fn punch_hole(f: &File, off: u64, len: usize) {
 fn pager() {
     loop {
         std::thread::sleep(PAGER_INTERVAL);
-        let budget = PAGER.budget.load(Relaxed);
-        if budget != u64::MAX && crate::mem::resident().is_some_and(|r| r > budget) {
-            trim();
-        }
+        relieve();
     }
 }
 
-/// Takes the pages of the file regions out of the process's memory.
+/// Takes pages of the file storage out of memory if resident memory is
+/// near the budget, until it is down to half. The pager does this every
+/// few milliseconds; code that writes much at once calls it as it goes, so
+/// as not to outrun the pager, and waits for it when over the budget.
+pub fn relieve() {
+    if !PAGER.mapping.load(Relaxed) {
+        return;
+    }
+    let budget = PAGER.budget.load(Relaxed);
+    let Some(r) = crate::mem::resident() else {
+        return;
+    };
+    if r <= budget / 8 * 7 {
+        return;
+    }
+    let state = if r > budget {
+        Some(PAGER.state.lock().unwrap())
+    } else {
+        PAGER.state.try_lock().ok()
+    };
+    if let Some(mut s) = state
+        && crate::mem::resident().is_some_and(|r| r > budget / 8 * 7)
+    {
+        trim_locked(&mut s, budget / 2);
+    }
+}
+
+/// Takes the pages of all the file storage out of the process's memory.
 pub fn trim() {
-    let s = PAGER.state.lock().unwrap();
+    trim_locked(&mut PAGER.state.lock().unwrap(), 0);
+}
+
+/// Maps file regions afresh, going round them from where the last trim
+/// stopped, until resident memory is down to `target`.
+fn trim_locked(s: &mut PagerState, target: u64) {
     let Some(f) = &s.file else { return };
-    for (&addr, &(off, len)) in &s.regions {
+    let from = s.cursor;
+    let mut last = None;
+    for (k, (&addr, &(off, len))) in s
+        .regions
+        .range(from..)
+        .chain(s.regions.range(..from))
+        .enumerate()
+    {
         // SAFETY: the range is a live mapping of the same range of the file,
         // which this replaces at once while the state is locked. The pages
         // are the file's, so the contents stay as they are.
@@ -198,6 +242,13 @@ pub fn trim() {
                 off as libc::off_t,
             )
         };
+        last = Some(addr);
+        if target > 0 && k % 4 == 3 && crate::mem::resident().is_some_and(|r| r <= target) {
+            break;
+        }
+    }
+    if let Some(a) = last {
+        s.cursor = a + 1;
     }
     PAGER.trims.fetch_add(1, Relaxed);
 }

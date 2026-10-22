@@ -89,6 +89,10 @@ pub struct Options {
     pub quiet: bool,
     /// Worker threads; 0 means one per available CPU, as tippecanoe chooses.
     pub threads: usize,
+    /// `--memory-budget`: the bytes of memory to stay near; what does not
+    /// fit goes to temporary files. None means half the physical memory, as
+    /// tippecanoe sizes its sorting.
+    pub memory_budget: Option<u64>,
     /// Make different tiles from tippecanoe's where that is faster. See DESIGN.md.
     pub fast: bool,
     /// `--tile-format`: MVT, as tippecanoe writes, or MapLibre Tiles.
@@ -209,6 +213,7 @@ impl Default for Options {
             force: false,
             quiet: false,
             threads: 0,
+            memory_budget: None,
             fast: false,
             tile_format: crate::mlt::TileFormat::Mvt,
             mlt_profile: crate::mlt::MltProfile::Web,
@@ -285,7 +290,27 @@ impl Default for Options {
     }
 }
 
+/// A size in bytes, with an optional K, M, G or T for powers of 1024.
+fn parse_size(s: &str) -> Option<u64> {
+    let s = s.trim();
+    let (num, shift) = match s.char_indices().last()? {
+        (i, 'k' | 'K') => (&s[..i], 10),
+        (i, 'm' | 'M') => (&s[..i], 20),
+        (i, 'g' | 'G') => (&s[..i], 30),
+        (i, 't' | 'T') => (&s[..i], 40),
+        _ => (s, 0),
+    };
+    let n: f64 = num.parse().ok()?;
+    (n.is_finite() && n >= 0.0).then(|| (n * (1u64 << shift) as f64) as u64)
+}
+
 impl Options {
+    /// The memory budget in bytes.
+    pub fn memory_budget(&self) -> u64 {
+        self.memory_budget
+            .unwrap_or_else(|| tippecanoe::platform::calc_memsize() as u64 / 2)
+    }
+
     /// The sources in tippecanoe's order: the `-L` sources, then the input
     /// files, or standard input if there are neither, with `-l` applied.
     pub fn all_sources(&self) -> Vec<Source> {
@@ -1095,6 +1120,7 @@ fn long_options_orig() -> Vec<LongOption> {
         heading("manby"),
         opt("fast", NO, b'~'),
         opt("threads", REQ, b'~'),
+        opt("memory-budget", REQ, b'~'),
         opt("tile-format", REQ, b'~'),
         opt("mlt-profile", REQ, b'~'),
         heading(""),
@@ -1353,6 +1379,15 @@ pub fn parse_args(argv: &[String]) -> crate::Result<Options> {
                     "threads" => {
                         o.threads = require_int(&optarg, "Threads", &argv0)?.max(0) as usize
                     }
+                    "memory-budget" => match parse_size(arg) {
+                        Some(n) if n > 0 => o.memory_budget = Some(n),
+                        _ => {
+                            return err_args(format!(
+                                "{}: --memory-budget must be a size such as 4G or 500M, not {}",
+                                argv0, arg
+                            ));
+                        }
+                    },
                     "tile-format" => match crate::mlt::TileFormat::parse(arg) {
                         Some(crate::mlt::TileFormat::Mlt) if !crate::mlt::AVAILABLE => {
                             return err_args(format!("{}: {}", argv0, crate::mlt::NOT_BUILT));

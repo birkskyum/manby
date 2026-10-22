@@ -19,6 +19,7 @@ use tippecanoe::protozero::{add_varint_to_buffer, encode_zigzag32, encode_zigzag
 use tippecanoe::text::fnv1a;
 
 use super::util::{Helpers, par_ranges};
+use crate::buf::Buf;
 use crate::store::Values;
 
 /// The size of tippecanoe's key dedup cache.
@@ -75,10 +76,10 @@ pub fn encode_value(v: &MvtValue) -> Option<Vec<u8>> {
 
 /// The encodings of the store's attribute values, and their order by those bytes.
 pub struct ValueCodes {
-    bytes: Vec<u8>,
-    off: Vec<u32>,
+    bytes: Buf<u8>,
+    off: Buf<u32>,
     /// Equal for values with equal encodings.
-    rank: Vec<u32>,
+    rank: Buf<u32>,
 }
 
 impl ValueCodes {
@@ -100,8 +101,8 @@ impl ValueCodes {
                 (bytes, lens)
             })
             .collect();
-        let mut bytes = Vec::with_capacity(encoded.iter().map(|e| e.0.len()).sum());
-        let mut off = Vec::with_capacity(n + 1);
+        let mut bytes = Buf::with_capacity(encoded.iter().map(|e| e.0.len()).sum());
+        let mut off = Buf::with_capacity(n + 1);
         for (b, lens) in encoded {
             let mut at = bytes.len() as u32;
             for l in lens {
@@ -115,11 +116,12 @@ impl ValueCodes {
         let mut codes = ValueCodes {
             bytes,
             off,
-            rank: Vec::new(),
+            rank: Buf::new(),
         };
-        let mut order: Vec<u32> = (0..n as u32).collect();
+        let mut order: Buf<u32> = (0..n as u32).collect();
         order.par_sort_by(|&a, &b| codes.get(a).cmp(codes.get(b)));
-        let mut rank = vec![0u32; n];
+        let mut rank = Buf::new();
+        rank.resize(n, 0u32);
         let mut r = 0u32;
         for (i, &v) in order.iter().enumerate() {
             if i > 0 && codes.get(v) != codes.get(order[i - 1]) {

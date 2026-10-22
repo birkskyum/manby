@@ -37,6 +37,8 @@ Faithfulness wins over idiom whenever the two disagree.
 Use the same algorithm, the same loop order, the same constants and the same order of floating point operations.
 Rust never fuses `a * b + c` into one instruction, so write the expression exactly as the C++ does.
 `crates/clipper2` matches the C++ built with `-ffp-contract=off`. Apple clang on arm64 fuses by default, which changes Clipper2's output for a few percent of random inputs.
+`crates/wagyu` does too. Fusing changes wagyu's output for about one random input in ten thousand (slivers with large coordinates) and for none of the fixture polygons.
+Where wagyu's output depends on the C++ standard library, it follows libc++. `std::stable_sort` is ported from it, and entries under one key of an `unordered_multimap` keep their insertion order (libstdc++ puts the newest first).
 
 ### Numbers
 

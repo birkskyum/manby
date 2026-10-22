@@ -226,6 +226,9 @@ pub struct Message {
     pub parts: Vec<(Option<i32>, Vec<u8>)>,
 }
 
+/// A message that ends the run, as its exit status and the parts of a [`Message`].
+pub type Fatal = (i32, Vec<(Option<i32>, Vec<u8>)>);
+
 /// Messages that tippecanoe prints only once per run, and the ones it prints every time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MessageKind {
@@ -264,7 +267,7 @@ pub struct Chunk {
 
     pub messages: Vec<Message>,
     /// A problem that stops tippecanoe: its exit status and message.
-    pub fatal: Option<(i32, Vec<(Option<i32>, Vec<u8>)>)>,
+    pub fatal: Option<Fatal>,
     /// Whether this chunk took a bare geometry before it found any feature,
     /// which it would not have done if an earlier chunk had found one.
     pub bare_before_feature: bool,

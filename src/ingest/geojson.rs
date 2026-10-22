@@ -14,7 +14,7 @@ use tippecanoe::read_json::{
 };
 use tippecanoe::serial::SerialVal;
 
-use super::chunk::{Chunk, Message, MessageKind};
+use super::chunk::{Chunk, Fatal, Message, MessageKind};
 use super::json::{Kind, Parser, Ref};
 use super::serialize::{Config, InFeature, serialize_feature};
 
@@ -39,9 +39,6 @@ fn cat(what: &[u8], context: &[u8]) -> Vec<u8> {
     m.extend_from_slice(context);
     m
 }
-
-/// A fatal error, whose message can only be finished once the line numbers are known.
-type Fatal = (i32, Vec<(Option<i32>, Vec<u8>)>);
 
 fn inside_properties(j: Ref<'_, '_>) -> bool {
     let mut jo = Some(j);
@@ -302,7 +299,6 @@ fn integer_zoom(where_: &str, text: &str) -> Result<i32, Fatal> {
 /// `stringify_value`: the type and string tippecanoe keeps for an attribute value.
 fn stringify_value(
     value: Ref<'_, '_>,
-    r: &Reading<'_>,
     line: i32,
     feature: Ref<'_, '_>,
 ) -> Result<SerialVal, Fatal> {
@@ -635,7 +631,7 @@ fn serialize_geojson_feature1(
     {
         for (key, value) in properties.entries() {
             if key.kind() == Kind::String {
-                let sv = stringify_value(value, r, line, feature)?;
+                let sv = stringify_value(value, line, feature)?;
                 full_keys.push(utf8(key.bytes()));
                 full_values.push(sv);
             }

@@ -427,17 +427,12 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
     let cpus = options.tippecanoe_cpus.max(1);
     let mut stderr: Vec<u8> = Vec::new();
 
-    for l in 0..sources.len() {
-        if sources[l].layer.is_empty() {
-            let src = if sources[l].file.is_empty() {
-                fname.clone()
-            } else {
-                sources[l].file.clone()
-            };
-            sources[l].layer = layer_name_from_file(&src, l);
+    for (l, s) in sources.iter_mut().enumerate() {
+        if s.layer.is_empty() {
+            s.layer = layer_name_for(&s.file, &fname, l);
             if !options.quiet {
                 stderr.extend_from_slice(
-                    format!("For layer {}, using name \"{}\"\n", l, sources[l].layer).as_bytes(),
+                    format!("For layer {}, using name \"{}\"\n", l, s.layer).as_bytes(),
                 );
             }
         }
@@ -636,9 +631,12 @@ fn flush(stderr: &mut Vec<u8>) {
     }
 }
 
+/// The merged table's entries, and for each chunk its ids in it.
+type Merged = (Vec<(i32, Vec<u8>)>, Vec<Vec<u32>>);
+
 /// Interns the entries of every chunk's table in one table, in parallel by
 /// shard. Returns the table and, for each chunk, its ids in the table.
-fn merge_tables(tables: &[&Interner]) -> (Vec<(i32, Vec<u8>)>, Vec<Vec<u32>>) {
+fn merge_tables(tables: &[&Interner]) -> Merged {
     let shards: Vec<(Interner, Vec<Vec<u32>>)> = (0..SHARDS)
         .into_par_iter()
         .map(|s| {

@@ -36,6 +36,7 @@ A `static` function becomes a private `fn`. Someone reading both versions side b
 Faithfulness wins over idiom whenever the two disagree.
 Use the same algorithm, the same loop order, the same constants and the same order of floating point operations.
 Rust never fuses `a * b + c` into one instruction, so write the expression exactly as the C++ does.
+`crates/clipper2` matches the C++ built with `-ffp-contract=off`. Apple clang on arm64 fuses by default, which changes Clipper2's output for a few percent of random inputs.
 
 ### Numbers
 

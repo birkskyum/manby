@@ -1,1 +1,3 @@
-fn main() {}
+fn main() {
+    tippecanoe::tippecanoe_main::main();
+}

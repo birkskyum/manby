@@ -444,8 +444,6 @@ pub fn serialize_feature(
         }
     }
 
-    let index = if cfg.keep_index { bbox_index } else { 0 };
-
     let layer = chunk.layer(layername);
     if !cfg.filters {
         let l = &mut chunk.layers[layer as usize];
@@ -605,14 +603,13 @@ pub fn serialize_feature(
 
     let seq = chunk.features.len() as u64;
     chunk.features.push(Feature {
-        index,
+        keep_index: cfg.keep_index,
         ix: bbox_index,
         seq,
         label_point,
         extent: sf_extent,
         // the id is serialized only if there is one
         id: if has_id { id } else { 0 },
-        bbox,
         geom_start,
         geom_len: scaled_geometry.len() as u32,
         attr_start,

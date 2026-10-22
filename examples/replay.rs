@@ -306,9 +306,7 @@ fn main() {
             let vb = cstr(base + v as usize + 1).to_vec();
             let next = values.len() as u32;
             let value = *values.entry((t, vb.clone())).or_insert_with(|| {
-                store
-                    .values
-                    .push(SerialVal::new(t as i32, &String::from_utf8(vb).unwrap()));
+                store.values.push(t as i32, &String::from_utf8(vb).unwrap());
                 next
             });
             store.attrs.push(Attr { key, value });
@@ -323,20 +321,14 @@ fn main() {
             }
             store.geometry.push(d);
         }
-        let mut bbox = sf.bbox;
-        if bbox[0] <= bbox[2] {
-            bbox = [bbox[0] + ox, bbox[1] + oy, bbox[2] + ox, bbox[3] + oy];
-        }
-
         store.features.push(Feature {
-            index: sf.index,
+            keep_index: true,
             // the temporary file is already in order; the tiler does not read the sort key
             ix: sf.index,
             seq: sf.seq as u64,
             label_point: sf.label_point,
             extent: sf.extent,
             id: sf.id,
-            bbox,
             geom_start,
             geom_len: sf.geometry.len() as u32,
             attr_start,

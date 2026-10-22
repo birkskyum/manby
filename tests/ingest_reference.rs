@@ -405,7 +405,7 @@ fn store_features(s: &FeatureStore) -> Vec<Feat> {
             seq: f.seq & ((1 << 46) - 1),
             ix: f.ix,
             t: f.t,
-            index: f.index,
+            index: f.index(),
             label_point: f.label_point,
             extent: f.extent,
             has_id: f.has_id,
@@ -418,13 +418,13 @@ fn store_features(s: &FeatureStore) -> Vec<Feat> {
                 .iter()
                 .map(|d: &Draw| (d.op, d.x, d.y))
                 .collect(),
-            bbox: f.bbox,
+            bbox: s.feature_bbox(f),
             attrs: s
                 .feature_attrs(f)
                 .iter()
                 .map(|a| {
-                    let v = &s.values[a.value as usize];
-                    (s.keys[a.key as usize].clone(), v.type_, v.s.clone())
+                    let v = s.values.get(a.value);
+                    (s.keys[a.key as usize].clone(), v.type_, v.s.to_string())
                 })
                 .collect(),
             segment: f.segment,

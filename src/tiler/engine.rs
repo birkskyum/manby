@@ -6,7 +6,6 @@ use std::collections::{BTreeMap, BinaryHeap};
 use std::sync::Arc;
 use std::sync::mpsc::{Sender, channel};
 
-use rayon::prelude::*;
 use tippecanoe::errors::{EXIT_ARGS, EXIT_IMPOSSIBLE, EXIT_INCOMPLETE};
 use tippecanoe::globals::MAX_ZOOM;
 use tippecanoe::jsonpull::JsonRef;
@@ -18,6 +17,7 @@ use tippecanoe::tile::Strategy;
 use super::encode::{ValueCodes, key_slot};
 use super::make::{MakeParams, MakeResult, Thresholds, dropping_features, make_tile, reuse};
 use super::read::{ReadParams, TileInput, read_tile, store_inputs};
+use super::util::Helpers;
 use super::{TileOptions, TileStats};
 use crate::error::Error;
 use crate::mem::{Rest, Spool, Stored};
@@ -28,8 +28,6 @@ use crate::store::FeatureStore;
 pub struct Ctx<'a> {
     pub store: &'a FeatureStore,
     pub o: &'a TileOptions,
-    /// The store's attribute values as tile values.
-    pub values: Vec<MvtValue>,
     pub value_null: Vec<bool>,
     /// The position of each layer when the layers are sorted by name.
     pub layer_rank: Vec<u32>,
@@ -38,8 +36,8 @@ pub struct Ctx<'a> {
     pub codes: ValueCodes,
     /// Each key's slot in tippecanoe's key dedup cache.
     pub key_slots: Vec<u32>,
-    /// How many threads the work inside one tile may use.
-    pub threads: usize,
+    /// The threads that help with the work inside one tile.
+    pub helpers: Arc<Helpers>,
     /// The memory for tile data that waits: inputs, and tiles not written yet.
     pub rest: Arc<Rest>,
     /// For `TileOptions::timing`: attempts, compressions, bytes compressed
@@ -49,13 +47,13 @@ pub struct Ctx<'a> {
 }
 
 impl<'a> Ctx<'a> {
-    pub fn new(store: &'a FeatureStore, o: &'a TileOptions, threads: usize) -> Ctx<'a> {
-        let values: Vec<MvtValue> = store
-            .values
-            .par_iter()
-            .with_min_len(4096)
-            .map(|v| stringified_to_mvt_value(v.type_, &v.s))
-            .collect();
+    /// The store's value `i` as a tile value.
+    pub fn value(&self, i: u32) -> MvtValue {
+        let v = self.store.values.get(i);
+        stringified_to_mvt_value(v.type_, v.s)
+    }
+
+    pub fn new(store: &'a FeatureStore, o: &'a TileOptions, helpers: Arc<Helpers>) -> Ctx<'a> {
         let value_null = store.values.iter().map(|v| v.type_ == MVT_NULL).collect();
 
         let mut order: Vec<usize> = (0..store.layers.len()).collect();
@@ -65,19 +63,18 @@ impl<'a> Ctx<'a> {
             layer_rank[i] = rank as u32;
         }
 
-        let codes = ValueCodes::new(&values);
+        let codes = ValueCodes::new(&store.values);
         let key_slots = store.keys.iter().map(|k| key_slot(k)).collect();
 
         Ctx {
             codes,
             key_slots,
-            threads,
+            helpers,
             rest: Rest::new(o.rest_memory),
             counters: Default::default(),
             started: std::time::Instant::now(),
             store,
             o,
-            values,
             value_null,
             layer_rank,
             filter: o.filter.as_ref().map(|t| t.root()),
@@ -138,6 +135,11 @@ pub fn root_input(ctx: &Ctx<'_>) -> Option<TileInput> {
 /// How many zoom levels the tiles may run ahead of the last finished level.
 const LOOKAHEAD: usize = 3;
 
+/// A tile whose reading and making takes about this much memory or more
+/// counts as big. Big tiles run together only as far as their memory
+/// stays within `TileOptions::big_memory`.
+const BIG_TASK: u64 = 16 << 20;
+
 /// Reading a tile and making it in one pass of its zoom level. The first
 /// read also writes the tile's features out for the next zoom; later passes
 /// read the tile again from its input, as tippecanoe does, rather than keep
@@ -146,6 +148,8 @@ struct Task {
     level: usize,
     idx: usize,
     pass: usize,
+    /// About how much memory the task takes, if it counts as big.
+    big: u64,
     /// Where the tile and its children wait until they are needed.
     spool: Arc<Spool>,
     child_spool: Arc<Spool>,
@@ -193,6 +197,7 @@ enum Done {
         level: usize,
         idx: usize,
         pass: usize,
+        big: u64,
         result: Box<MakeResult>,
         tile: Option<Stored>,
     },
@@ -264,7 +269,7 @@ struct Level {
 }
 
 impl Level {
-    fn new(z: i32, loop_z: i32, o: &TileOptions, spool: Arc<Spool>) -> Level {
+    fn new(z: i32, loop_z: i32, o: &TileOptions, spool: Arc<Spool>, rest: &Arc<Rest>) -> Level {
         Level {
             z,
             loop_z,
@@ -274,7 +279,7 @@ impl Level {
             max_zoom_increment: 0,
             slots: Vec::new(),
             spool,
-            child_spool: Spool::new(&o.tmpdir),
+            child_spool: Spool::new(&o.tmpdir, rest),
             waiting: Vec::new(),
             unread: 0,
             missing: 0,
@@ -343,6 +348,9 @@ struct Driver<'d, 's> {
     /// `-at`: levels are made one after the other, since whether a tile is
     /// made depends on the outcome of its parent's level.
     variable_depth: bool,
+    /// The estimated memory of the big tiles running, and its limit.
+    running_big: u64,
+    big_memory: u64,
 }
 
 /// Runs the tiling: a coordinator on the calling thread that hands the tiles
@@ -386,11 +394,18 @@ pub fn drive<'s>(
         timing: o.timing,
         started: std::time::Instant::now(),
         variable_depth: o.a(A_VARIABLE_DEPTH_PYRAMID),
+        running_big: 0,
+        big_memory: o.big_memory as u64,
     };
 
     if let Some(root) = root {
-        d.levels
-            .push(Level::new(o.iz, o.iz, o, Spool::new(&o.tmpdir)));
+        d.levels.push(Level::new(
+            o.iz,
+            o.iz,
+            o,
+            Spool::new(&o.tmpdir, &ctx.rest),
+            &ctx.rest,
+        ));
         let at = (root.x, root.y);
         d.add_input(0, at, root);
         d.level_inputs_complete(0);
@@ -423,9 +438,13 @@ pub fn drive<'s>(
                 level,
                 idx,
                 pass,
+                big,
                 result,
                 tile,
-            } => d.on_made(level, idx, pass, *result, tile),
+            } => {
+                d.running_big -= big;
+                d.on_made(level, idx, pass, *result, tile)
+            }
             Done::Failed(e) => d.error = Some(e),
         }
     }
@@ -454,10 +473,17 @@ pub fn drive<'s>(
 impl<'d, 's> Driver<'d, 's> {
     /// Hands ready tasks to the pool while threads are free.
     fn pump(&mut self) {
+        let mut deferred = Vec::new();
         while self.in_flight < self.max_in_flight {
             let Some(Reverse(ready)) = self.ready.pop() else {
                 break;
             };
+            let big = ready.task.big;
+            if big > 0 && self.running_big > 0 && self.running_big + big > self.big_memory {
+                deferred.push(ready);
+                continue;
+            }
+            self.running_big += big;
             self.in_flight += 1;
             let ctx = self.ctx;
             let tx = self.tx.clone();
@@ -465,6 +491,9 @@ impl<'d, 's> Driver<'d, 's> {
             self.scope.spawn(move |_| {
                 let _ = tx.send(run_task(ctx, t, &tx).unwrap_or_else(Done::Failed));
             });
+        }
+        for r in deferred {
+            self.ready.push(Reverse(r));
         }
     }
 
@@ -529,10 +558,12 @@ impl<'d, 's> Driver<'d, 's> {
         } else {
             o.simplification
         };
+        let ws = slot.input.working_set(self.ctx.store);
         let task = Task {
             level: k,
             idx,
             pass,
+            big: if ws >= BIG_TASK { ws } else { 0 },
             spool: level.spool.clone(),
             child_spool: level.child_spool.clone(),
             input: slot.input.clone(),
@@ -651,7 +682,7 @@ impl<'d, 's> Driver<'d, 's> {
             if k + 1 == self.levels.len() {
                 let z = children[0].z;
                 let spool = self.levels[k].child_spool.clone();
-                let mut next = Level::new(z, self.levels[k].z + 1, o, spool);
+                let mut next = Level::new(z, self.levels[k].z + 1, o, spool, &self.ctx.rest);
                 if z + 1 >= o.minzoom {
                     next.nextzoom = Some(z + 1);
                 }
@@ -908,7 +939,7 @@ impl<'d, 's> Driver<'d, 's> {
         debug_assert_eq!(k + 1, self.levels.len());
         let z = next[0].1.z;
         let spool = self.levels[k].child_spool.clone();
-        let mut nl = Level::new(z, self.levels[k].z + 1, o, spool);
+        let mut nl = Level::new(z, self.levels[k].z + 1, o, spool, &self.ctx.rest);
         if z + 1 >= o.minzoom {
             nl.nextzoom = Some(z + 1);
         }
@@ -993,7 +1024,7 @@ impl<'d, 's> Driver<'d, 's> {
         for &i in &order {
             let slot = &level.slots[i];
             if let Some(tile) = &slot.tile {
-                let bytes = tile.load()?;
+                let bytes = tile.load_sequential()?;
                 self.sink
                     .write_tile(slot.input.z as u8, slot.input.x, slot.input.y, &bytes)?;
                 self.stats.tiles += 1;
@@ -1025,7 +1056,7 @@ fn run_task(ctx: &Ctx<'_>, t: Task, tx: &Sender<Done>) -> crate::Result<Done> {
     let mut rt = read_tile(ctx, &t.input, &t.rp, t.complexity)?;
     if t.rp.children {
         let mut children = std::mem::take(&mut rt.children);
-        store_inputs(&mut children, &ctx.rest, &t.child_spool)?;
+        store_inputs(&mut children, &t.child_spool)?;
         let _ = tx.send(Done::Read {
             level: t.level,
             idx: t.idx,
@@ -1036,13 +1067,14 @@ fn run_task(ctx: &Ctx<'_>, t: Task, tx: &Sender<Done>) -> crate::Result<Done> {
     let mut result = make_tile(ctx, &rt, &t.mp);
     drop(rt);
     let tile = match result.tile.take() {
-        Some(bytes) => Some(ctx.rest.keep(bytes, &t.spool)?),
+        Some(bytes) => Some(t.spool.store(&bytes)?),
         None => None,
     };
     Ok(Done::Made {
         level: t.level,
         idx: t.idx,
         pass: t.pass,
+        big: t.big,
         result: Box::new(result),
         tile,
     })

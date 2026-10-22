@@ -37,7 +37,7 @@ use serialize::Config;
 
 use crate::Error;
 use crate::options::{Options, Source, os_message};
-use crate::store::{Attr, Feature, FeatureStore, Layer};
+use crate::store::{Attr, Feature, FeatureStore, Layer, Values};
 
 /// The bytes of one input, mapped or read into memory.
 enum Data {
@@ -932,8 +932,8 @@ fn flush(stderr: &mut Vec<u8>) {
     }
 }
 
-/// The merged table's entries, and for each chunk its ids in it.
-type Merged = (Vec<(i32, Vec<u8>)>, Vec<Vec<u32>>);
+/// The merged table, and for each chunk its ids in it.
+type Merged = (Values, Vec<Vec<u32>>);
 
 /// Interns the entries of every chunk's table in one table, in parallel by
 /// shard. Returns the table and, for each chunk, its ids in the table.
@@ -981,12 +981,17 @@ fn merge_tables(tables: &[&Interner]) -> Merged {
         })
         .collect();
 
-    let entries: Vec<(i32, Vec<u8>)> = shards
-        .par_iter()
-        .flat_map_iter(|(t, _)| (0..t.len() as u32).map(|i| (t.get(i).0, t.get(i).1.to_vec())))
-        .collect();
+    let mut types = Vec::with_capacity(n as usize);
+    let mut ends = Vec::with_capacity(n as usize);
+    let mut bytes = Vec::with_capacity(shards.iter().map(|(t, _)| t.bytes.len()).sum());
+    for (t, _) in &shards {
+        let base = bytes.len() as u64;
+        types.extend_from_slice(&t.types);
+        ends.extend(t.ends.iter().map(|&e| base + e as u64));
+        bytes.extend_from_slice(&t.bytes);
+    }
 
-    (entries, remap)
+    (Values::from_parts(types, ends, bytes), remap)
 }
 
 fn merge(
@@ -1168,17 +1173,8 @@ fn merge(
         features,
         geometry,
         attrs,
-        keys: keys
-            .into_iter()
-            .map(|(_, b)| String::from_utf8(b).unwrap())
-            .collect(),
-        values: values
-            .into_par_iter()
-            .map(|(t, b)| tippecanoe::serial::SerialVal {
-                type_: t,
-                s: String::from_utf8(b).unwrap(),
-            })
-            .collect(),
+        keys: keys.iter().map(|k| k.s.to_string()).collect(),
+        values,
         layers,
         bbox,
         bbox1,

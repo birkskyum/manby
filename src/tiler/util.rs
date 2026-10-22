@@ -211,42 +211,178 @@ pub fn draws_something(geom: &DrawVec) -> bool {
     false
 }
 
-/// Runs `f` over `0..n`, split into consecutive ranges on up to `threads`
-/// scoped threads when each gets at least `min_len`, and returns the results
-/// in order. Tile tasks use this instead of rayon so that a thread waiting for
-/// its helpers never picks up another tile's task in the meantime.
+/// Threads that help with the work inside a tile. They live as long as the
+/// tiling, so that their memory is reused from tile to tile. A task that asks
+/// for help also works on its own parts, and takes back any part that no
+/// helper has started, so it never waits for help that is busy elsewhere,
+/// and never picks up another tile's work while it waits.
+pub struct Helpers {
+    shared: std::sync::Arc<HelperQueue>,
+    threads: Vec<std::thread::JoinHandle<()>>,
+}
+
+struct HelperQueue {
+    queue: std::sync::Mutex<(std::collections::VecDeque<std::sync::Arc<Batch>>, bool)>,
+    ready: std::sync::Condvar,
+}
+
+/// One call's parts. `job` is only called for a part claimed from `next`,
+/// and the caller waits until every part is done, so the job outlives every
+/// call of it.
+struct Batch {
+    job: *const (dyn Fn(usize) + Sync),
+    parts: usize,
+    next: std::sync::atomic::AtomicUsize,
+    done: std::sync::Mutex<usize>,
+    finished: std::sync::Condvar,
+    panic: std::sync::Mutex<Option<Box<dyn std::any::Any + Send>>>,
+}
+
+// SAFETY: `job` points to a `Sync` closure that the caller keeps alive until
+// every part has run; `Batch` is otherwise made of thread-safe parts.
+unsafe impl Send for Batch {}
+// SAFETY: as above.
+unsafe impl Sync for Batch {}
+
+impl Batch {
+    /// Runs parts until none is left unclaimed.
+    fn work(&self) {
+        loop {
+            let i = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if i >= self.parts {
+                return;
+            }
+            // SAFETY: part i was claimed here, so the caller is still waiting
+            // and the job is alive.
+            let job = unsafe { &*self.job };
+            if let Err(p) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(i))) {
+                self.panic.lock().unwrap().get_or_insert(p);
+            }
+            let mut done = self.done.lock().unwrap();
+            *done += 1;
+            if *done == self.parts {
+                self.finished.notify_all();
+            }
+        }
+    }
+}
+
+impl Helpers {
+    /// `threads` helpers, which with the asking thread make up to
+    /// `threads + 1` working on one tile.
+    pub fn new(threads: usize) -> Helpers {
+        let shared = std::sync::Arc::new(HelperQueue {
+            queue: std::sync::Mutex::new((std::collections::VecDeque::new(), false)),
+            ready: std::sync::Condvar::new(),
+        });
+        let threads = (0..threads)
+            .map(|_| {
+                let shared = shared.clone();
+                std::thread::spawn(move || {
+                    loop {
+                        let batch = {
+                            let mut q = shared.queue.lock().unwrap();
+                            loop {
+                                if let Some(b) = q.0.pop_front() {
+                                    break b;
+                                }
+                                if q.1 {
+                                    return;
+                                }
+                                q = shared.ready.wait(q).unwrap();
+                            }
+                        };
+                        batch.work();
+                    }
+                })
+            })
+            .collect();
+        Helpers { shared, threads }
+    }
+
+    /// How many threads may work on one call at once.
+    pub fn width(&self) -> usize {
+        self.threads.len() + 1
+    }
+
+    /// Calls `job` for each of `0..parts`, on this thread and on helpers.
+    pub fn run(&self, parts: usize, job: &(dyn Fn(usize) + Sync)) {
+        if parts <= 1 || self.threads.is_empty() {
+            for i in 0..parts {
+                job(i);
+            }
+            return;
+        }
+        // SAFETY: the lifetime is erased only for the queue; see `Batch`.
+        let job: *const (dyn Fn(usize) + Sync) = unsafe { std::mem::transmute(job) };
+        let batch = std::sync::Arc::new(Batch {
+            job,
+            parts,
+            next: std::sync::atomic::AtomicUsize::new(0),
+            done: std::sync::Mutex::new(0),
+            finished: std::sync::Condvar::new(),
+            panic: std::sync::Mutex::new(None),
+        });
+        {
+            let mut q = self.shared.queue.lock().unwrap();
+            for _ in 1..parts.min(self.width()) {
+                q.0.push_back(batch.clone());
+            }
+        }
+        self.shared.ready.notify_all();
+        batch.work();
+        let mut done = batch.done.lock().unwrap();
+        while *done < parts {
+            done = batch.finished.wait(done).unwrap();
+        }
+        drop(done);
+        if let Some(p) = batch.panic.lock().unwrap().take() {
+            std::panic::resume_unwind(p);
+        }
+    }
+}
+
+impl Drop for Helpers {
+    fn drop(&mut self) {
+        self.shared.queue.lock().unwrap().1 = true;
+        self.shared.ready.notify_all();
+        for t in self.threads.drain(..) {
+            let _ = t.join();
+        }
+    }
+}
+
+/// Runs `f` over `0..n`, split into consecutive ranges each of at least
+/// `min_len`, on this thread and the helpers, and returns the results in order.
 pub fn par_ranges<R: Send>(
+    helpers: &Helpers,
     n: usize,
     min_len: usize,
-    threads: usize,
     f: impl Fn(std::ops::Range<usize>) -> R + Sync,
 ) -> Vec<R> {
-    let parts = (n / min_len.max(1)).clamp(1, threads.max(1));
+    let parts = (n / min_len.max(1)).clamp(1, helpers.width());
     if parts <= 1 {
         return vec![f(0..n)];
     }
     let range = |i: usize| n * i / parts..n * (i + 1) / parts;
-    let f = &f;
-    std::thread::scope(|s| {
-        let handles: Vec<_> = (1..parts).map(|i| s.spawn(move || f(range(i)))).collect();
-        let mut out = Vec::with_capacity(parts);
-        out.push(f(range(0)));
-        for h in handles {
-            match h.join() {
-                Ok(r) => out.push(r),
-                Err(e) => std::panic::resume_unwind(e),
-            }
-        }
-        out
-    })
+    let results: Vec<std::sync::Mutex<Option<R>>> =
+        (0..parts).map(|_| std::sync::Mutex::new(None)).collect();
+    helpers.run(parts, &|i| {
+        let r = f(range(i));
+        *results[i].lock().unwrap() = Some(r);
+    });
+    results
+        .into_iter()
+        .map(|r| r.into_inner().unwrap().unwrap())
+        .collect()
 }
 
-/// Runs `f` on every item, each item taken by whichever of up to `threads`
-/// scoped threads is free next, for work whose cost varies a lot from item
-/// to item. Each item is changed by exactly one call.
-pub fn par_each_mut<T: Send>(items: &mut [T], threads: usize, f: impl Fn(usize, &mut T) + Sync) {
+/// Runs `f` on every item, each item taken by whichever of this thread and
+/// the helpers is free next, for work whose cost varies a lot from item to
+/// item. Each item is changed by exactly one call.
+pub fn par_each_mut<T: Send>(helpers: &Helpers, items: &mut [T], f: impl Fn(usize, &mut T) + Sync) {
     let n = items.len();
-    let workers = threads.min(n);
+    let workers = helpers.width().min(n);
     if workers <= 1 {
         for (i, item) in items.iter_mut().enumerate() {
             f(i, item);
@@ -256,12 +392,12 @@ pub fn par_each_mut<T: Send>(items: &mut [T], threads: usize, f: impl Fn(usize, 
 
     struct Items<T>(*mut T);
     // SAFETY: the pointer is only used to reach distinct items, each from one
-    // thread, while `items` stays mutably borrowed for the scope.
+    // thread, while `items` stays mutably borrowed for the call.
     unsafe impl<T: Send> Sync for Items<T> {}
 
     let base = Items(items.as_mut_ptr());
     let next = std::sync::atomic::AtomicUsize::new(0);
-    let work = || {
+    helpers.run(workers, &|_| {
         let base = &base;
         loop {
             let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -272,11 +408,82 @@ pub fn par_each_mut<T: Send>(items: &mut [T], threads: usize, f: impl Fn(usize, 
             let item = unsafe { &mut *base.0.add(i) };
             f(i, item);
         }
-    };
-    std::thread::scope(|s| {
-        for _ in 1..workers {
-            s.spawn(work);
-        }
-        work();
     });
+}
+
+/// A sequence kept as the vectors it was built in, so that joining the
+/// pieces that parallel jobs made does not copy them.
+pub struct Chunked<T> {
+    parts: Vec<Vec<T>>,
+    /// The end of each part in the whole sequence.
+    ends: Vec<usize>,
+}
+
+impl<T> Default for Chunked<T> {
+    fn default() -> Self {
+        Chunked {
+            parts: Vec::new(),
+            ends: Vec::new(),
+        }
+    }
+}
+
+impl<T> Chunked<T> {
+    pub fn len(&self) -> usize {
+        self.ends.last().copied().unwrap_or(0)
+    }
+
+    /// Appends a part.
+    pub fn append(&mut self, part: Vec<T>) {
+        if part.is_empty() {
+            return;
+        }
+        self.ends.push(self.len() + part.len());
+        self.parts.push(part);
+    }
+
+    pub fn push(&mut self, v: T) {
+        if self.parts.is_empty() {
+            self.parts.push(Vec::new());
+            self.ends.push(0);
+        }
+        self.parts.last_mut().unwrap().push(v);
+        *self.ends.last_mut().unwrap() += 1;
+    }
+
+    fn locate(&self, i: usize) -> (usize, usize) {
+        let p = if self.parts.len() == 1 {
+            0
+        } else {
+            self.ends.partition_point(|&e| e <= i)
+        };
+        let start = if p == 0 { 0 } else { self.ends[p - 1] };
+        (p, i - start)
+    }
+
+    /// `len` items from `start`, which lie in one part.
+    pub fn slice(&self, start: usize, len: usize) -> &[T] {
+        if len == 0 {
+            return &[];
+        }
+        let (p, off) = self.locate(start);
+        &self.parts[p][off..off + len]
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
+        self.parts.iter().flatten()
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.parts.iter_mut().flatten()
+    }
+}
+
+impl<T> std::ops::Index<usize> for Chunked<T> {
+    type Output = T;
+
+    fn index(&self, i: usize) -> &T {
+        let (p, off) = self.locate(i);
+        &self.parts[p][off]
+    }
 }

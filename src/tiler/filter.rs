@@ -17,6 +17,7 @@ use tippecanoe::write_json::{JsonWriter, layer_to_geojson};
 
 use super::engine::Ctx;
 use super::read::{Cand, NO_LIST, ReadTile};
+use super::util::Chunked;
 use crate::store::{Feature, FeatureStore, Layer};
 
 /// What the prefilter made of a tile's candidates: features of their own,
@@ -96,10 +97,10 @@ pub fn prefilter_tile(
             z,
             x: tx,
             y: ty,
-            cands: Vec::with_capacity(parsed.len()),
-            geom: Vec::new(),
-            edges: Vec::new(),
-            attr_lists: Vec::new(),
+            cands: Chunked::default(),
+            geom: Chunked::default(),
+            edges: Chunked::default(),
+            attr_lists: Chunked::default(),
             full: Vec::new(),
             original_features: rt.original_features,
             unclipped_features: rt.unclipped_features,
@@ -127,13 +128,12 @@ pub fn prefilter_tile(
 
         let fi = out.store.features.len() as u32;
         out.store.features.push(Feature {
-            index: sf.index,
-            ix: 0,
+            keep_index: true,
+            ix: sf.index,
             seq: sf.seq as u64,
             label_point: sf.label_point,
             extent: sf.extent,
             id: sf.id,
-            bbox: sf.bbox,
             geom_start: 0,
             geom_len: 0,
             attr_start: 0,
@@ -148,13 +148,14 @@ pub fn prefilter_tile(
         });
 
         let geom_start = out.rt.geom.len() as u32;
-        out.rt.geom.extend_from_slice(&sf.geometry);
+        let geom_len = sf.geometry.len() as u32;
+        out.rt.geom.append(sf.geometry);
         out.rt.cands.push(Cand {
             fi,
             dropped: sf.dropped,
             gap: sf.gap,
             geom_start,
-            geom_len: sf.geometry.len() as u32,
+            geom_len,
             edge_start: 0,
             edge_len: 0,
             attrs: NO_LIST,
@@ -172,7 +173,7 @@ fn write_candidates(ctx: &Ctx<'_>, rt: &ReadTile, write_to: i32) {
     let mut fp = PipeWriter::fdopen(write_to);
     {
         let mut state = JsonWriter::new_file(&mut fp);
-        for c in &rt.cands {
+        for c in rt.cands.iter() {
             let f = &store.features[c.fi as usize];
             let mut tmp_layer = MvtLayer {
                 extent: 1i64 << 32,
@@ -214,7 +215,7 @@ fn write_candidates(ctx: &Ctx<'_>, rt: &ReadTile, write_to: i32) {
                     tmp_layer.tag(
                         &mut tmp_feature,
                         &store.keys[a.key as usize],
-                        &ctx.values[a.value as usize],
+                        &ctx.value(a.value),
                     );
                 }
             }
@@ -229,7 +230,7 @@ fn write_candidates(ctx: &Ctx<'_>, rt: &ReadTile, write_to: i32) {
                 true,
                 false,
                 true,
-                f.index,
+                f.index(),
                 f.seq as i64,
                 f.extent,
                 true,

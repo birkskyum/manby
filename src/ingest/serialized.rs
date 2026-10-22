@@ -195,7 +195,7 @@ fn serialized_len(
 ) -> u64 {
     let mut flags = layer.wrapping_shl(7);
     flags |= ((f.label_point != 0) as i64) << 6;
-    flags |= ((f.index != 0) as i64) << 4;
+    flags |= ((f.index() != 0) as i64) << 4;
     flags |= ((f.extent != 0) as i64) << 3;
     flags |= (f.has_id as i64) << 2;
     flags |= ((f.tippecanoe_minzoom != -1) as i64) << 1;
@@ -225,9 +225,9 @@ fn serialized_len(
     }
     n += 1;
 
-    if f.index != 0 {
+    if f.index() != 0 {
         // and the gap, which is 0 when reading
-        n += varint_len(f.index) + 1;
+        n += varint_len(f.index()) + 1;
     }
     if f.label_point != 0 {
         n += varint_len(f.label_point);
@@ -279,7 +279,7 @@ pub(super) fn layout(
                     let at = f.attr_start as usize - span.attrs.start;
                     let mine = &mut out[at..at + f.attr_len as usize];
                     for (o, a) in mine.iter_mut().zip(s.feature_attrs(f)) {
-                        let v = &s.values[a.value as usize];
+                        let v = s.values.get(a.value);
                         o.key = pool.add(
                             s.keys[a.key as usize].as_bytes(),
                             MVT_STRING as i8,

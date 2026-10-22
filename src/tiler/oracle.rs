@@ -100,7 +100,7 @@ fn zoom0(store: &FeatureStore, o: &TileOptions) -> Zoom0 {
         pool.push(0);
     }
     let mut value_off = Vec::with_capacity(store.values.len());
-    for v in &store.values {
+    for v in store.values.iter() {
         value_off.push(pool.len() as i64);
         pool.push(v.type_ as u8);
         pool.extend_from_slice(v.s.as_bytes());
@@ -134,7 +134,7 @@ fn zoom0(store: &FeatureStore, o: &TileOptions) -> Zoom0 {
             tippecanoe_minzoom: f.tippecanoe_minzoom as i32,
             tippecanoe_maxzoom: f.tippecanoe_maxzoom as i32,
             geometry,
-            index: f.index,
+            index: f.index(),
             gap: 0,
             label_point: f.label_point,
             extent: f.extent,

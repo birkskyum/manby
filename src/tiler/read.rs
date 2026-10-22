@@ -25,8 +25,8 @@ use tippecanoe::serial::{
 use tippecanoe::text::bit_reverse;
 
 use super::engine::Ctx;
-use super::util::{par_ranges, shift_right};
-use crate::mem::{Rest, Spool, Stored};
+use super::util::{Chunked, par_ranges, shift_right};
+use crate::mem::{Spool, Stored};
 use crate::store::Attr;
 use std::sync::Arc;
 use tippecanoe::serial::SerialVal;
@@ -50,6 +50,8 @@ struct Run {
     /// Where the run starts in `TileInput::data`.
     start: u64,
     count: u32,
+    /// The features' vertices.
+    vertices: u32,
     /// The feature before the run, or `NO_FEATURE`.
     prev: u32,
 }
@@ -72,6 +74,7 @@ pub struct TileInput {
     data: Stored,
     runs: Vec<Run>,
     count: usize,
+    vertices: u64,
     /// The last feature, which the next part's first run follows.
     last: u32,
     shift: u32,
@@ -94,6 +97,7 @@ impl TileInput {
             data: Stored::Mem(Vec::new()),
             runs: Vec::new(),
             count: features,
+            vertices: 0,
             last: NO_FEATURE,
             shift: 0,
             skip_unless_dropping: false,
@@ -110,6 +114,7 @@ impl TileInput {
             data: Stored::Mem(Vec::new()),
             runs: Vec::new(),
             count: 0,
+            vertices: 0,
             last: NO_FEATURE,
             shift,
             skip_unless_dropping: false,
@@ -120,6 +125,16 @@ impl TileInput {
     /// The number of features.
     pub fn len(&self) -> usize {
         self.count
+    }
+
+    /// About how much memory reading and making the tile takes.
+    pub fn working_set(&self, store: &crate::store::FeatureStore) -> u64 {
+        let vertices = if self.root {
+            store.geometry.len() as u64
+        } else {
+            self.vertices
+        };
+        vertices * 32 + self.count as u64 * 96
     }
 
     /// Appends a part that one read chunk of the parent wrote.
@@ -143,17 +158,72 @@ impl TileInput {
             data.extend_from_slice(&part.data);
         }
         self.count += part.count;
+        self.vertices += part.vertices;
         self.last = part.last;
     }
 
+    /// The runs and the features, from the input's bytes.
+    fn layout<'a>(&'a self, bytes: &'a [u8]) -> Layout<'a> {
+        if let Stored::Mem(_) = self.data {
+            return Layout {
+                runs: self.runs.clone(),
+                data: bytes,
+                shift: self.shift,
+            };
+        }
+        let mut pos = 0;
+        let n = get_varint(bytes, &mut pos) as usize;
+        let mut runs = Vec::with_capacity(n);
+        for _ in 0..n {
+            let start = get_varint(bytes, &mut pos);
+            let count = get_varint(bytes, &mut pos) as u32;
+            let vertices = get_varint(bytes, &mut pos) as u32;
+            let prev = (get_varint(bytes, &mut pos) as u32).wrapping_sub(1);
+            runs.push(Run {
+                start,
+                count,
+                vertices,
+                prev,
+            });
+        }
+        Layout {
+            runs,
+            data: &bytes[pos..],
+            shift: self.shift,
+        }
+    }
+
+    /// The bytes it is stored as: the runs, then the features.
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_varint(out, self.runs.len() as u64);
+        for r in &self.runs {
+            put_varint(out, r.start);
+            put_varint(out, r.count as u64);
+            put_varint(out, r.vertices as u64);
+            put_varint(out, r.prev.wrapping_add(1) as u64);
+        }
+        if let Stored::Mem(d) = &self.data {
+            out.extend_from_slice(d);
+        }
+    }
+}
+
+/// An input's runs and features, ready to read.
+struct Layout<'a> {
+    runs: Vec<Run>,
+    data: &'a [u8],
+    shift: u32,
+}
+
+impl Layout<'_> {
     /// Splits the runs into at most `parts` groups of about equal feature counts.
-    fn groups(&self, parts: usize) -> Vec<std::ops::Range<usize>> {
+    fn groups(&self, count: usize, parts: usize) -> Vec<std::ops::Range<usize>> {
         let mut out = Vec::with_capacity(parts);
         let mut first = 0;
         let mut seen = 0usize;
         for (i, r) in self.runs.iter().enumerate() {
             seen += r.count as usize;
-            if seen * parts >= self.count * (out.len() + 1) && out.len() + 1 < parts {
+            if seen * parts >= count * (out.len() + 1) && out.len() + 1 < parts {
                 out.push(first..i + 1);
                 first = i + 1;
             }
@@ -164,15 +234,14 @@ impl TileInput {
         out
     }
 
-    fn cursor<'a>(&'a self, data: &'a [u8], runs: std::ops::Range<usize>) -> Cursor<'a> {
+    fn cursor(&self, runs: std::ops::Range<usize>) -> Cursor<'_> {
         let pos = self
             .runs
             .get(runs.start)
             .map(|r| r.start as usize)
             .unwrap_or(0);
         Cursor {
-            input: self,
-            data,
+            layout: self,
             run: runs.start,
             end: runs.end,
             left: self.runs.get(runs.start).map(|r| r.count).unwrap_or(0),
@@ -213,51 +282,36 @@ fn get_zigzag(data: &[u8], pos: &mut usize) -> i64 {
     (v >> 1) as i64 ^ -((v & 1) as i64)
 }
 
-/// Keeps the features of `inputs` in memory if `rest` has room for them,
-/// or moves them into `spool` in one write.
-pub fn store_inputs(
-    inputs: &mut [TileInput],
-    rest: &Arc<Rest>,
-    spool: &Arc<Spool>,
-) -> crate::Result<()> {
-    let mut data: Vec<Stored> = inputs
-        .iter_mut()
-        .map(|t| std::mem::replace(&mut t.data, Stored::Mem(Vec::new())))
-        .collect();
-    if !rest.keep_all(&mut data) {
-        let mut all = Vec::with_capacity(data.iter().map(|d| d.len()).sum());
-        for d in &data {
-            if let Stored::Mem(v) = d {
-                all.extend_from_slice(v);
-            }
-        }
-        let Stored::Spooled {
-            shard, at: mut off, ..
-        } = spool.store(&all)?
-        else {
-            unreachable!();
-        };
-        for d in data.iter_mut() {
-            let len = d.len();
-            *d = Stored::Spooled {
-                spool: spool.clone(),
-                shard,
-                at: off,
-                len,
-            };
-            off += len as u64;
-        }
+/// Stores the inputs in `spool`, in one piece.
+pub fn store_inputs(inputs: &mut [TileInput], spool: &Arc<Spool>) -> crate::Result<()> {
+    if inputs.is_empty() {
+        return Ok(());
     }
-    for (t, d) in inputs.iter_mut().zip(data) {
-        t.data = d;
+    let mut all = Vec::new();
+    let mut ends = Vec::with_capacity(inputs.len());
+    for t in inputs.iter() {
+        t.encode(&mut all);
+        ends.push(all.len());
+    }
+    let Stored::Spooled { at, .. } = spool.store(&all)? else {
+        unreachable!();
+    };
+    let mut from = 0;
+    for (t, end) in inputs.iter_mut().zip(ends) {
+        t.data = Stored::Spooled {
+            spool: spool.clone(),
+            at: at + from as u64,
+            len: end - from,
+        };
+        t.runs = Vec::new();
+        from = end;
     }
     Ok(())
 }
 
 /// Reads the features of some runs of a tile input in order.
 struct Cursor<'a> {
-    input: &'a TileInput,
-    data: &'a [u8],
+    layout: &'a Layout<'a>,
     run: usize,
     end: usize,
     left: u32,
@@ -268,7 +322,7 @@ struct Cursor<'a> {
 impl Cursor<'_> {
     /// The feature before the first run.
     fn prev(&self) -> Option<u32> {
-        match self.input.runs.get(self.run).map(|r| r.prev) {
+        match self.layout.runs.get(self.run).map(|r| r.prev) {
             Some(NO_FEATURE) | None => None,
             Some(p) => Some(p),
         }
@@ -282,14 +336,14 @@ impl Cursor<'_> {
             if self.run >= self.end {
                 return None;
             }
-            let r = self.input.runs[self.run];
+            let r = self.layout.runs[self.run];
             self.left = r.count;
             self.pos = r.start as usize;
             self.base = 0;
         }
         self.left -= 1;
-        let data = self.data;
-        let shift = self.input.shift;
+        let data = self.layout.data;
+        let shift = self.layout.shift;
         let fi = (self.base as i64 + get_zigzag(data, &mut self.pos)) as u32;
         self.base = fi;
         let gap = get_varint(data, &mut self.pos);
@@ -341,10 +395,10 @@ pub struct ReadTile {
     pub z: i32,
     pub x: u32,
     pub y: u32,
-    pub cands: Vec<Cand>,
-    pub geom: Vec<Draw>,
-    pub edges: Vec<Draw>,
-    pub attr_lists: Vec<Vec<Attr>>,
+    pub cands: Chunked<Cand>,
+    pub geom: Chunked<Draw>,
+    pub edges: Chunked<Draw>,
+    pub attr_lists: Chunked<Vec<Attr>>,
     pub full: Vec<(Vec<Arc<String>>, Vec<SerialVal>)>,
     pub original_features: i64,
     pub unclipped_features: i64,
@@ -358,11 +412,11 @@ pub struct ReadTile {
 
 impl ReadTile {
     pub fn cand_geom(&self, c: &Cand) -> &[Draw] {
-        &self.geom[c.geom_start as usize..(c.geom_start + c.geom_len) as usize]
+        self.geom.slice(c.geom_start as usize, c.geom_len as usize)
     }
 
     pub fn cand_edges(&self, c: &Cand) -> &[Draw] {
-        &self.edges[c.edge_start as usize..(c.edge_start + c.edge_len) as usize]
+        self.edges.slice(c.edge_start as usize, c.edge_len as usize)
     }
 }
 
@@ -384,6 +438,7 @@ struct ChildPart {
     data: Vec<u8>,
     runs: Vec<Run>,
     count: usize,
+    vertices: u64,
     /// The last feature written, and the one the deltas count from.
     last: u32,
     base: u32,
@@ -408,24 +463,29 @@ pub fn read_tile(
     rp: &ReadParams,
     complexity: Option<i64>,
 ) -> crate::Result<ReadTile> {
-    let data = input.data.load()?;
-    let data: &[u8] = &data;
+    let bytes = input.data.load()?;
+    let layout = input.layout(&bytes);
     let complexity = match input.complexity.or(complexity) {
         Some(c) => c,
-        None if ctx.o.a(A_VARIABLE_DEPTH_PYRAMID) => stream_complexity(ctx, input, data),
+        None if ctx.o.a(A_VARIABLE_DEPTH_PYRAMID) => stream_complexity(ctx, input, &layout),
         None => 0,
     };
     let n = input.len();
-    let parts = (n / CHUNK).clamp(1, ctx.threads.max(1));
+    let parts = (n / CHUNK).clamp(1, ctx.helpers.width());
     let chunks: Vec<ChunkOut> = if input.root {
-        par_ranges(n, CHUNK, ctx.threads, |r| {
+        par_ranges(&ctx.helpers, n, CHUNK, |r| {
             read_chunk(ctx, input, Source::Root(r), rp)
         })
     } else {
-        let groups = input.groups(parts);
-        par_ranges(groups.len(), 1, groups.len(), |r| {
+        let groups = layout.groups(n, parts);
+        par_ranges(&ctx.helpers, groups.len(), 1, |r| {
             debug_assert_eq!(r.len(), 1);
-            read_chunk(ctx, input, Source::Runs(data, groups[r.start].clone()), rp)
+            read_chunk(
+                ctx,
+                input,
+                Source::Runs(&layout, groups[r.start].clone()),
+                rp,
+            )
         })
     };
 
@@ -433,10 +493,10 @@ pub fn read_tile(
         z: input.z,
         x: input.x,
         y: input.y,
-        cands: Vec::new(),
-        geom: Vec::new(),
-        edges: Vec::new(),
-        attr_lists: Vec::new(),
+        cands: Chunked::default(),
+        geom: Chunked::default(),
+        edges: Chunked::default(),
+        attr_lists: Chunked::default(),
         full: Vec::new(),
         original_features: 0,
         unclipped_features: 0,
@@ -449,10 +509,10 @@ pub fn read_tile(
     let shift = child_shift(ctx, rp.nextzoom);
     if chunks.len() == 1 {
         let c = chunks.into_iter().next().unwrap();
-        out.cands = c.cands;
-        out.geom = c.geom;
-        out.edges = c.edges;
-        out.attr_lists = c.attr_lists;
+        out.cands.append(c.cands);
+        out.geom.append(c.geom);
+        out.edges.append(c.edges);
+        out.attr_lists.append(c.attr_lists);
         out.original_features = c.original_features;
         out.unclipped_features = c.unclipped_features;
         out.minzoom_feature_pending = c.minzoom_feature_pending;
@@ -466,25 +526,22 @@ pub fn read_tile(
             })
             .collect();
     } else {
-        out.cands
-            .reserve(chunks.iter().map(|c| c.cands.len()).sum());
-        out.geom.reserve(chunks.iter().map(|c| c.geom.len()).sum());
         let mut children: Vec<TileInput> = Vec::new();
-        for c in chunks {
+        for mut c in chunks {
             let goff = out.geom.len() as u32;
             let eoff = out.edges.len() as u32;
             let aoff = out.attr_lists.len() as u32;
-            out.cands.extend(c.cands.into_iter().map(|mut cand| {
+            for cand in c.cands.iter_mut() {
                 cand.geom_start += goff;
                 cand.edge_start += eoff;
                 if cand.attrs != NO_LIST {
                     cand.attrs += aoff;
                 }
-                cand
-            }));
-            out.geom.extend(c.geom);
-            out.edges.extend(c.edges);
-            out.attr_lists.extend(c.attr_lists);
+            }
+            out.cands.append(c.cands);
+            out.geom.append(c.geom);
+            out.edges.append(c.edges);
+            out.attr_lists.append(c.attr_lists);
             out.original_features += c.original_features;
             out.unclipped_features += c.unclipped_features;
             out.minzoom_feature_pending |= c.minzoom_feature_pending;
@@ -523,7 +580,7 @@ fn child_shift(ctx: &Ctx<'_>, nextzoom: i32) -> u32 {
 /// bytes its parent wrote for it into the temporary file before the end
 /// marker, the features compressed. Counting stops once the size is too big
 /// for the tile to try to stop early, since then the exact size does not matter.
-fn stream_complexity(ctx: &Ctx<'_>, input: &TileInput, data: &[u8]) -> i64 {
+fn stream_complexity(ctx: &Ctx<'_>, input: &TileInput, layout: &Layout<'_>) -> i64 {
     let o = ctx.o;
     let store = ctx.store;
     let gs = o.geometry_scale;
@@ -559,7 +616,7 @@ fn stream_complexity(ctx: &Ctx<'_>, input: &TileInput, data: &[u8]) -> i64 {
         }
     };
 
-    let mut cursor = input.cursor(data, 0..input.runs.len());
+    let mut cursor = layout.cursor(0..layout.runs.len());
     let mut geom = DrawVec::new();
     let mut bbox = [0i64; 4];
     loop {
@@ -574,7 +631,7 @@ fn stream_complexity(ctx: &Ctx<'_>, input: &TileInput, data: &[u8]) -> i64 {
         serialize_byte(&mut s, f.t);
         let mut layer: i64 = store.segment_layers[segment][f.layer as usize].wrapping_shl(7);
         layer |= ((f.label_point != 0) as i64) << 6;
-        layer |= ((f.index != 0) as i64) << 4;
+        layer |= ((f.index() != 0) as i64) << 4;
         layer |= ((f.extent != 0) as i64) << 3;
         layer |= (f.has_id as i64) << 2;
         layer |= ((f.tippecanoe_minzoom != -1) as i64) << 1;
@@ -608,8 +665,8 @@ fn stream_complexity(ctx: &Ctx<'_>, input: &TileInput, data: &[u8]) -> i64 {
         }
         serialize_byte(&mut s, VT_END);
 
-        if f.index != 0 {
-            serialize_ulong_long(&mut s, f.index);
+        if f.index() != 0 {
+            serialize_ulong_long(&mut s, f.index());
             serialize_ulong_long(&mut s, gap);
         }
         if f.label_point != 0 {
@@ -667,7 +724,7 @@ fn assign_dropped(ctx: &Ctx<'_>, rt: &mut ReadTile) {
             }
 
             let feature_minzoom =
-                f.feature_minzoom as f64 - (bit_reverse(f.index >> 2) as f64 / TWO_TO_THE_64);
+                f.feature_minzoom as f64 - (bit_reverse(f.index() >> 2) as f64 / TWO_TO_THE_64);
 
             if z as f64 >= feature_minzoom || dropped == FEATURE_KEPT {
                 count[layer] = 0;
@@ -678,7 +735,7 @@ fn assign_dropped(ctx: &Ctx<'_>, rt: &mut ReadTile) {
                 count[layer] += 1;
                 dropped = count[layer];
             } else if pmdt > 0
-                && f.index.wrapping_sub(prev_not_dropped_index)
+                && f.index().wrapping_sub(prev_not_dropped_index)
                     > ((1i64 << (32 - z)) as u64 / pmdt)
                         .wrapping_mul((1i64 << (32 - z)) as u64 / pmdt)
             {
@@ -691,7 +748,7 @@ fn assign_dropped(ctx: &Ctx<'_>, rt: &mut ReadTile) {
         }
 
         if dropped != FEATURE_DROPPED {
-            prev_not_dropped_index = f.index;
+            prev_not_dropped_index = f.index();
         }
 
         c.dropped = dropped;
@@ -702,7 +759,7 @@ fn assign_dropped(ctx: &Ctx<'_>, rt: &mut ReadTile) {
 /// tile, otherwise some runs of the input.
 enum Source<'a> {
     Root(std::ops::Range<usize>),
-    Runs(&'a [u8], std::ops::Range<usize>),
+    Runs(&'a Layout<'a>, std::ops::Range<usize>),
 }
 
 fn read_chunk(ctx: &Ctx<'_>, input: &TileInput, source: Source<'_>, rp: &ReadParams) -> ChunkOut {
@@ -724,9 +781,25 @@ fn read_chunk(ctx: &Ctx<'_>, input: &TileInput, source: Source<'_>, rp: &ReadPar
         minzoom_feature_pending: false,
     };
 
+    // room for every feature and vertex, so that nothing grows by copying
+    let (features, vertices) = match &source {
+        Source::Root(r) => (
+            r.len(),
+            store.features[r.clone()]
+                .iter()
+                .map(|f| f.geom_len as usize)
+                .sum(),
+        ),
+        Source::Runs(layout, r) => layout.runs[r.clone()].iter().fold((0, 0), |(f, v), run| {
+            (f + run.count as usize, v + run.vertices as usize)
+        }),
+    };
+    out.cands.reserve(features);
+    out.geom.reserve(vertices);
+
     let (mut root, mut cursor) = match source {
         Source::Root(r) => (Some(r), None),
-        Source::Runs(data, r) => (None, Some(input.cursor(data, r))),
+        Source::Runs(layout, r) => (None, Some(layout.cursor(r))),
     };
 
     // next_feature_state.previndex: the index of the feature read before
@@ -735,7 +808,9 @@ fn read_chunk(ctx: &Ctx<'_>, input: &TileInput, source: Source<'_>, rp: &ReadPar
         (_, Some(c)) => c.prev(),
         _ => None,
     };
-    let mut previndex: u64 = prev.map(|i| store.features[i as usize].index).unwrap_or(0);
+    let mut previndex: u64 = prev
+        .map(|i| store.features[i as usize].index())
+        .unwrap_or(0);
 
     let (ox_root, oy_root) = if input.root && z != 0 {
         ((tx << (32 - z)) as i64, (ty << (32 - z)) as i64)
@@ -763,7 +838,7 @@ fn read_chunk(ctx: &Ctx<'_>, input: &TileInput, source: Source<'_>, rp: &ReadPar
         let f = &store.features[fi as usize];
 
         if input.root {
-            bbox = f.bbox;
+            bbox = store.feature_bbox(f);
             if bbox[0] <= bbox[2] {
                 bbox[0] -= ox_root;
                 bbox[1] -= oy_root;
@@ -786,7 +861,7 @@ fn read_chunk(ctx: &Ctx<'_>, input: &TileInput, source: Source<'_>, rp: &ReadPar
 
         out.original_features += 1;
 
-        if gap == 0 && f.index != previndex {
+        if gap == 0 && f.index() != previndex {
             let ox: i64 = (1i64 << (32 - z)).wrapping_mul(tx as i64);
             let oy: i64 = (1i64 << (32 - z)).wrapping_mul(ty as i64);
 
@@ -802,7 +877,7 @@ fn read_chunk(ctx: &Ctx<'_>, input: &TileInput, source: Source<'_>, rp: &ReadPar
                 }
             }
         }
-        previndex = f.index;
+        previndex = f.index();
 
         edge_nodes.clear();
         if clip_to_tile(
@@ -902,7 +977,7 @@ fn filter_feature(
     for a in store.feature_attrs(f) {
         attributes
             .entry(store.keys[a.key as usize].clone())
-            .or_insert_with(|| ctx.values[a.value as usize].clone());
+            .or_insert_with(|| ctx.value(a.value));
     }
 
     if f.has_id {
@@ -1120,6 +1195,7 @@ fn rewrite(
                         data: Vec::new(),
                         runs: Vec::new(),
                         count: 0,
+                        vertices: 0,
                         last: NO_FEATURE,
                         base: 0,
                     });
@@ -1131,12 +1207,16 @@ fn rewrite(
                 part.runs.push(Run {
                     start: part.data.len() as u64,
                     count: 0,
+                    vertices: 0,
                     prev: part.last,
                 });
                 part.base = 0;
             }
-            part.runs.last_mut().unwrap().count += 1;
+            let run = part.runs.last_mut().unwrap();
+            run.count += 1;
+            run.vertices = run.vertices.saturating_add(geometry.len() as u32);
             part.count += 1;
+            part.vertices += geometry.len() as u64;
             put_zigzag(&mut part.data, fi as i64 - part.base as i64);
             part.base = fi;
             part.last = fi;

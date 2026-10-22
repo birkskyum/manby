@@ -8,7 +8,6 @@ use tippecanoe::globals::OrderField;
 use tippecanoe::mbtiles::LayermapEntry;
 use tippecanoe::mvt::{MVT_DOUBLE, MVT_NULL, MVT_STRING};
 use tippecanoe::options::*;
-use tippecanoe::serial::SerialVal;
 use tippecanoe::tile::Strategy;
 
 use super::oracle::{
@@ -122,7 +121,7 @@ impl Builder {
                 Some(&i) => i,
                 None => {
                     let i = self.store.values.len() as u32;
-                    self.store.values.push(SerialVal::new(ty, v));
+                    self.store.values.push(ty, v);
                     self.values.insert((ty, v.to_string()), i);
                     i
                 }
@@ -136,13 +135,12 @@ impl Builder {
 
         let seq = self.store.features.len() as u64;
         self.store.features.push(Feature {
-            index,
+            keep_index: true,
             ix: index,
             seq,
             label_point: index,
             extent,
             id: id.unwrap_or(0),
-            bbox,
             geom_start,
             geom_len: geom.len() as u32,
             attr_start,
@@ -158,7 +156,7 @@ impl Builder {
     }
 
     fn finish(mut self) -> FeatureStore {
-        self.store.features.sort_by_key(|f| (f.index, f.seq));
+        self.store.features.sort_by_key(|f| (f.index(), f.seq));
         self.store
     }
 }

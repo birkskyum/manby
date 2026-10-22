@@ -19,7 +19,7 @@ use crate::attribute::{AttributeOp, preserve_attribute_mvt};
 use crate::errors::{EXIT_FAILURE, EXIT_IMPOSSIBLE, EXIT_MVT, EXIT_PROTOBUF};
 use crate::evaluator::evaluate_feature;
 use crate::geometry::{
-    ClipBbox, Draw, DrawVec, InputTile, SourceTile, VT_CLOSEPATH, VT_LINE, VT_LINETO, VT_MOVETO,
+    ClipBbox, bitfield40, Draw, DrawVec, InputTile, SourceTile, VT_CLOSEPATH, VT_LINE, VT_LINETO, VT_MOVETO,
     VT_POINT, VT_POLYGON,
 };
 use crate::jsonpull::JsonRef;
@@ -657,8 +657,8 @@ pub fn clip_lines_poly(geom: &DrawVec, region: &DrawVec) -> DrawVec {
 pub fn to_tile_scale(geom: &mut DrawVec, z: i32, detail: i32) {
     if 32 - detail - z < 0 {
         for g in geom.iter_mut() {
-            g.x = (g.x as f64 * (1i64 << (-(32 - detail - z))) as f64).round() as i64;
-            g.y = (g.y as f64 * (1i64 << (-(32 - detail - z))) as f64).round() as i64;
+            g.x = bitfield40((g.x as f64 * (1i64 << (-(32 - detail - z))) as f64).round() as i64);
+            g.y = bitfield40((g.y as f64 * (1i64 << (-(32 - detail - z))) as f64).round() as i64);
         }
     } else {
         for g in geom.iter_mut() {
@@ -672,8 +672,8 @@ pub fn from_tile_scale(geom: &DrawVec, z: i32, detail: i32) -> DrawVec {
     let mut out = DrawVec::new();
     for g in geom {
         let mut d = *g;
-        d.x *= 1i64.wrapping_shl((32 - detail - z) as u32);
-        d.y *= 1i64.wrapping_shl((32 - detail - z) as u32);
+        d.x = bitfield40(d.x.wrapping_mul(1i64.wrapping_shl((32 - detail - z) as u32)));
+        d.y = bitfield40(d.y.wrapping_mul(1i64.wrapping_shl((32 - detail - z) as u32)));
         out.push(d);
     }
     out

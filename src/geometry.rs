@@ -520,7 +520,7 @@ pub fn chop_polygon(geoms: &mut Vec<DrawVec>) -> Vec<DrawVec> {
 
 pub fn stairstep(geom: &mut DrawVec, z: i32, detail: i32) -> DrawVec {
     let mut out = DrawVec::new();
-    let scale = (1i32 << (32 - detail - z)) as f64;
+    let scale = 1i32.wrapping_shl((32 - detail - z) as u32) as f64;
 
     for g in geom.iter_mut() {
         g.x = (g.x as f64 / scale).round() as i64;
@@ -600,8 +600,8 @@ pub fn stairstep(geom: &mut DrawVec, z: i32, detail: i32) -> DrawVec {
     }
 
     for o in out.iter_mut() {
-        o.x *= (1i32 << (32 - detail - z)) as i64;
-        o.y *= (1i32 << (32 - detail - z)) as i64;
+        o.x = bitfield40(o.x.wrapping_mul(1i32.wrapping_shl((32 - detail - z) as u32) as i64));
+        o.y = bitfield40(o.y.wrapping_mul(1i32.wrapping_shl((32 - detail - z) as u32) as i64));
     }
 
     out

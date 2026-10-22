@@ -19,21 +19,21 @@ use crate::serial::{KeyPool, SerialFeature, SerialVal, SerializationState, seria
 use crate::text::integer_zoom;
 
 /// `struct parse_json_args`, what each parsing thread works on.
-pub struct ParseJsonArgs<'a, 's> {
-    pub jp: JsonPull<'a>,
+pub struct ParseJsonArgs<'j, 's, 'a> {
+    pub jp: JsonPull<'j>,
     pub layer: i32,
-    pub layername: &'a str,
+    pub layername: &'j str,
 
     pub sst: &'s mut SerializationState<'a>,
 }
 
-impl<'a, 's> ParseJsonArgs<'a, 's> {
+impl<'j, 's, 'a> ParseJsonArgs<'j, 's, 'a> {
     pub fn new(
-        jp1: JsonPull<'a>,
+        jp1: JsonPull<'j>,
         layer1: i32,
-        layername1: &'a str,
+        layername1: &'j str,
         sst1: &'s mut SerializationState<'a>,
-    ) -> ParseJsonArgs<'a, 's> {
+    ) -> ParseJsonArgs<'j, 's, 'a> {
         ParseJsonArgs {
             jp: jp1,
             layer: layer1,
@@ -376,7 +376,7 @@ pub fn parse_json(
     crate::geojson_loop::parse_json(&mut jsa, jp);
 }
 
-pub fn run_parse_json(pja: &mut ParseJsonArgs<'_, '_>) {
+pub fn run_parse_json(pja: &mut ParseJsonArgs<'_, '_, '_>) {
     parse_json(pja.sst, &mut pja.jp, pja.layer, pja.layername);
 }
 

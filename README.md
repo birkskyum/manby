@@ -27,6 +27,15 @@ The archives are not tippecanoe's byte for byte, and a little smaller. zlib's ex
 
 tippecanoe spends most of its time waiting on itself rather than computing. It works through the low zoom levels one tile per thread, rebuilds oversized tiles by reading their features back from compressed temporary files, finishes each zoom level before starting the next, and writes PMTiles by way of a SQLite database. manby keeps the features in memory, sorted once, walks the tile pyramid in parallel on every core, splits big tiles across threads, retries oversized tiles on data already in memory, and writes PMTiles directly. The geometry algorithms are tippecanoe's own, by way of tippecanoe-rs, which is why the tiles come out the same. [DESIGN.md](DESIGN.md) has the measurements and the architecture.
 
+## Memory
+
+manby's peak memory is below tippecanoe's on the benchmarks. For inputs larger than memory, `--memory-budget` bounds it (default: half the physical memory, as tippecanoe sizes its sorting). Past the budget, the features and the tile data live in an unlinked temporary file in the `-t` directory, mapped into memory, laid out in the order the tiling reads them, and manby keeps its resident memory near the budget. `bench/large.sh` tiles inputs several times larger than a 1 GB budget:
+
+| Input | tippecanoe | manby, `--memory-budget=1G` |
+| --- | --- | --- |
+| 40 million points (5.6 GB), `-zg --drop-densest-as-needed` | 702 s, 8.1 GB | 100 s, 1.3 GB |
+| The census tracts 20 times over (3 GB), `-zg --coalesce-densest-as-needed` | 655 s, 6.2 GB | 150 s, 1.0 GB |
+
 ## Building and testing
 
 manby uses tippecanoe-rs as a library, so it expects that repository next to this one, at `../tippecanoe-rs`.

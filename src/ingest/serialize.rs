@@ -594,8 +594,6 @@ pub fn serialize_feature(
         keep_index: cfg.keep_index,
         ix: bbox_index,
         seq,
-        label_point,
-        extent: sf_extent,
         // the id is serialized only if there is one
         id: if has_id { id } else { 0 },
         geom_start,
@@ -610,6 +608,9 @@ pub fn serialize_feature(
         tippecanoe_maxzoom: sf.tippecanoe_maxzoom as i8,
         segment: 0,
     });
+    let i = chunk.features.len() - 1;
+    crate::store::set_sparse(&mut chunk.extents, i, sf_extent);
+    crate::store::set_sparse(&mut chunk.label_points, i, label_point);
 
     true
 }

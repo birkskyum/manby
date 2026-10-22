@@ -841,9 +841,10 @@ fn stream_complexity(ctx: &Ctx<'_>, input: &TileInput, layout: &Layout<'_>) -> i
         s.clear();
         serialize_byte(&mut s, f.t);
         let mut layer: i64 = store.segment_layers[segment][f.layer as usize].wrapping_shl(7);
-        layer |= ((f.label_point != 0) as i64) << 6;
+        let (extent, label_point) = (store.extent(fi as usize), store.label_point(fi as usize));
+        layer |= ((label_point != 0) as i64) << 6;
         layer |= ((f.index() != 0) as i64) << 4;
-        layer |= ((f.extent != 0) as i64) << 3;
+        layer |= ((extent != 0) as i64) << 3;
         layer |= (f.has_id as i64) << 2;
         layer |= ((f.tippecanoe_minzoom != -1) as i64) << 1;
         layer |= (f.tippecanoe_maxzoom != -1) as i64;
@@ -880,11 +881,11 @@ fn stream_complexity(ctx: &Ctx<'_>, input: &TileInput, layout: &Layout<'_>) -> i
             serialize_ulong_long(&mut s, f.index());
             serialize_ulong_long(&mut s, gap);
         }
-        if f.label_point != 0 {
-            serialize_ulong_long(&mut s, f.label_point);
+        if label_point != 0 {
+            serialize_ulong_long(&mut s, label_point);
         }
-        if f.extent != 0 {
-            serialize_long_long(&mut s, f.extent);
+        if extent != 0 {
+            serialize_long_long(&mut s, extent);
         }
         let pool = &store.pool_offsets[f.attr_start as usize..][..f.attr_len as usize];
         serialize_long_long(&mut s, pool.len() as i64);

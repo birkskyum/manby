@@ -985,7 +985,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
             let f = &store.features[c.fi as usize];
             let cg: &[tippecanoe::geometry::Draw] = rt.cand_geom(c, &mut scratch);
             let mut t = f.t;
-            let mut extent = f.extent;
+            let mut extent = store.extent(c.fi as usize);
             let mut dropped = c.dropped;
             // the feature's geometry, once something has changed it
             let mut geom: Option<DrawVec> = None;
@@ -1033,7 +1033,13 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                 if ngeom.is_empty() {
                     continue;
                 }
-                let anchors = checkerboard_anchors(&ngeom, tx as i32, ty as i32, z, f.label_point);
+                let anchors = checkerboard_anchors(
+                    &ngeom,
+                    tx as i32,
+                    ty as i32,
+                    z,
+                    store.label_point(c.fi as usize),
+                );
                 if anchors.is_empty() {
                     continue;
                 }

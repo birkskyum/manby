@@ -9,7 +9,6 @@
 
 use std::io::Write;
 
-use rayon::prelude::*;
 use tippecanoe::errors::EXIT_NODATA;
 use tippecanoe::geometry::{VT_LINE, VT_POINT, VT_POLYGON};
 use tippecanoe::globals::MAX_ZOOM;
@@ -231,11 +230,6 @@ pub fn order(store: &mut FeatureStore, options: &Options) -> crate::Result<Plan>
     r
 }
 
-/// Sorts the features in place; `seq` makes every key distinct.
-fn sort_features(features: &mut [Feature]) {
-    features.par_sort_unstable_by_key(|f| (f.ix, f.seq));
-}
-
 fn order1(store: &mut FeatureStore, o: &Options, out: &mut Out) -> crate::Result<Plan> {
     let mut maxzoom = o.maxzoom;
     let minzoom = o.minzoom;
@@ -252,7 +246,7 @@ fn order1(store: &mut FeatureStore, o: &Options, out: &mut Out) -> crate::Result
         iy = y;
     }
 
-    sort_features(&mut store.features);
+    store.sort_features();
     store.lay_out_in_order(o.memory_budget() / 4);
     store.number_values_in_order(o.memory_budget() / 4);
 

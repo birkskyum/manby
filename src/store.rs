@@ -14,7 +14,8 @@ use tippecanoe::geometry::{Draw, DrawVec, VT_LINETO, VT_MOVETO};
 use tippecanoe::mbtiles::LayermapEntry;
 use tippecanoe::serial::SerialVal;
 
-/// One input feature, in 80 bytes.
+/// One input feature, in 64 bytes. Its extent and label point, which only
+/// some options give lines and polygons, are in `FeatureStore`'s columns.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Feature {
     /// The position on the space-filling curve that features are sorted by,
@@ -23,8 +24,6 @@ pub struct Feature {
     /// Input sequence number, tippecanoe's `seq`, which keeps the order of
     /// features with the same index deterministic.
     pub seq: u64,
-    pub label_point: u64,
-    pub extent: i64,
     pub id: u64,
     /// The feature's vertices are `geometry[geom_start..geom_start + geom_len]`.
     pub geom_start: u64,
@@ -459,6 +458,11 @@ pub struct Layer {
 #[derive(Default)]
 pub struct FeatureStore {
     pub features: Buf<Feature>,
+    /// Each feature's `extent`, or empty when they are all 0; features
+    /// past its end have 0.
+    pub extents: Buf<i64>,
+    /// Each feature's `label_point`, in the same way.
+    pub label_points: Buf<u64>,
     /// World coordinates (2^32 per side at zoom 0), with tippecanoe's move and
     /// line ops, as `decode_geometry` returns them at zoom 0.
     pub geometry: Geometry,
@@ -508,6 +512,38 @@ pub struct FeatureStore {
 }
 
 impl FeatureStore {
+    /// Feature `i`'s extent.
+    pub fn extent(&self, i: usize) -> i64 {
+        self.extents.get(i).copied().unwrap_or(0)
+    }
+
+    /// Feature `i`'s label point.
+    pub fn label_point(&self, i: usize) -> u64 {
+        self.label_points.get(i).copied().unwrap_or(0)
+    }
+
+    /// Sets feature `i`'s extent and label point.
+    pub fn set_extras(&mut self, i: usize, extent: i64, label_point: u64) {
+        set_sparse(&mut self.extents, i, extent);
+        set_sparse(&mut self.label_points, i, label_point);
+    }
+
+    /// Sorts the features by index and sequence, which makes every key
+    /// distinct, and their extents and label points with them.
+    pub fn sort_features(&mut self) {
+        if self.extents.is_empty() && self.label_points.is_empty() {
+            self.features.par_sort_unstable_by_key(|f| (f.ix, f.seq));
+            return;
+        }
+        let n = self.features.len();
+        let mut order: Buf<u32> = (0..n as u32).collect();
+        let features = &self.features;
+        order.par_sort_unstable_by_key(|&i| (features[i as usize].ix, features[i as usize].seq));
+        self.features = order.iter().map(|&i| features[i as usize]).collect();
+        permute(&mut self.extents, &order);
+        permute(&mut self.label_points, &order);
+    }
+
     /// The feature's geometry, in world coordinates, as `decode_geometry`
     /// reads it back at zoom 0.
     pub fn feature_geometry(&self, f: &Feature) -> DrawVec {
@@ -771,4 +807,24 @@ impl FeatureStore {
             .map(|l| (l.name.clone(), l.entry.clone()))
             .collect()
     }
+}
+
+/// Sets item `i` of a column that is empty while all its items are 0.
+pub fn set_sparse<T: Copy + Default + PartialEq>(column: &mut Buf<T>, i: usize, v: T) {
+    if v == T::default() && column.len() <= i {
+        return;
+    }
+    if column.len() <= i {
+        column.resize(i + 1, T::default());
+    }
+    column[i] = v;
+}
+
+/// Puts a column that is empty while all its items are 0 in `order`.
+fn permute<T: Copy + Default>(column: &mut Buf<T>, order: &[u32]) {
+    if column.is_empty() {
+        return;
+    }
+    column.resize(order.len(), T::default());
+    *column = order.iter().map(|&i| column[i as usize]).collect();
 }

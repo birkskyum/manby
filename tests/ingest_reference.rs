@@ -401,13 +401,14 @@ fn store_features(s: &FeatureStore) -> Vec<Feat> {
     let mut out: Vec<Feat> = s
         .features
         .iter()
-        .map(|f| Feat {
+        .enumerate()
+        .map(|(fi, f)| Feat {
             seq: f.seq & ((1 << 46) - 1),
             ix: f.ix,
             t: f.t,
             index: f.index(),
-            label_point: f.label_point,
-            extent: f.extent,
+            label_point: s.label_point(fi),
+            extent: s.extent(fi),
             has_id: f.has_id,
             id: f.id,
             minzoom: f.tippecanoe_minzoom as i32,

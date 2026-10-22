@@ -113,7 +113,7 @@ fn zoom0(store: &FeatureStore, o: &TileOptions) -> Zoom0 {
     tippecanoe::serial::serialize_int(&mut data, o.iz);
     tippecanoe::serial::serialize_uint(&mut data, o.ix);
     tippecanoe::serial::serialize_uint(&mut data, o.iy);
-    for f in &store.features {
+    for (fi, f) in store.features.iter().enumerate() {
         let mut geometry = DrawVec::new();
         for mut d in store.feature_geometry(f) {
             if d.op == VT_MOVETO || d.op == VT_LINETO {
@@ -135,8 +135,8 @@ fn zoom0(store: &FeatureStore, o: &TileOptions) -> Zoom0 {
             geometry,
             index: f.index(),
             gap: 0,
-            label_point: f.label_point,
-            extent: f.extent,
+            label_point: store.label_point(fi),
+            extent: store.extent(fi),
             ..Default::default()
         };
         for a in store.feature_attrs(f) {

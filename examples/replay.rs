@@ -328,8 +328,6 @@ fn main() {
             // the temporary file is already in order; the tiler does not read the sort key
             ix: sf.index,
             seq: sf.seq as u64,
-            label_point: sf.label_point,
-            extent: sf.extent,
             id: sf.id,
             geom_start,
             geom_len: sf.geometry.len() as u32,
@@ -343,6 +341,8 @@ fn main() {
             tippecanoe_maxzoom: sf.tippecanoe_maxzoom as i8,
             segment: sf.segment as u16,
         });
+        let fi = store.features.len() - 1;
+        store.set_extras(fi, sf.extent, sf.label_point);
     }
     eprintln!(
         "loaded {} features, {} values in {:.2}s",

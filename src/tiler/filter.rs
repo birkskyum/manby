@@ -133,8 +133,6 @@ pub fn prefilter_tile(
             keep_index: true,
             ix: sf.index,
             seq: sf.seq as u64,
-            label_point: sf.label_point,
-            extent: sf.extent,
             id: sf.id,
             geom_start: 0,
             geom_len: 0,
@@ -148,6 +146,7 @@ pub fn prefilter_tile(
             tippecanoe_maxzoom: sf.tippecanoe_maxzoom as i8,
             segment: sf.segment as u16,
         });
+        out.store.set_extras(fi as usize, sf.extent, sf.label_point);
 
         let geom_start = out.rt.geom.len() as u32;
         let geom_len = sf.geometry.len() as u32;
@@ -240,7 +239,7 @@ fn write_candidates(ctx: &Ctx<'_>, rt: &ReadTile, write_to: i32) {
                 true,
                 f.index(),
                 f.seq as i64,
-                f.extent,
+                store.extent(c.fi as usize),
                 true,
                 &mut state,
                 0.0,

@@ -187,6 +187,7 @@ fn varint_len(v: u64) -> u64 {
 /// into a reader's geometry file, before the feature's own length.
 fn serialized_len(
     store: &FeatureStore,
+    fi: usize,
     f: &Feature,
     layer: i64,
     pool: &[PoolOffsets],
@@ -194,9 +195,10 @@ fn serialized_len(
     geometry_scale: i32,
 ) -> u64 {
     let mut flags = layer.wrapping_shl(7);
-    flags |= ((f.label_point != 0) as i64) << 6;
+    let (extent, label_point) = (store.extent(fi), store.label_point(fi));
+    flags |= ((label_point != 0) as i64) << 6;
     flags |= ((f.index() != 0) as i64) << 4;
-    flags |= ((f.extent != 0) as i64) << 3;
+    flags |= ((extent != 0) as i64) << 3;
     flags |= (f.has_id as i64) << 2;
     flags |= ((f.tippecanoe_minzoom != -1) as i64) << 1;
     flags |= (f.tippecanoe_maxzoom != -1) as i64;
@@ -229,11 +231,11 @@ fn serialized_len(
         // and the gap, which is 0 when reading
         n += varint_len(f.index()) + 1;
     }
-    if f.label_point != 0 {
-        n += varint_len(f.label_point);
+    if label_point != 0 {
+        n += varint_len(label_point);
     }
-    if f.extent != 0 {
-        n += varint_len(zigzag(f.extent));
+    if extent != 0 {
+        n += varint_len(zigzag(extent));
     }
     n += varint_len(zigzag(pool.len() as i64));
     for p in pool {
@@ -275,7 +277,8 @@ pub(super) fn layout(
             let mut pool = Pool::new(pool_limit);
             let mut bytes = 0u64;
             for (span, out) in spans {
-                for f in &s.features[span.features.clone()] {
+                for fi in span.features.clone() {
+                    let f = &s.features[fi];
                     let at = f.attr_start as usize - span.attrs.start;
                     let mine = &mut out[at..at + f.attr_len as usize];
                     for (o, a) in mine.iter_mut().zip(s.feature_attrs(f)) {
@@ -288,7 +291,7 @@ pub(super) fn layout(
                         o.value = pool.add(v.s.as_bytes(), v.type_ as i8, Table::Value);
                     }
                     let layer = layers[f.layer as usize];
-                    let len = serialized_len(s, f, layer, mine, initial, geometry_scale);
+                    let len = serialized_len(s, fi, f, layer, mine, initial, geometry_scale);
                     bytes += varint_len(zigzag(len as i64)) + len;
                 }
             }

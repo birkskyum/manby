@@ -142,8 +142,6 @@ impl Builder {
             keep_index: true,
             ix: index,
             seq,
-            label_point: index,
-            extent,
             id: id.unwrap_or(0),
             geom_start,
             geom_len: geom.len() as u32,
@@ -157,10 +155,11 @@ impl Builder {
             tippecanoe_maxzoom: -1,
             segment: 0,
         });
+        self.store.set_extras(seq as usize, extent, index);
     }
 
     fn finish(mut self) -> FeatureStore {
-        self.store.features.sort_by_key(|f| (f.index(), f.seq));
+        self.store.sort_features();
         self.store
     }
 }

@@ -265,6 +265,9 @@ pub struct Chunk {
     /// `seq` is the feature's rank within the chunk, `layer` an index into
     /// `layers`, and the attributes point into `keys` and `values`.
     pub features: Buf<Feature>,
+    /// The features' extents and label points, as `FeatureStore` keeps them.
+    pub extents: Buf<i64>,
+    pub label_points: Buf<u64>,
     /// The features' geometry, packed as `store::Geometry` keeps it.
     pub geometry: Buf<u8>,
     pub geometry_vertices: u64,

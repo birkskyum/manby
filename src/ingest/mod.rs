@@ -1011,6 +1011,31 @@ fn merge_tables(mut tables: Vec<Interner>) -> Merged {
     (Values::from_parts(types, ends, bytes), remap)
 }
 
+/// The chunks' columns that are empty while all their items are 0, joined
+/// in the same way.
+fn join_sparse<T: Copy + Default>(
+    parts: &mut Parts,
+    counts: &[usize],
+    column: impl Fn(&mut Chunk) -> &mut Buf<T>,
+) -> Buf<T> {
+    let mut out = Buf::new();
+    if parts
+        .chunks
+        .iter_mut()
+        .all(|a| column(&mut a.chunk).is_empty())
+    {
+        return out;
+    }
+    out.reserve(counts.iter().sum());
+    for (a, &n) in parts.chunks.iter_mut().zip(counts) {
+        let c = std::mem::take(column(&mut a.chunk));
+        let end = out.len() + n;
+        out.extend_from_slice(&c);
+        out.resize(end, T::default());
+    }
+    out
+}
+
 fn merge(
     mut parts: Parts,
     sources: &[Source],
@@ -1045,6 +1070,8 @@ fn merge(
         .map(|a| std::mem::take(&mut a.chunk.features))
         .collect();
     let feature_counts: Vec<usize> = chunk_features.iter().map(|f| f.len()).collect();
+    let extents = join_sparse(&mut parts, &feature_counts, |c| &mut c.extents);
+    let label_points = join_sparse(&mut parts, &feature_counts, |c| &mut c.label_points);
     let chunks: Vec<&Chunk> = parts.chunks.iter().map(|a| &a.chunk).collect();
 
     // Layers, by name, in the order they first appear.
@@ -1238,6 +1265,8 @@ fn merge(
 
     let mut store = FeatureStore {
         features,
+        extents,
+        label_points,
         geometry,
         geometry_scale: options.geometry_scale,
         attrs,

@@ -6,11 +6,13 @@ description = "Builds vector tilesets from geographic features, like tippecanoe,
 license = "BSD-2-Clause"
 
 [dependencies]
+flate2 = { version = "1.1", default-features = false, features = ["zlib"] }
 libc = "0.2.191"
 libdeflater = "1.26.1"
 memmap2 = "0.9.12"
 mimalloc = "0.1.52"
 rayon = "1.12.0"
+rusqlite = { version = "0.40", features = ["bundled"] }
 tippecanoe = { version = "2.82.0", path = "../tippecanoe-rs" }
 xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
 

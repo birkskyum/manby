@@ -21,13 +21,12 @@
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::hash::{BuildHasherDefault, Hasher};
-use std::io::{BufWriter, Write};
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use rayon::slice::ParallelSliceMut;
+use rayon::prelude::*;
 use tippecanoe::errors::{EXIT_EXISTS, EXIT_IMPOSSIBLE, EXIT_OPEN, EXIT_SQLITE, EXIT_WRITE};
 use tippecanoe::mbtiles::Metadata;
 use tippecanoe::pmtiles::{self, EntryV3, HeaderV3};
@@ -39,6 +38,8 @@ use crate::{Error, Result};
 
 const SHARDS: usize = 64;
 const CHUNK: usize = 4 << 20;
+/// Bytes of tile data per parallel write at `finish`.
+const PIECE: u64 = 16 << 20;
 
 /// Where one distinct tile's data is.
 #[derive(Clone, Copy)]
@@ -300,20 +301,41 @@ impl TileSink for PmtilesSink {
         let layout = Layout::new(&shards)?;
         let archive = Archive::new(&layout, metadata, this.tile_compression);
 
-        let mut out = BufWriter::with_capacity(8 << 20, &this.file);
         let write_error = |e: std::io::Error| {
             Error::new(EXIT_WRITE, io_message(&this.path.to_string_lossy(), &e))
         };
-        out.write_all(&archive.header).map_err(write_error)?;
-        out.write_all(&archive.root).map_err(write_error)?;
-        out.write_all(&archive.json).map_err(write_error)?;
-        out.write_all(&archive.leaves).map_err(write_error)?;
-        for &(s, n) in &layout.order {
-            let shard = &shards[s as usize];
-            out.write_all(shard.data(&shard.contents[n as usize], spill))
-                .map_err(write_error)?;
+        let front = [
+            &archive.header[..],
+            &archive.root,
+            &archive.json,
+            &archive.leaves,
+        ]
+        .concat();
+        this.file.write_all_at(&front, 0).map_err(write_error)?;
+
+        // The tile data, in pieces written in parallel at their final offsets.
+        let len = |&(s, n): &(u32, u32)| shards[s as usize].contents[n as usize].len as u64;
+        let mut pieces: Vec<(usize, usize, u64)> = Vec::new();
+        let (mut start, mut at, mut bytes) = (0, front.len() as u64, 0u64);
+        for (i, item) in layout.order.iter().enumerate() {
+            if bytes >= PIECE {
+                pieces.push((start, i, at));
+                (start, at, bytes) = (i, at + bytes, 0);
+            }
+            bytes += len(item);
         }
-        out.flush().map_err(write_error)?;
+        pieces.push((start, layout.order.len(), at));
+        pieces
+            .into_par_iter()
+            .try_for_each(|(from, to, at)| {
+                let mut buf = Vec::with_capacity(PIECE as usize * 2);
+                for &(s, n) in &layout.order[from..to] {
+                    let shard = &shards[s as usize];
+                    buf.extend_from_slice(shard.data(&shard.contents[n as usize], spill));
+                }
+                this.file.write_all_at(&buf, at)
+            })
+            .map_err(write_error)?;
         Ok(())
     }
 }
@@ -401,15 +423,7 @@ struct Archive {
 
 impl Archive {
     fn new(layout: &Layout, m: &Metadata, tile_compression: bool) -> Archive {
-        let compress = |input: &[u8], compression: u8| {
-            if compression == pmtiles::COMPRESSION_GZIP {
-                gzip(input, false)
-            } else {
-                input.to_vec()
-            }
-        };
-        let (root, leaves, _) =
-            pmtiles::make_root_leaves(&compress, pmtiles::COMPRESSION_GZIP, &layout.entries);
+        let (root, leaves) = make_root_leaves(&layout.entries);
         let json = metadata_to_pmtiles_json(m);
 
         let mut header = HeaderV3 {
@@ -457,6 +471,48 @@ impl Archive {
             leaves,
         }
     }
+}
+
+/// tippecanoe's `make_root_leaves()` with gzip, making the same bytes, but
+/// with the leaves compressed in parallel, and the trial of a root directory
+/// without leaves made at the same time as the first try with leaves.
+pub fn make_root_leaves(entries: &[EntryV3]) -> (Vec<u8>, Vec<u8>) {
+    let (whole, mut built) = rayon::join(
+        || gzip(&pmtiles::serialize_directory(entries), false),
+        || build_root_leaves(entries, 4096),
+    );
+    if whole.len() <= 16384 - 127 {
+        return (whole, Vec::new());
+    }
+    let mut leaf_size = 4096;
+    while built.0.len() >= 16384 - 127 {
+        leaf_size *= 2;
+        built = build_root_leaves(entries, leaf_size);
+    }
+    built
+}
+
+/// tippecanoe's `build_root_leaves()` with gzip, the leaves compressed in parallel.
+pub(crate) fn build_root_leaves(entries: &[EntryV3], leaf_size: usize) -> (Vec<u8>, Vec<u8>) {
+    let leaves: Vec<Vec<u8>> = entries
+        .par_chunks(leaf_size)
+        .map(|leaf| gzip(&pmtiles::serialize_directory(leaf), false))
+        .collect();
+    let mut root_entries = Vec::with_capacity(leaves.len());
+    let mut leaves_bytes = Vec::with_capacity(leaves.iter().map(|l| l.len()).sum());
+    for (i, leaf) in leaves.iter().enumerate() {
+        root_entries.push(EntryV3::new(
+            entries[i * leaf_size].tile_id,
+            leaves_bytes.len() as u64,
+            leaf.len() as u32,
+            0,
+        ));
+        leaves_bytes.extend_from_slice(leaf);
+    }
+    (
+        gzip(&pmtiles::serialize_directory(&root_entries), false),
+        leaves_bytes,
+    )
 }
 
 fn out(state: &mut JsonWriter<'_>, k: &str, v: &str) {

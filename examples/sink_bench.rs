@@ -62,7 +62,7 @@ impl Rng {
 fn synthetic(n: usize, buffer: &mut Vec<u8>) -> Vec<(u8, u32, u32, usize, usize)> {
     let mut rng = Rng(42);
     let mut tiles = Vec::with_capacity(n);
-    let mut fill = |len: usize, rng: &mut Rng, buffer: &mut Vec<u8>| {
+    let fill = |len: usize, rng: &mut Rng, buffer: &mut Vec<u8>| {
         let start = buffer.len();
         while buffer.len() < start + len {
             buffer.extend_from_slice(&rng.next().to_le_bytes()[..4]);

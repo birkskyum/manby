@@ -545,3 +545,35 @@ fn dir_existing() {
     assert!(!path.join("2/1/3.pbf").exists());
     let _ = fs::remove_dir_all(&path);
 }
+
+#[test]
+fn directories_same_as_tippecanoe() {
+    let compress = |input: &[u8], compression: u8| {
+        assert_eq!(compression, tippecanoe::pmtiles::COMPRESSION_GZIP);
+        crate::compress::gzip(input, false)
+    };
+    let mut rng = Rng(5);
+    for n in [0usize, 1, 100, 3000, 4096, 4097, 50_000, 300_000] {
+        let mut id = 0u64;
+        let mut offset = 0u64;
+        let entries: Vec<tippecanoe::pmtiles::EntryV3> = (0..n)
+            .map(|_| {
+                id += 1 + rng.next() % 7;
+                let len = 1 + (rng.next() % 5000) as u32;
+                offset += if rng.next() % 4 == 0 { 0 } else { len as u64 };
+                tippecanoe::pmtiles::EntryV3::new(id, offset, len, 1 + (rng.next() % 2) as u32)
+            })
+            .collect();
+        let (root, leaves, _) = tippecanoe::pmtiles::make_root_leaves(
+            &compress,
+            tippecanoe::pmtiles::COMPRESSION_GZIP,
+            &entries,
+        );
+        assert_eq!(
+            super::pmtiles::make_root_leaves(&entries),
+            (root, leaves),
+            "{} entries",
+            n
+        );
+    }
+}

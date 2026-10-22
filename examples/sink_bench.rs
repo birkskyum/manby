@@ -25,7 +25,7 @@ use manby::sink::pmtiles::PmtilesSink;
 use manby::sink::{SinkSettings, TileSink};
 
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 /// Tiles as z/x/y and a byte range of a shared buffer.
 struct Tiles<'a> {

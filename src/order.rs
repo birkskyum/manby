@@ -231,18 +231,9 @@ pub fn order(store: &mut FeatureStore, options: &Options) -> crate::Result<Plan>
     r
 }
 
-fn sort_features(features: &mut Vec<Feature>) {
-    let mut keys: Vec<(u64, u64, u32)> = features
-        .par_iter()
-        .enumerate()
-        .map(|(i, f)| (f.ix, f.seq, i as u32))
-        .collect();
-    keys.par_sort_unstable();
-    let sorted: Vec<Feature> = keys
-        .par_iter()
-        .map(|&(_, _, i)| features[i as usize])
-        .collect();
-    *features = sorted;
+/// Sorts the features in place; `seq` makes every key distinct.
+fn sort_features(features: &mut [Feature]) {
+    features.par_sort_unstable_by_key(|f| (f.ix, f.seq));
 }
 
 fn order1(store: &mut FeatureStore, o: &Options, out: &mut Out) -> crate::Result<Plan> {

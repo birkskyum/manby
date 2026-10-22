@@ -10,7 +10,7 @@ use manby::mlt::{MltProfile, MltSettings, encode_tile};
 use rayon::prelude::*;
 
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 fn main() {
     for path in std::env::args().skip(1) {

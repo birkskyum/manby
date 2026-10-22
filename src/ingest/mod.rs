@@ -1108,32 +1108,42 @@ fn merge(
         a += attrs.len() as u64;
     }
 
-    let features: Vec<Feature> = chunks
-        .par_iter()
-        .enumerate()
-        .flat_map_iter(|(ci, c)| {
+    // the features are written straight into their places in one vector
+    let total: usize = chunks.iter().map(|c| c.features.len()).sum();
+    let mut features: Vec<Feature> = Vec::with_capacity(total);
+    {
+        let mut slots: Vec<&mut [std::mem::MaybeUninit<Feature>]> =
+            Vec::with_capacity(chunks.len());
+        let mut rest = &mut features.spare_capacity_mut()[..total];
+        for c in &chunks {
+            let (mine, after) = std::mem::take(&mut rest).split_at_mut(c.features.len());
+            slots.push(mine);
+            rest = after;
+        }
+        slots.into_par_iter().enumerate().for_each(|(ci, out)| {
+            let c = chunks[ci];
             let seq_base = parts.seq_base[ci];
             let segment = parts.segment[ci];
             let lr = &layer_remap[ci];
-            let mut out: Vec<Feature> = c
-                .features
-                .iter()
-                .map(|f| Feature {
+            for (o, f) in out.iter_mut().zip(&c.features) {
+                o.write(Feature {
                     seq: (seq_base + f.seq as i64) as u64,
                     layer: lr[f.layer as usize],
                     geom_start: f.geom_start + geom_off[ci],
                     attr_start: f.attr_start + attr_off[ci],
                     segment,
                     ..*f
-                })
-                .collect();
+                });
+            }
             for &i in &c.generate_ids {
-                let f = &mut out[i as usize];
+                // SAFETY: every feature of the chunk was written just above.
+                let f = unsafe { out[i as usize].assume_init_mut() };
                 f.id = f.seq + 1;
             }
-            out.into_iter()
-        })
-        .collect();
+        });
+    }
+    // SAFETY: the chunks' slices cover all `total` places, and each was written.
+    unsafe { features.set_len(total) };
 
     let mut geometry = Geometry::default();
     for (part, vertices) in geometries {

@@ -142,13 +142,14 @@ enum Val {
 }
 
 struct Feat {
+    id: u64,
+    /// Which of the caller's geometries is this feature's.
+    geom: u32,
+    /// Its tags in the layer's `tags`.
+    tags_start: u32,
+    tags_len: u32,
     t: i32,
     has_id: bool,
-    id: u64,
-    /// Key index and local value index, alternating.
-    tags: Vec<u32>,
-    /// Which of the caller's geometries is this feature's.
-    geom: usize,
 }
 
 /// One layer being encoded.
@@ -162,6 +163,8 @@ pub struct LayerEnc<'c> {
     store_vals: HashMap<u32, u32>,
     extra_vals: HashMap<Vec<u8>, u32>,
     feats: Vec<Feat>,
+    /// Key index and local value index, alternating, for each feature in turn.
+    tags: Vec<u32>,
 }
 
 impl<'c> LayerEnc<'c> {
@@ -176,6 +179,7 @@ impl<'c> LayerEnc<'c> {
             store_vals: HashMap::new(),
             extra_vals: HashMap::new(),
             feats: Vec::new(),
+            tags: Vec::new(),
         }
     }
 
@@ -189,8 +193,9 @@ impl<'c> LayerEnc<'c> {
             t,
             has_id,
             id,
-            tags: Vec::new(),
-            geom,
+            tags_start: self.tags.len() as u32,
+            tags_len: 0,
+            geom: geom as u32,
         });
     }
 
@@ -214,9 +219,9 @@ impl<'c> LayerEnc<'c> {
         if v == next {
             self.vals.push(Val::Store(value));
         }
-        let tags = &mut self.feats.last_mut().unwrap().tags;
-        tags.push(k);
-        tags.push(v);
+        self.tags.push(k);
+        self.tags.push(v);
+        self.feats.last_mut().unwrap().tags_len += 2;
     }
 
     /// Tags the current feature with a value that is not in the store.
@@ -232,9 +237,9 @@ impl<'c> LayerEnc<'c> {
                 next
             }
         };
-        let tags = &mut self.feats.last_mut().unwrap().tags;
-        tags.push(k);
-        tags.push(v);
+        self.tags.push(k);
+        self.tags.push(v);
+        self.feats.last_mut().unwrap().tags_len += 2;
     }
 
     fn val_bytes(&self, v: u32) -> &[u8] {
@@ -289,14 +294,15 @@ impl<'c> LayerEnc<'c> {
         }
 
         let encode = |f: &Feat, out: &mut Vec<u8>| -> Result<(), String> {
-            let mut feature: Vec<u8> = Vec::with_capacity(16 + f.tags.len());
+            let tags = &self.tags[f.tags_start as usize..][..f.tags_len as usize];
+            let mut feature: Vec<u8> = Vec::with_capacity(16 + tags.len());
             if f.t >= 0 {
                 field(&mut feature, 3, 0);
                 add_varint_to_buffer(&mut feature, f.t as i64 as u64);
             }
-            if !f.tags.is_empty() {
-                let mut packed = Vec::with_capacity(f.tags.len() * 2);
-                for (j, &t) in f.tags.iter().enumerate() {
+            if !tags.is_empty() {
+                let mut packed = Vec::with_capacity(tags.len() * 2);
+                for (j, &t) in tags.iter().enumerate() {
                     let t = if j % 2 == 1 { mapping[t as usize] } else { t };
                     add_varint_to_buffer(&mut packed, t as u64);
                 }
@@ -306,7 +312,7 @@ impl<'c> LayerEnc<'c> {
                 field(&mut feature, 1, 0);
                 add_varint_to_buffer(&mut feature, f.id);
             }
-            let geometry = encode_geometry(geometries[f.geom])?;
+            let geometry = encode_geometry(geometries[f.geom as usize])?;
             if !geometry.is_empty() {
                 let mut packed = Vec::with_capacity(geometry.len() * 2);
                 for g in geometry {

@@ -158,7 +158,7 @@ impl TileInput {
         } else {
             self.vertices
         };
-        vertices * 32 + self.count as u64 * 96
+        vertices * 12 + self.count as u64 * 64
     }
 
     /// Appends a part that one read chunk of the parent wrote.
@@ -387,7 +387,7 @@ impl Cursor<'_> {
     }
 }
 
-/// A feature that survived reading: a candidate for the tile.
+/// A feature that survived reading: a candidate for the tile, in 24 bytes.
 #[derive(Clone, Copy, Debug)]
 pub struct Cand {
     pub fi: u32,
@@ -395,6 +395,11 @@ pub struct Cand {
     pub gap: u64,
     pub geom_start: u32,
     pub geom_len: u32,
+}
+
+/// What some options add to a candidate.
+#[derive(Clone, Copy, Debug)]
+pub struct CandExtra {
     pub edge_start: u32,
     pub edge_len: u32,
     /// `NO_LIST` for the feature's own attributes without nulls, or an index
@@ -405,6 +410,15 @@ pub struct Cand {
     pub full: u32,
 }
 
+impl CandExtra {
+    pub const NONE: CandExtra = CandExtra {
+        edge_start: 0,
+        edge_len: 0,
+        attrs: NO_LIST,
+        full: NO_LIST,
+    };
+}
+
 pub const NO_LIST: u32 = u32::MAX;
 
 /// What reading a tile produced.
@@ -413,6 +427,9 @@ pub struct ReadTile {
     pub x: u32,
     pub y: u32,
     pub cands: Chunked<Cand>,
+    /// For each candidate, if an option needs them: its shared edge nodes,
+    /// filtered attributes, or prefilter keys and values.
+    pub extras: Chunked<CandExtra>,
     pub geom: Geoms,
     pub edges: Chunked<Draw>,
     pub attr_lists: Chunked<Vec<Attr>>,
@@ -434,8 +451,18 @@ impl ReadTile {
             .get(c.geom_start as usize, c.geom_len as usize, scratch)
     }
 
-    pub fn cand_edges(&self, c: &Cand) -> &[Draw] {
-        self.edges.slice(c.edge_start as usize, c.edge_len as usize)
+    /// What options add to candidate `i`.
+    pub fn extra(&self, i: usize) -> CandExtra {
+        if self.extras.is_empty() {
+            CandExtra::NONE
+        } else {
+            self.extras[i]
+        }
+    }
+
+    pub fn cand_edges(&self, i: usize) -> &[Draw] {
+        let e = self.extra(i);
+        self.edges.slice(e.edge_start as usize, e.edge_len as usize)
     }
 }
 
@@ -586,6 +613,7 @@ struct ChildPart {
 
 struct ChunkOut {
     cands: Vec<Cand>,
+    extras: Vec<CandExtra>,
     geom: GeomPart,
     edges: Vec<Draw>,
     attr_lists: Vec<Vec<Attr>>,
@@ -640,6 +668,7 @@ pub fn read_tile(
         x: input.x,
         y: input.y,
         cands: Chunked::default(),
+        extras: Chunked::default(),
         geom: Geoms::default(),
         edges: Chunked::default(),
         attr_lists: Chunked::default(),
@@ -656,6 +685,7 @@ pub fn read_tile(
     if chunks.len() == 1 {
         let c = chunks.into_iter().next().unwrap();
         out.cands.append(c.cands);
+        out.extras.append(c.extras);
         out.geom.append(c.geom);
         out.edges.append(c.edges);
         out.attr_lists.append(c.attr_lists);
@@ -679,12 +709,15 @@ pub fn read_tile(
             let aoff = out.attr_lists.len() as u32;
             for cand in c.cands.iter_mut() {
                 cand.geom_start += goff;
-                cand.edge_start += eoff;
-                if cand.attrs != NO_LIST {
-                    cand.attrs += aoff;
+            }
+            for e in c.extras.iter_mut() {
+                e.edge_start += eoff;
+                if e.attrs != NO_LIST {
+                    e.attrs += aoff;
                 }
             }
             out.cands.append(c.cands);
+            out.extras.append(c.extras);
             out.geom.append(c.geom);
             out.edges.append(c.edges);
             out.attr_lists.append(c.attr_lists);
@@ -916,8 +949,11 @@ fn read_chunk(ctx: &Ctx<'_>, input: &TileInput, source: Source<'_>, rp: &ReadPar
     let ty = input.y;
     let buffer = o.buffer;
 
+    // shared nodes and attribute filters need more about each candidate
+    let extras = o.p(P_SIMPLIFY_SHARED_NODES) || ctx.filter.is_some();
     let mut out = ChunkOut {
         cands: Vec::new(),
+        extras: Vec::new(),
         geom: GeomPart::new(z, ctx.o.geometry_scale),
         edges: Vec::new(),
         attr_lists: Vec::new(),
@@ -1088,11 +1124,15 @@ fn read_chunk(ctx: &Ctx<'_>, input: &TileInput, source: Source<'_>, rp: &ReadPar
             gap,
             geom_start,
             geom_len: geometry.len() as u32,
-            edge_start,
-            edge_len: edge_nodes.len() as u32,
-            attrs,
-            full: NO_LIST,
         });
+        if extras {
+            out.extras.push(CandExtra {
+                edge_start,
+                edge_len: edge_nodes.len() as u32,
+                attrs,
+                full: NO_LIST,
+            });
+        }
     }
 
     out.children.sort_by_key(|p| (p.x, p.y));

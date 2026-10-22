@@ -8,8 +8,9 @@
 //!   of 64 shards by its hash, so threads rarely wait for each other, and
 //!   identical tiles are stored once, as tippecanoe's conversion does.
 //! - Distinct tile data stays in memory up to a budget; beyond it, it goes to
-//!   an unlinked temporary file with positioned writes, so writers never
-//!   share a file offset.
+//!   an unlinked temporary file. Each shard collects its spilled tiles and
+//!   writes them a megabyte at a time at a range it reserves, so writers
+//!   neither share a file offset nor make a system call per tile.
 //! - At `finish`, the tiles are sorted by tile id and the data is laid out in
 //!   the order tippecanoe's conversion uses: each distinct tile where it is
 //!   first used. Runs and directories are built as tippecanoe builds them,
@@ -40,14 +41,24 @@ const SHARDS: usize = 64;
 const CHUNK: usize = 4 << 20;
 /// Bytes of tile data per parallel write at `finish`.
 const PIECE: u64 = 16 << 20;
+/// Bytes of spilled tile data a shard collects before writing them out.
+const SPILL_BATCH: usize = 1 << 20;
 
 /// Where one distinct tile's data is.
 #[derive(Clone, Copy)]
 struct Content {
     len: u32,
-    spilled: bool,
-    /// Offset in the spill file, or `chunk << 32 | offset` in the shard's chunks.
+    place: Place,
+    /// `chunk << 32 | offset` in the shard's chunks, the offset in the shard's
+    /// spill batch, or the offset in the spill file.
     pos: u64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Place {
+    Memory,
+    Batch,
+    Spilled,
 }
 
 /// The keys are already uniform hashes, so they are their own hash.
@@ -77,6 +88,9 @@ struct Shard {
     chunks: Vec<Vec<u8>>,
     /// (tile id, content number in this shard)
     tiles: Vec<(u64, u32)>,
+    /// Spilled tiles not yet written to the spill file, and their content numbers.
+    batch: Vec<u8>,
+    batched: Vec<u32>,
 }
 
 impl Shard {
@@ -96,13 +110,29 @@ impl Shard {
     }
 
     fn data<'a>(&'a self, c: &Content, spill: &'a [u8]) -> &'a [u8] {
-        if c.spilled {
-            &spill[c.pos as usize..c.pos as usize + c.len as usize]
-        } else {
-            let chunk = &self.chunks[(c.pos >> 32) as usize];
-            let off = (c.pos & 0xFFFF_FFFF) as usize;
-            &chunk[off..off + c.len as usize]
+        let (from, to) = (c.pos as usize, c.pos as usize + c.len as usize);
+        match c.place {
+            Place::Spilled => &spill[from..to],
+            Place::Batch => &self.batch[from..to],
+            Place::Memory => {
+                let chunk = &self.chunks[(c.pos >> 32) as usize];
+                let off = (c.pos & 0xFFFF_FFFF) as usize;
+                &chunk[off..off + c.len as usize]
+            }
         }
+    }
+
+    /// Takes the spill batch, reserving its range of the spill file, for the
+    /// caller to write at the returned offset.
+    fn take_batch(&mut self, spill_len: &AtomicU64) -> (Vec<u8>, u64) {
+        let base = spill_len.fetch_add(self.batch.len() as u64, Ordering::Relaxed);
+        for &n in &self.batched {
+            let c = &mut self.contents[n as usize];
+            c.pos += base;
+            c.place = Place::Spilled;
+        }
+        self.batched.clear();
+        (std::mem::take(&mut self.batch), base)
     }
 }
 
@@ -165,6 +195,17 @@ impl PmtilesSink {
             .map_err(|m| Error::new(EXIT_OPEN, m.clone()))
     }
 
+    fn spill_write(&self, bytes: &[u8], at: u64) -> Result<()> {
+        let written = self.spill_file().and_then(|f| {
+            f.write_all_at(bytes, at)
+                .map_err(|e| Error::new(EXIT_WRITE, io_message("PMTiles spill file", &e)))
+        });
+        if written.is_err() {
+            self.failed.store(true, Ordering::Relaxed);
+        }
+        written
+    }
+
     fn lock(&self, shard: usize) -> std::sync::MutexGuard<'_, Shard> {
         self.shards[shard]
             .lock()
@@ -213,7 +254,7 @@ impl TileSink for PmtilesSink {
         let tile_id = pmtiles::zxy_to_tileid(z, x, y);
         let hash = xxhash_rust::xxh3::xxh3_128(data);
 
-        let mut spill_at = None;
+        let mut batch = None;
         {
             let mut shard = self.lock((hash >> 64) as usize % SHARDS);
             let n = match shard.index.get(&hash) {
@@ -225,38 +266,33 @@ impl TileSink for PmtilesSink {
                         let pos = shard.store(data);
                         Content {
                             len,
-                            spilled: false,
+                            place: Place::Memory,
                             pos,
                         }
                     } else {
                         self.in_memory.fetch_sub(data.len(), Ordering::Relaxed);
-                        let pos = self
-                            .spill_len
-                            .fetch_add(data.len() as u64, Ordering::Relaxed);
-                        spill_at = Some(pos);
+                        let pos = shard.batch.len() as u64;
+                        shard.batch.extend_from_slice(data);
+                        shard.batched.push(n);
                         Content {
                             len,
-                            spilled: true,
+                            place: Place::Batch,
                             pos,
                         }
                     };
                     shard.contents.push(content);
                     shard.index.insert(hash, n);
+                    if shard.batch.len() >= SPILL_BATCH {
+                        batch = Some(shard.take_batch(&self.spill_len));
+                    }
                     n
                 }
             };
             shard.tiles.push((tile_id, n));
         }
 
-        if let Some(pos) = spill_at {
-            let written = self.spill_file().and_then(|f| {
-                f.write_all_at(data, pos)
-                    .map_err(|e| Error::new(EXIT_WRITE, io_message("PMTiles spill file", &e)))
-            });
-            if let Err(e) = written {
-                self.failed.store(true, Ordering::Relaxed);
-                return Err(e);
-            }
+        if let Some((bytes, at)) = batch {
+            self.spill_write(&bytes, at)?;
         }
         Ok(())
     }
@@ -273,18 +309,23 @@ impl TileSink for PmtilesSink {
     }
 
     fn finish(self: Box<Self>, metadata: &Metadata) -> Result<()> {
-        let this = *self;
+        let mut this = *self;
         if this.failed.load(Ordering::Relaxed) {
             return Err(Error::new(
                 EXIT_WRITE,
                 "PMTiles spill file: an earlier write failed",
             ));
         }
-        let shards: Vec<Shard> = this
-            .shards
+        let mut shards: Vec<Shard> = std::mem::take(&mut this.shards)
             .into_iter()
             .map(|m| m.into_inner().unwrap_or_else(|p| p.into_inner()))
             .collect();
+        for shard in &mut shards {
+            if !shard.batch.is_empty() {
+                let (bytes, at) = shard.take_batch(&this.spill_len);
+                this.spill_write(&bytes, at)?;
+            }
+        }
         let spill_map = match this.spill.get() {
             Some(Ok(f)) if this.spill_len.load(Ordering::Relaxed) > 0 => {
                 // SAFETY: the spill file is private to this sink (unlinked at

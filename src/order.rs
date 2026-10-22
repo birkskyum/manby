@@ -38,6 +38,9 @@ pub struct Plan {
     pub iz: u32,
     pub ix: u32,
     pub iy: u32,
+    /// With `-at`, the first tile's `estimated_complexity`: the size of
+    /// tippecanoe's zoom 0 geometry file. 0 without `-at`.
+    pub estimated_complexity: i64,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -476,6 +479,12 @@ fn order1(store: &mut FeatureStore, o: &Options, out: &mut Out) -> crate::Result
     // gives the same.
     assign_minzooms(&mut store.features, o, maxzoom, basezoom, droprate);
 
+    let estimated_complexity = if o.additional.get(A_VARIABLE_DEPTH_PYRAMID) {
+        zoom0_size(store.serialized_bytes, iz, ix, iy)
+    } else {
+        0
+    };
+
     Ok(Plan {
         minzoom,
         maxzoom,
@@ -486,7 +495,18 @@ fn order1(store: &mut FeatureStore, o: &Options, out: &mut Out) -> crate::Result
         iz,
         ix,
         iy,
+        estimated_complexity,
     })
+}
+
+/// The size of tippecanoe's zoom 0 geometry file: the complexity placeholder,
+/// the first tile's zoom, x and y, the features, and the end marker.
+fn zoom0_size(feature_bytes: u64, iz: u32, ix: u32, iy: u32) -> i64 {
+    let mut header = Vec::new();
+    tippecanoe::serial::serialize_int(&mut header, iz as i32);
+    tippecanoe::serial::serialize_uint(&mut header, ix);
+    tippecanoe::serial::serialize_uint(&mut header, iy);
+    8 + header.len() as i64 + feature_bytes as i64 + 1
 }
 
 /// The base zoom and drop rate guessing of `-Bg` and `-rg`.
@@ -746,6 +766,14 @@ fn assign_minzooms(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn zoom0_file_size() {
+        // placeholder, three one-byte varints, the features, the end marker
+        assert_eq!(super::zoom0_size(100, 0, 0, 0), 8 + 3 + 100 + 1);
+        // zoom 1 is zigzag 2, and 200 takes two bytes
+        assert_eq!(super::zoom0_size(100, 1, 200, 1), 8 + 4 + 100 + 1);
+    }
+
     use super::*;
 
     #[test]

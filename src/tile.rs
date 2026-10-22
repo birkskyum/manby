@@ -4727,3 +4727,506 @@ impl AtomicStrategy {
             .fetch_add(src.truncated_zooms, Ordering::Relaxed);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::VT_CLOSEPATH;
+
+    /// What the C++ functions print for the cases in `harness_output`, from a
+    /// harness built with verbatim copies of them.
+    const EXPECTED: &str = "\
+gamma 0: (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000)
+gamma 0.5: (1 0 0000000000000000) (1 0 3df9000000000000) (0 1099511627776 0000000000000000) (1 1099511627776 3db4000000000000) (0 2199023255552 0000000000000000) (0 3298534883328 0000000000000000) (1 3298534883328 0000000000000000) (0 4398046511104 0000000000000000) (0 5 0000000000000000) (0 8796093022208 0000000000000000)
+gamma 1: (1 0 0000000000000000) (1 0 3df9000000000000) (0 1099511627776 0000000000000000) (1 1099511627776 3db4000000000000) (0 2199023255552 0000000000000000) (0 3298534883328 0000000000000000) (1 3298534883328 0000000000000000) (0 4398046511104 0000000000000000) (0 5 0000000000000000) (0 8796093022208 0000000000000000)
+gamma 1.5: (1 0 0000000000000000) (1 0 3df9000000000000) (0 1099511627776 0000000000000000) (1 1099511627776 3db4000000000000) (0 2199023255552 0000000000000000) (0 3298534883328 0000000000000000) (1 3298534883328 0000000000000000) (0 4398046511104 0000000000000000) (0 5 0000000000000000) (0 8796093022208 0000000000000000)
+gamma 2: (1 0 0000000000000000) (1 0 3df9000000000000) (0 1099511627776 0000000000000000) (1 1099511627776 3db4000000000000) (0 2199023255552 0000000000000000) (0 3298534883328 0000000000000000) (1 3298534883328 0000000000000000) (0 4398046511104 0000000000000000) (0 5 0000000000000000) (0 8796093022208 0000000000000000)
+gamma2 0: (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000)
+gamma2 0.5: (1 0 0000000000000000) (1 0 3fd0000000000000) (0 137438953472 0000000000000000) (1 137438953472 3fc0000000000000) (0 274877906944 0000000000000000) (0 824633720832 0000000000000000) (1 824633720832 3dbc000000000000) (0 1099511627776 0000000000000000) (1 1099511627776 3fd0000000000000) (0 549755813888 0000000000000000) (0 2199023255555 0000000000000000) (1 2199023255555 3fdffffffffd0000) (0 2473901162496 0000000000000000) (0 4398046511104 0000000000000000)
+gamma2 1: (1 0 0000000000000000) (1 0 3fd0000000000000) (0 137438953472 0000000000000000) (1 137438953472 3fc0000000000000) (0 274877906944 0000000000000000) (0 824633720832 0000000000000000) (1 824633720832 3dbc000000000000) (0 1099511627776 0000000000000000) (1 1099511627776 3fd0000000000000) (0 549755813888 0000000000000000) (0 2199023255555 0000000000000000) (1 2199023255555 3fdffffffffd0000) (0 2473901162496 0000000000000000) (0 4398046511104 0000000000000000)
+gamma2 1.5: (1 0 0000000000000000) (1 0 3fd0000000000000) (0 137438953472 0000000000000000) (1 137438953472 3fc0000000000000) (0 274877906944 0000000000000000) (0 824633720832 0000000000000000) (1 824633720832 3dbc000000000000) (0 1099511627776 0000000000000000) (1 1099511627776 3fd0000000000000) (0 549755813888 0000000000000000) (0 2199023255555 0000000000000000) (1 2199023255555 3fdffffffffd0000) (0 2473901162496 0000000000000000) (0 4398046511104 0000000000000000)
+gamma2 2: (1 0 0000000000000000) (1 0 3fd0000000000000) (0 137438953472 0000000000000000) (1 137438953472 3fc0000000000000) (0 274877906944 0000000000000000) (0 824633720832 0000000000000000) (1 824633720832 3dbc000000000000) (0 1099511627776 0000000000000000) (1 1099511627776 3fd0000000000000) (0 549755813888 0000000000000000) (0 2199023255555 0000000000000000) (1 2199023255555 3fdffffffffd0000) (0 2473901162496 0000000000000000) (0 4398046511104 0000000000000000)
+seq3: 137438953472 302365697638 384829069721 632219185970 645963081317 838377616177 1168231104509 1223206685897 1278182267285 1498084592840 1759218604436 1759218604436 1786706395130 1896657557907 2721291278739 2762522964780
+gamma3 0: (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000) (0 0 0000000000000000)
+gamma3 0.5: (1 0 3fe0000000000000) (0 302365697638 0000000000000000) (1 302365697638 3fd3333333330000) (0 632219185970 0000000000000000) (1 632219185970 3fa9999999980000) (0 838377616177 0000000000000000) (0 1168231104509 0000000000000000) (1 1168231104509 3fc9999999980000) (0 1278182267285 0000000000000000) (1 1278182267285 3fe9999999998000) (0 1759218604436 0000000000000000) (1 1759218604436 0000000000000000) (1 1759218604436 3fb9999999980000) (0 1896657557907 0000000000000000) (0 2721291278739 0000000000000000) (1 2721291278739 3fc3333333320000)
+gamma3 1: (1 0 3fe0000000000000) (0 302365697638 0000000000000000) (1 302365697638 3fd3333333330000) (0 632219185970 0000000000000000) (1 632219185970 3fa9999999980000) (0 838377616177 0000000000000000) (0 1168231104509 0000000000000000) (1 1168231104509 3fc9999999980000) (0 1278182267285 0000000000000000) (1 1278182267285 3fe9999999998000) (0 1759218604436 0000000000000000) (1 1759218604436 0000000000000000) (1 1759218604436 3fb9999999980000) (0 1896657557907 0000000000000000) (0 2721291278739 0000000000000000) (1 2721291278739 3fc3333333320000)
+gamma3 1.5: (1 0 3fe0000000000000) (0 302365697638 0000000000000000) (1 302365697638 3fd3333333330000) (0 632219185970 0000000000000000) (1 632219185970 3fa9999999980000) (0 838377616177 0000000000000000) (0 1168231104509 0000000000000000) (1 1168231104509 3fc9999999980000) (0 1278182267285 0000000000000000) (1 1278182267285 3fe9999999998000) (0 1759218604436 0000000000000000) (1 1759218604436 0000000000000000) (1 1759218604436 3fb9999999980000) (0 1896657557907 0000000000000000) (0 2721291278739 0000000000000000) (1 2721291278739 3fc3333333320000)
+gamma3 2: (1 0 3fe0000000000000) (0 302365697638 0000000000000000) (1 302365697638 3fd3333333330000) (0 632219185970 0000000000000000) (1 632219185970 3fa9999999980000) (0 838377616177 0000000000000000) (0 1168231104509 0000000000000000) (1 1168231104509 3fc9999999980000) (1 1168231104509 3fc9999999980000) (0 1498084592840 0000000000000000) (1 1498084592840 3fee666666660000) (1 1498084592840 3fee666666660000) (0 1786706395130 0000000000000000) (1 1786706395130 3fd9999999990000) (0 2721291278739 0000000000000000) (1 2721291278739 3fc3333333320000)
+mingap 0.8 0 -> 2
+mingap 0.8 3 -> 5
+mingap 0.8 8 -> 9
+mingap 0.8 9 -> 9
+mingap 0.5 0 -> 3
+mingap 0.5 3 -> 5
+mingap 0.5 8 -> 9
+mingap 0.5 9 -> 9
+mingap 0.1 0 -> 8
+mingap 0.1 3 -> 8
+mingap 0.1 8 -> 9
+mingap 0.1 9 -> 9
+mingap 0.95 0 -> 1
+mingap 0.95 3 -> 5
+mingap 0.95 8 -> 9
+mingap 0.95 9 -> 9
+mingap 0 0 -> 9
+mingap 0 3 -> 9
+mingap 0 8 -> 9
+mingap 0 9 -> 9
+minextent 0.8 0 -> 2
+minextent 0.8 3 -> 7
+minextent 0.8 50 -> 100
+minextent 0.8 100 -> 100
+minextent 0.5 0 -> 7
+minextent 0.5 3 -> 7
+minextent 0.5 50 -> 100
+minextent 0.5 100 -> 100
+minextent 0.1 0 -> 50
+minextent 0.1 3 -> 50
+minextent 0.1 50 -> 100
+minextent 0.1 100 -> 100
+minextent 0.95 0 -> 2
+minextent 0.95 3 -> 7
+minextent 0.95 50 -> 100
+minextent 0.95 100 -> 100
+minextent 0 0 -> 100
+minextent 0 3 -> 100
+minextent 0 50 -> 100
+minextent 0 100 -> 100
+mindrop 0.8 0 -> 2
+mindrop 0.8 3 -> 7
+mindrop 0.8 9 -> 18446744073709551610
+mindrop 0.5 0 -> 3
+mindrop 0.5 3 -> 7
+mindrop 0.5 9 -> 18446744073709551610
+mindrop 0.1 0 -> 9
+mindrop 0.1 3 -> 9
+mindrop 0.1 9 -> 18446744073709551610
+mindrop 0.95 0 -> 1
+mindrop 0.95 3 -> 7
+mindrop 0.95 9 -> 18446744073709551610
+mindrop 0 0 -> 18446744073709551610
+mindrop 0 3 -> 18446744073709551610
+mindrop 0 9 -> 18446744073709551610
+mindrop empty -> 18446744073709551615
+minattr 0.8 -inf 0 -> 4008000000000000
+minattr 0.8 -inf 1 -> fff0000000000000
+minattr 0.8 inf 0 -> 7ff0000000000000
+minattr 0.8 inf 1 -> 401d000000000000
+minattr 0.8 3 0 -> 4016000000000000
+minattr 0.8 3 1 -> 4000000000000000
+minattr 0.8 7 0 -> 401d000000000000
+minattr 0.8 7 1 -> 4016000000000000
+minattr 0.5 -inf 0 -> 4008000000000000
+minattr 0.5 -inf 1 -> fff0000000000000
+minattr 0.5 inf 0 -> 7ff0000000000000
+minattr 0.5 inf 1 -> 4008000000000000
+minattr 0.5 3 0 -> 4016000000000000
+minattr 0.5 3 1 -> 4000000000000000
+minattr 0.5 7 0 -> 401d000000000000
+minattr 0.5 7 1 -> 4008000000000000
+minattr 0.1 -inf 0 -> 4022000000000000
+minattr 0.1 -inf 1 -> fff0000000000000
+minattr 0.1 inf 0 -> 7ff0000000000000
+minattr 0.1 inf 1 -> bff0000000000000
+minattr 0.1 3 0 -> 4022000000000000
+minattr 0.1 3 1 -> bff0000000000000
+minattr 0.1 7 0 -> 4022000000000000
+minattr 0.1 7 1 -> bff0000000000000
+minattr 0.95 -inf 0 -> 4000000000000000
+minattr 0.95 -inf 1 -> fff0000000000000
+minattr 0.95 inf 0 -> 7ff0000000000000
+minattr 0.95 inf 1 -> 4020000000000000
+minattr 0.95 3 0 -> 4016000000000000
+minattr 0.95 3 1 -> 4000000000000000
+minattr 0.95 7 0 -> 401d000000000000
+minattr 0.95 7 1 -> 4016000000000000
+minattr 0 -inf 0 -> 4022000000000000
+minattr 0 -inf 1 -> fff0000000000000
+minattr 0 inf 0 -> 7ff0000000000000
+minattr 0 inf 1 -> bff0000000000000
+minattr 0 3 0 -> 4022000000000000
+minattr 0 3 1 -> bff0000000000000
+minattr 0 7 0 -> 4022000000000000
+minattr 0 7 1 -> bff0000000000000
+dropseq 0 0 -> 18446744073709551615
+dropseq 0 1 -> 18446744073709551615
+dropseq 0 12345678901234 -> 17873533690969063423
+dropseq 0 18446744073709551615 -> 17870283321406128128
+dropseq 3 0 -> 16717361816799281151
+dropseq 3 1 -> 16717361816799281151
+dropseq 3 12345678901234 -> 16144151434058792959
+dropseq 3 18446744073709551615 -> 16140901064495857664
+dropseq 31 0 -> 576460752303423487
+dropseq 31 1 -> 576460752303423487
+dropseq 31 12345678901234 -> 3250369562935295
+dropseq 31 18446744073709551615 -> 0
+dropseq 40 0 -> 576460752303423487
+dropseq 40 1 -> 576460752303423487
+dropseq 40 12345678901234 -> 3250369562935295
+dropseq 40 18446744073709551615 -> 0
+dropseq -1 0 -> 576460752303423487
+dropseq -1 1 -> 576460752303423487
+dropseq -1 12345678901234 -> 3250369562935295
+dropseq -1 18446744073709551615 -> 0
+dropseq 127 0 -> 576460752303423487
+dropseq 127 1 -> 576460752303423487
+dropseq 127 12345678901234 -> 3250369562935295
+dropseq 127 18446744073709551615 -> 0
+";
+
+    fn harness_output() -> String {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+
+        let scale = (1i64 << (64 - 2 * (5 + 8))) as f64;
+        let gammas = [0.0, 0.5, 1.0, 1.5, 2.0];
+        let run = |out: &mut String, label: &str, seq: &[u64]| {
+            for &g in &gammas {
+                let mut prev = 0u64;
+                let mut gap = 0.0;
+                write!(out, "{} {}:", label, g).unwrap();
+                for &i in seq {
+                    let r = manage_gap(i, &mut prev, scale, g, &mut gap);
+                    write!(out, " ({} {} {:016x})", r, prev, gap.to_bits()).unwrap();
+                }
+                writeln!(out).unwrap();
+            }
+        };
+
+        let idx = [
+            0,
+            100,
+            1u64 << 40,
+            (1u64 << 40) + 5,
+            1u64 << 41,
+            3u64 << 40,
+            3u64 << 40,
+            1u64 << 42,
+            5,
+            1u64 << 43,
+        ];
+        run(&mut out, "gamma", &idx);
+
+        let seq2 = [
+            0,
+            1u64 << 36,
+            1u64 << 37,
+            (1u64 << 37) + (1u64 << 35),
+            1u64 << 38,
+            3u64 << 38,
+            (3u64 << 38) + 7,
+            1u64 << 40,
+            (1u64 << 40) + (1u64 << 36),
+            1u64 << 39,
+            (1u64 << 41) + 3,
+            (1u64 << 41) + (1u64 << 37),
+            (1u64 << 41) + (1u64 << 38),
+            1u64 << 42,
+        ];
+        run(&mut out, "gamma2", &seq2);
+
+        let pcts: [u64; 16] = [
+            50, 60, 30, 90, 5, 70, 120, 20, 20, 80, 95, 0, 10, 40, 300, 15,
+        ];
+        let mut seq3 = Vec::new();
+        let mut acc = 0u64;
+        for p in pcts {
+            acc += p * (1u64 << 38) / 100;
+            seq3.push(acc);
+        }
+        write!(out, "seq3:").unwrap();
+        for i in &seq3 {
+            write!(out, " {}", i).unwrap();
+        }
+        writeln!(out).unwrap();
+        run(&mut out, "gamma3", &seq3);
+
+        let fs = [0.8, 0.5, 0.1, 0.95, 0.0];
+        let gaps: Vec<u64> = vec![5, 1, 9, 3, 3, 3, 7, 2, 8, 3];
+        for f in fs {
+            for e in [0u64, 3, 8, 9] {
+                let mut g2 = gaps.clone();
+                writeln!(
+                    out,
+                    "mingap {} {} -> {}",
+                    f,
+                    e,
+                    choose_mingap(&mut g2, f, e)
+                )
+                .unwrap();
+            }
+        }
+        let ext: Vec<i64> = vec![50, -1, 9, 3, 3, 30, 7, 2, 8, 3, 100];
+        for f in fs {
+            for e in [0i64, 3, 50, 100] {
+                let mut g2 = ext.clone();
+                writeln!(
+                    out,
+                    "minextent {} {} -> {}",
+                    f,
+                    e,
+                    choose_minextent(&mut g2, f, e)
+                )
+                .unwrap();
+            }
+        }
+        let ds: Vec<u64> = vec![u64::MAX - 5, 1, 9, 3, 3, 3, 7, 2, 8, 3];
+        for f in fs {
+            for e in [0u64, 3, 9] {
+                let mut g2 = ds.clone();
+                writeln!(
+                    out,
+                    "mindrop {} {} -> {}",
+                    f,
+                    e,
+                    choose_mindrop_sequence(&mut g2, f, e)
+                )
+                .unwrap();
+            }
+        }
+        writeln!(
+            out,
+            "mindrop empty -> {}",
+            choose_mindrop_sequence(&mut [], 0.5, 3)
+        )
+        .unwrap();
+        let av: Vec<f64> = vec![5.5, -1.0, 9.0, 3.0, 3.0, 3.0, 7.25, 2.0, 8.0, 3.0];
+        for f in fs {
+            for e in [f64::NEG_INFINITY, f64::INFINITY, 3.0, 7.0] {
+                for d in 0..2 {
+                    let mut g2 = av.clone();
+                    let m = choose_minattribute(&mut g2, f, e, d != 0);
+                    writeln!(out, "minattr {} {} {} -> {:016x}", f, e, d, m.to_bits()).unwrap();
+                }
+            }
+        }
+        for mz in [0i8, 3, 31, 40, -1, 127] {
+            for ix in [0u64, 1, 12345678901234, u64::MAX] {
+                let sf = SerialFeature {
+                    feature_minzoom: mz,
+                    index: ix,
+                    ..Default::default()
+                };
+                writeln!(
+                    out,
+                    "dropseq {} {} -> {}",
+                    mz,
+                    ix,
+                    calculate_drop_sequence(&sf)
+                )
+                .unwrap();
+            }
+        }
+
+        out
+    }
+
+    #[test]
+    fn matches_the_cpp_harness() {
+        let out = harness_output();
+        for (i, (a, b)) in out.lines().zip(EXPECTED.lines()).enumerate() {
+            assert_eq!(a, b, "line {}", i + 1);
+        }
+        assert_eq!(out.lines().count(), EXPECTED.lines().count());
+    }
+
+    #[test]
+    fn dropping_features_starts_at_the_thresholds_that_exclude_nothing() {
+        assert!(!dropping_features(0, 0, 0, f64::NEG_INFINITY, false));
+        assert!(!dropping_features(0, 0, 0, f64::INFINITY, true));
+        assert!(dropping_features(0, 0, 0, f64::INFINITY, false));
+        assert!(dropping_features(0, 0, 0, f64::NEG_INFINITY, true));
+        assert!(dropping_features(1, 0, 0, f64::NEG_INFINITY, false));
+        assert!(dropping_features(0, 1, 0, f64::NEG_INFINITY, false));
+        assert!(dropping_features(0, 0, 1, f64::NEG_INFINITY, false));
+        assert!(dropping_features(0, 0, 0, 3.5, false));
+    }
+
+    #[test]
+    fn add_sample_to_halves_the_sample_when_it_gets_too_big() {
+        let mut vals: Vec<usize> = Vec::new();
+        let mut increment = 1;
+        for seq in 0..100001 {
+            add_sample_to(&mut vals, seq, &mut increment, seq);
+        }
+        assert_eq!(increment, 2);
+        assert_eq!(vals.len(), 50001);
+        assert_eq!(vals[1], 2);
+        assert_eq!(*vals.last().unwrap(), 100000);
+
+        add_sample_to(&mut vals, 100001, &mut increment, 100001);
+        assert_eq!(vals.len(), 50001);
+        add_sample_to(&mut vals, 100002, &mut increment, 100002);
+        assert_eq!(vals.len(), 50002);
+    }
+
+    #[test]
+    fn revive_polygon_makes_a_square_of_the_lost_area() {
+        let geom = vec![
+            Draw::new(VT_MOVETO, 100, 100),
+            Draw::new(VT_LINETO, 300, 100),
+            Draw::new(VT_LINETO, 300, 300),
+            Draw::new(VT_LINETO, 100, 300),
+            Draw::new(VT_LINETO, 100, 100),
+            Draw::new(VT_CLOSEPATH, 0, 0),
+        ];
+        // z0 with 12 bits of detail: a tile pixel is 2^20 world units on a side
+        let out = revive_polygon(&geom, 9.0 * (1u64 << 40) as f64, 0, 12);
+        let xy: Vec<(i64, i64)> = out.iter().map(|d| (d.x, d.y)).collect();
+        // the center is (900 / 5, 900 / 5), and the square is 3 by 3
+        assert_eq!(
+            xy,
+            vec![(179, 179), (182, 179), (182, 182), (179, 182), (179, 179)]
+        );
+        assert_eq!(out[0].op, VT_MOVETO);
+        assert!(out[1..].iter().all(|d| d.op == VT_LINETO));
+
+        assert!(revive_polygon(&geom, 0.0, 0, 12).is_empty());
+        assert!(revive_polygon(&vec![], 5.0, 0, 12).is_empty());
+    }
+
+    #[test]
+    fn draws_something_needs_a_lineto_that_moves() {
+        let dot = vec![Draw::new(VT_MOVETO, 1, 1), Draw::new(VT_LINETO, 1, 1)];
+        assert!(!draws_something(&dot));
+        let line = vec![Draw::new(VT_MOVETO, 1, 1), Draw::new(VT_LINETO, 1, 2)];
+        assert!(draws_something(&line));
+        let jump = vec![Draw::new(VT_MOVETO, 1, 1), Draw::new(VT_MOVETO, 5, 5)];
+        assert!(!draws_something(&jump));
+    }
+
+    #[test]
+    fn coalcmp_compares_type_id_and_full_attributes() {
+        let mut key_pool = KeyPool::default();
+        let feature = |t: i8, id: Option<u64>, attrs: &[(&str, i32, &str)], kp: &mut KeyPool| {
+            let mut sf = SerialFeature {
+                t,
+                has_id: id.is_some(),
+                id: id.unwrap_or(0),
+                ..Default::default()
+            };
+            for &(k, ty, v) in attrs {
+                sf.full_keys.push(kp.pool(k));
+                sf.full_values.push(SerialVal::new(ty, v));
+            }
+            sf
+        };
+        let a = feature(1, None, &[("name", MVT_STRING, "a")], &mut key_pool);
+        let b = feature(1, None, &[("name", MVT_STRING, "a")], &mut key_pool);
+        let c = feature(1, None, &[("name", MVT_STRING, "b")], &mut key_pool);
+        let d = feature(2, None, &[("name", MVT_STRING, "a")], &mut key_pool);
+        let e = feature(1, Some(7), &[("name", MVT_STRING, "a")], &mut key_pool);
+        let f = feature(1, None, &[("name", MVT_DOUBLE, "a")], &mut key_pool);
+        let g = feature(1, None, &[], &mut key_pool);
+
+        assert_eq!(coalcmp(&a, &b), 0);
+        assert!(coalcmp(&a, &c) < 0 && coalcmp(&c, &a) > 0);
+        assert!(coalcmp(&a, &d) < 0 && coalcmp(&d, &a) > 0);
+        assert!(coalcmp(&a, &e) < 0 && coalcmp(&e, &a) > 0);
+        assert!(coalcmp(&a, &f) < 0 && coalcmp(&f, &a) > 0);
+        assert!(coalcmp(&g, &a) < 0 && coalcmp(&a, &g) > 0);
+
+        let mut a2 = feature(1, None, &[("name", MVT_STRING, "a")], &mut key_pool);
+        a2.index = 5;
+        a2.geometry = vec![Draw::new(VT_MOVETO, 0, 1)];
+        let mut b2 = feature(1, None, &[("name", MVT_STRING, "a")], &mut key_pool);
+        b2.index = 5;
+        b2.geometry = vec![Draw::new(VT_MOVETO, 0, 2)];
+        assert!(coalindexcmp(&a2, &b2) < 0);
+        b2.index = 4;
+        assert!(coalindexcmp(&a2, &b2) > 0);
+    }
+
+    #[test]
+    fn multiplier_clusters_put_the_marker_on_the_first_feature() {
+        let marker = "tippecanoe:retain_points_multiplier_first";
+        let mut key_pool = KeyPool::default();
+        let mut features: Vec<SerialFeaturePtr> = Vec::new();
+        for (seq, first) in [(0, true), (1, false), (2, false), (3, true), (4, false)] {
+            let mut sf = SerialFeature {
+                seq,
+                index: seq as u64 + 1,
+                ..Default::default()
+            };
+            sf.full_keys.push(key_pool.pool("n"));
+            sf.full_values
+                .push(SerialVal::new(MVT_DOUBLE, &seq.to_string()));
+            if first {
+                sf.full_keys.push(key_pool.pool(marker));
+                sf.full_values.push(SerialVal::new(MVT_BOOL, "true"));
+            }
+            features.push(Box::new(sf));
+        }
+
+        let clusters = assemble_multiplier_clusters(features);
+        assert_eq!(clusters.len(), 5); // retain_points_multiplier is 1 by default
+        let mut clusters: Vec<Vec<SerialFeaturePtr>> =
+            vec![clusters.into_iter().flatten().collect()];
+
+        // a cluster whose marker is on a later feature
+        clusters[0].swap(0, 1);
+        let out = disassemble_multiplier_clusters(clusters);
+        assert_eq!(out[0].seq, 1);
+        assert_eq!(*out[0].full_keys.last().unwrap().as_str(), *marker);
+        assert!(
+            out[1..]
+                .iter()
+                .filter(|f| f.full_keys.iter().any(|k| **k == marker))
+                .count()
+                == 1
+        );
+        // the rest are in drop sequence order, last-dropped first
+        let seqs: Vec<u64> = out[1..]
+            .iter()
+            .map(|f| calculate_drop_sequence(f))
+            .collect();
+        let mut sorted = seqs.clone();
+        sorted.sort_by(|a, b| b.cmp(a));
+        assert_eq!(seqs, sorted);
+    }
+
+    #[test]
+    fn layer_unmaps_reads_input_and_own_segments() {
+        let input = vec![
+            vec!["a".to_string(), "b".to_string()],
+            vec!["c".to_string()],
+        ];
+        let own = vec!["d".to_string()];
+        let lu = LayerUnmaps {
+            input: &input,
+            tiling_seg: 5,
+            own: &own,
+        };
+        assert_eq!(lu.get(0, 1), "b");
+        assert_eq!(lu.get(1, 0), "c");
+        assert_eq!(lu.get(5, 0), "d");
+    }
+
+    #[test]
+    fn atomic_strategy_adds_up() {
+        let s = AtomicStrategy::default();
+        let one = Strategy {
+            dropped_by_rate: 1,
+            dropped_by_gamma: 2,
+            dropped_as_needed: 3,
+            coalesced_as_needed: 4,
+            detail_reduced: 5,
+            tiny_polygons: 6,
+            truncated_zooms: 7,
+            tile_size: 100,
+            feature_count: 200,
+        };
+        s.add_from(&one);
+        s.add_from(&one);
+        let total = Strategy::new(&s, 9, 10);
+        assert_eq!(total.dropped_by_rate, 2);
+        assert_eq!(total.dropped_by_gamma, 4);
+        assert_eq!(total.dropped_as_needed, 6);
+        assert_eq!(total.coalesced_as_needed, 8);
+        assert_eq!(total.detail_reduced, 10);
+        assert_eq!(total.tiny_polygons, 12);
+        assert_eq!(total.truncated_zooms, 14);
+        assert_eq!(total.tile_size, 9);
+        assert_eq!(total.feature_count, 10);
+    }
+}

@@ -739,3 +739,62 @@ pub fn filter_layers(
         nlayers
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    #[test]
+    fn setup_filter_runs_the_filter_between_two_pipes() {
+        let mut write_to = -1;
+        let mut read_from = -1;
+        let mut pid: libc::pid_t = 0;
+        setup_filter(
+            "tr a-z A-Z; echo \"$1/$2/$3\"",
+            &mut write_to,
+            &mut read_from,
+            &mut pid,
+            3,
+            5,
+            7,
+        );
+
+        let mut w = PipeWriter::fdopen(write_to);
+        w.write_all(b"hello\n").unwrap();
+        assert!(w.fclose().is_ok());
+
+        // SAFETY: read_from is the read end of the filter's output pipe, owned here.
+        let mut r = unsafe { File::from_raw_fd(read_from) };
+        let mut out = String::new();
+        r.read_to_string(&mut out).unwrap();
+        wait_for_filter(pid, "waitpid");
+
+        assert_eq!(out, "HELLO\n3/5/7\n");
+    }
+
+    #[test]
+    fn pipe_writer_reports_a_broken_pipe_at_fclose() {
+        let mut write_to = -1;
+        let mut read_from = -1;
+        let mut pid: libc::pid_t = 0;
+        setup_filter(
+            "exec 0<&-",
+            &mut write_to,
+            &mut read_from,
+            &mut pid,
+            0,
+            0,
+            0,
+        );
+        wait_for_filter(pid, "waitpid");
+        // SAFETY: read_from is owned here and closed once.
+        unsafe { libc::close(read_from) };
+
+        let mut w = PipeWriter::fdopen(write_to);
+        let big = vec![b'x'; 1 << 20];
+        w.write_all(&big).unwrap();
+        let e = w.fclose().unwrap_err();
+        assert!(is_epipe(&e));
+    }
+}

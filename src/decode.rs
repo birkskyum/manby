@@ -18,6 +18,7 @@ use crate::errors::{
     EXIT_SQLITE,
 };
 use crate::getopt::{Getopt, LongOption, NO_ARGUMENT, REQUIRED_ARGUMENT};
+use crate::globals::PROGRESS_TIME_ENABLED;
 use crate::mvt::{MVT_LINESTRING, MVT_POINT, MVT_POLYGON, MvtTile};
 use crate::pmtiles_file::{
     pmtiles_entries_tms, pmtiles_get_tile, pmtiles_has_suffix, pmtilesmeta2tmp,
@@ -30,6 +31,10 @@ static MINZOOM: AtomicI32 = AtomicI32::new(0);
 static MAXZOOM: AtomicI32 = AtomicI32::new(32);
 static FORCE: AtomicBool = AtomicBool::new(false);
 static INCLUDE_ATTR: RwLock<BTreeSet<String>> = RwLock::new(BTreeSet::new());
+
+// The C++ defines progress_time() here to always return false. main()
+// clears PROGRESS_TIME_ENABLED, which makes tippecanoe_main::progress_time
+// do the same.
 
 fn do_stats(
     tile: &MvtTile,
@@ -734,6 +739,7 @@ fn usage(argv: &[String]) -> ! {
 }
 
 pub fn main() {
+    PROGRESS_TIME_ENABLED.store(false, Ordering::Relaxed);
     restore_sigpipe();
 
     let mut argv: Vec<String> = std::env::args_os()

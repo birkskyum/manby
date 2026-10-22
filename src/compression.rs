@@ -6,7 +6,7 @@
 //! `clear_avail()`.
 
 use std::fs::File;
-use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use flate2::{Compress, Compression, Decompress, FlushCompress, FlushDecompress, Status};

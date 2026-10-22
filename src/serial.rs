@@ -6,6 +6,23 @@
 //! that write to a file start with `f`. The `serialization_state` overload of
 //! `serialize_feature`, which the input parsers call, is `serialize_feature_sst`.
 
+// Kept in the shape of the C++ rather than in the shape clippy prefers.
+#![allow(
+    clippy::collapsible_if,
+    clippy::collapsible_else_if,
+    clippy::identity_op,
+    clippy::if_same_then_else,
+    clippy::needless_late_init,
+    clippy::only_used_in_recursion,
+    clippy::manual_clamp,
+    clippy::manual_div_ceil,
+    clippy::manual_range_contains,
+    clippy::vec_init_then_push,
+    clippy::int_plus_one,
+    clippy::needless_range_loop,
+    clippy::too_many_arguments
+)]
+
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::File;
@@ -213,10 +230,11 @@ pub struct SerialFeature {
     /// what nodes at the tile edge were added during clipping?
     pub edge_nodes: DrawVec,
 
-    /// <0: dropped
-    ///  0: kept
-    /// >0: sequence number of additional feature kept by retain-points-multiplier
-    /// INT_MAX: additional feature kept by preserve-multiplier-density-threshold
+    // <0: dropped
+    //  0: kept
+    // >0: sequence number of additional feature kept by retain-points-multiplier
+    // INT_MAX: additional feature kept by preserve-multiplier-density-threshold
+    /// was this feature dropped by rate?
     pub dropped: i32,
 
     /// is polygon dust

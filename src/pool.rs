@@ -1,6 +1,23 @@
 //! Port of pool.hpp and pool.cpp: the string pool of attribute keys and values,
 //! with a binary search tree (kept in a memfile) to deduplicate them.
 
+// Kept in the shape of the C++ rather than in the shape clippy prefers.
+#![allow(
+    clippy::collapsible_if,
+    clippy::collapsible_else_if,
+    clippy::identity_op,
+    clippy::if_same_then_else,
+    clippy::needless_late_init,
+    clippy::only_used_in_recursion,
+    clippy::manual_clamp,
+    clippy::manual_div_ceil,
+    clippy::manual_range_contains,
+    clippy::vec_init_then_push,
+    clippy::int_plus_one,
+    clippy::needless_range_loop,
+    clippy::too_many_arguments
+)]
+
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::cstd::perror;
@@ -88,6 +105,7 @@ fn write_entry(poolfile: &mut Memfile, s: &[u8], type_: i8, in_memory: &mut bool
 }
 
 /// `s` is a C string: it ends at its first NUL, if it has one.
+#[allow(clippy::absurd_extreme_comparisons)]
 pub fn addpool(
     poolfile: &mut Memfile,
     treefile: &mut Memfile,

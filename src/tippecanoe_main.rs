@@ -7,11 +7,28 @@
 //! takes, the per-thread layer maps are behind locks too, and the scalars are
 //! atomics. The work is split exactly as the C++ splits it.
 
+// Kept in the shape of the C++ rather than in the shape clippy prefers.
+#![allow(
+    clippy::collapsible_if,
+    clippy::collapsible_else_if,
+    clippy::identity_op,
+    clippy::if_same_then_else,
+    clippy::needless_late_init,
+    clippy::only_used_in_recursion,
+    clippy::manual_clamp,
+    clippy::manual_div_ceil,
+    clippy::manual_range_contains,
+    clippy::vec_init_then_push,
+    clippy::int_plus_one,
+    clippy::needless_range_loop,
+    clippy::too_many_arguments
+)]
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::mem::ManuallyDrop;
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::fd::FromRawFd;
 use std::os::unix::fs::FileExt;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
@@ -43,7 +60,7 @@ use crate::platform::{
     calc_memsize, get_max_open_files, get_null_device, get_num_avail_cpus, get_page_size,
 };
 use crate::pmtiles_file::{check_pmtiles, mbtiles_map_image_to_pmtiles, pmtiles_has_suffix};
-use crate::pool::{STRINGPOOL_SIZE, Stringpool};
+use crate::pool::Stringpool;
 use crate::projection::{decode_index, encode_vertex, projection, set_index_hilbert, tile2lonlat};
 use crate::read_json::stringify_value;
 use crate::serial::{
@@ -587,6 +604,7 @@ fn merge(
     }
 }
 
+#[allow(dead_code)]
 struct SortArg {
     task: i32,
     cpus: i32,
@@ -847,7 +865,7 @@ struct GzFile {
 enum GzInner {
     Unknown(Option<File>),
     Direct(BufReader<File>),
-    Gzip(flate2::bufread::MultiGzDecoder<BufReader<File>>),
+    Gzip(Box<flate2::bufread::MultiGzDecoder<BufReader<File>>>),
 }
 
 impl Read for GzFile {
@@ -857,7 +875,7 @@ impl Read for GzFile {
             let head = r.fill_buf()?;
             let is_gzip = head.len() >= 2 && head[0] == 0x1F && head[1] == 0x8B;
             self.inner = if is_gzip {
-                GzInner::Gzip(flate2::bufread::MultiGzDecoder::new(r))
+                GzInner::Gzip(Box::new(flate2::bufread::MultiGzDecoder::new(r)))
             } else {
                 GzInner::Direct(r)
             };
@@ -2543,7 +2561,7 @@ fn read_input(
         .collect();
 
     let mut vertexpos: i64 = 0;
-    let mut nodepos: i64 = 0;
+    let nodepos = AtomicI64::new(0);
 
     for r in readers.iter_mut().take(cpus) {
         let rs = r.state.get_mut().unwrap();
@@ -2567,7 +2585,7 @@ fn read_input(
         }
 
         vertexpos += r.vertexpos.load(Ordering::Relaxed);
-        nodepos += r.nodepos.load(Ordering::Relaxed);
+        nodepos.fetch_add(r.nodepos.load(Ordering::Relaxed), Ordering::Relaxed);
     }
 
     if get(&QUIET) == 0 {
@@ -2748,7 +2766,6 @@ fn read_input(
 
     let shared_nodes: BufWriter<File>;
     let mut shared_nodes_map: Option<Mmap> = None; // will be null if there are no shared nodes
-    let nodepos_shared = AtomicI64::new(0);
     {
         // sort
 
@@ -2803,7 +2820,7 @@ fn read_input(
         // and doesn't need to be preserved again
         let mut written = Node { index: u64::MAX };
 
-        nodepos_shared.store(0, Ordering::Relaxed);
+        nodepos.store(0, Ordering::Relaxed);
         let mut nbuf = [0u8; NODE_SIZE];
         let bloom_bits = (shared_nodes_bloom.len() * 8) as u64;
         while fread_record(&mut node_in, &mut nbuf) {
@@ -2814,7 +2831,7 @@ fn read_input(
                     NODE_SIZE,
                     1,
                     &mut sn,
-                    &nodepos_shared,
+                    &nodepos,
                     "shared nodes",
                 );
                 written = here;
@@ -2828,7 +2845,7 @@ fn read_input(
 
         let _ = sn.flush();
 
-        let np = nodepos_shared.load(Ordering::Relaxed);
+        let np = nodepos.load(Ordering::Relaxed);
         if np > 0 {
             match mmap_fd(nodefd, np as usize) {
                 Ok(m) => shared_nodes_map = Some(m),
@@ -2842,7 +2859,7 @@ fn read_input(
         shared_nodes = sn;
         drop(node_in);
     }
-    let nodepos: i64 = nodepos_shared.load(Ordering::Relaxed);
+    let nodepos: i64 = nodepos.load(Ordering::Relaxed);
 
     if get(&QUIET) == 0 {
         eprint!("Merging index                 \r");
@@ -5039,7 +5056,7 @@ pub fn main() {
         std::process::exit(EXIT_ARGS);
     }
 
-    let mut ret;
+    let ret;
 
     for a in argv.iter().skip(g.optind) {
         let src = Source {
@@ -5140,9 +5157,6 @@ pub fn main() {
 
     drop(filter);
 
-    if ret == EXIT_SUCCESS {
-        ret = 0;
-    }
     std::process::exit(ret);
 }
 

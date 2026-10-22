@@ -1,6 +1,6 @@
 # manby
 
-manby builds vector tilesets from GeoJSON, FlatGeobuf, CSV or Geobuf features. It makes the same tiles as [tippecanoe](https://github.com/felt/tippecanoe), ten to sixteen times faster.
+manby builds vector tilesets from GeoJSON, FlatGeobuf, CSV or Geobuf features. It makes the same tiles as [tippecanoe](https://github.com/felt/tippecanoe), eleven to eighteen times faster, in less memory.
 
 The `manby` command takes tippecanoe's options:
 
@@ -14,12 +14,15 @@ On an Apple M5 Max with 18 cores, median of three alternating runs, writing PMTi
 
 | Benchmark | tippecanoe | manby | |
 | --- | --- | --- | --- |
-| 4 million points, `-zg --drop-densest-as-needed` | 56.5 s, 2.02 GB | 3.2 s, 1.42 GB | 17.5x |
-| 17,522 roads at `-z14`, 122,725 tiles | 9.7 s, 0.31 GB | 0.81 s, 0.23 GB | 12x |
-| 85,186 census tracts at `-z12`, 312,073 tiles | 43.3 s, 0.56 GB | 4.0 s, 0.41 GB | 11x |
-| 85,186 census tracts, `-zg --coalesce-densest-as-needed` | 24.9 s, 0.54 GB | 2.3 s, 0.41 GB | 10.7x |
+| 4 million points, `-zg --drop-densest-as-needed` | 56.6 s, 1.98 GB | 3.2 s, 1.37 GB | 17.7x |
+| The same points, `-zg -r1 --cluster-distance=10 --cluster-densest-as-needed --accumulate-attribute=value:sum` | 51.5 s, 1.05 GB | 3.6 s, 0.91 GB | 14.2x |
+| 17,522 roads at `-z14`, 122,725 tiles | 9.7 s, 0.31 GB | 0.83 s, 0.22 GB | 11.7x |
+| 85,186 census tracts at `-z12`, 312,073 tiles | 46.8 s, 0.55 GB | 4.0 s, 0.41 GB | 11.8x |
+| 85,186 census tracts, `-zg --coalesce-densest-as-needed` | 24.8 s, 0.56 GB | 2.2 s, 0.39 GB | 11.2x |
 
 The memory figures are peak resident memory. manby also uses less processor time in total, a fifth of tippecanoe's on the points.
+
+Clustering gains as much with tippecanoe's other options for it. On the same points, `-zg --cluster-densest-as-needed` takes 3.7 s and 1.35 GB against 57.2 s and 1.73 GB (15x), and `-zg -r1 --cluster-densest-as-needed --accumulate-attribute=value:sum` takes 7.0 s and 2.15 GB against 84.8 s and 3.74 GB (12x).
 
 The tippecanoe column is [tippecanoe-rs](../tippecanoe-rs), the faithful Rust port, which runs at the same speed as the C++. `bench/` has the data and the script.
 

@@ -307,13 +307,16 @@ fn check_stats(store: &FeatureStore, o: &TileOptions) -> (usize, Vec<Strategy>) 
     set_globals(o);
     let r = reference(store, o);
 
-    for threads in [1, 2, 18] {
+    // zlib for every tile makes tippecanoe's bytes; libdeflate where the size
+    // limit allows it makes the same tiles once decompressed
+    for (threads, zlib_tiles) in [(1, true), (2, true), (18, true), (1, false), (18, false)] {
         set_globals(o);
         let sink = MemorySink::default();
         let topts = TileOptions {
             threads,
             // with 2 threads, all waiting tile data goes through temporary files
             rest_memory: if threads == 2 { 0 } else { o.rest_memory },
+            zlib_tiles,
             ..o.clone()
         };
         let stats = tile_with(store, &topts, &sink).expect("tiling failed");
@@ -324,10 +327,15 @@ fn check_stats(store: &FeatureStore, o: &TileOptions) -> (usize, Vec<Strategy>) 
         assert_eq!(rk, mk, "tile sets differ with {} threads", threads);
         for (k, v) in &r.tiles {
             assert!(
-                tiles[k] == *v,
-                "tile {:?} differs with {} threads",
+                if zlib_tiles {
+                    tiles[k] == *v
+                } else {
+                    decoded(&tiles[k]) == decoded(v)
+                },
+                "tile {:?} differs with {} threads, zlib {}",
                 k,
-                threads
+                threads,
+                zlib_tiles
             );
         }
         assert_eq!(
@@ -347,6 +355,15 @@ fn check_stats(store: &FeatureStore, o: &TileOptions) -> (usize, Vec<Strategy>) 
         );
     }
     (r.tiles.len(), r.strategies)
+}
+
+fn decoded(tile: &[u8]) -> Vec<u8> {
+    if !tile.starts_with(&[0x1f, 0x8b]) {
+        return tile.to_vec();
+    }
+    let mut out = Vec::new();
+    assert_eq!(tippecanoe::mvt::decompress(tile, &mut out), 1);
+    out
 }
 
 fn flag(o: &mut TileOptions, c: usize) {

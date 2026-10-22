@@ -743,13 +743,13 @@ fn add_tilestats(
     add_to_tilestats(&mut ts.tilestats, key, val);
 }
 
-fn gzip(ctx: &Ctx<'_>, data: &[u8]) -> Vec<u8> {
+fn gzip(ctx: &Ctx<'_>, data: &[u8], libdeflate: bool) -> Vec<u8> {
     if !ctx.o.timing {
-        return crate::compress::gzip(data, ctx.o.fast);
+        return crate::compress::gzip(data, libdeflate);
     }
     use std::sync::atomic::Ordering::Relaxed;
     let t = std::time::Instant::now();
-    let out = crate::compress::gzip(data, ctx.o.fast);
+    let out = crate::compress::gzip(data, libdeflate);
     let c = &ctx.counters;
     c[1].fetch_add(1, Relaxed);
     c[2].fetch_add(data.len() as u64, Relaxed);
@@ -1911,8 +1911,22 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                 }
             }
 
-            let compressed = if !o.p(P_TILE_COMPRESSION) {
-                gzip(ctx, &pbf)
+            // A tile that fits whatever zlib makes of it needs no zlib.
+            let gzipped = !o.p(P_TILE_COMPRESSION);
+            let fits_anyway = gzipped
+                && !o.fast
+                && !o.zlib_tiles
+                && !too_many_bytes
+                && (o.p(P_KILOBYTE_LIMIT) || {
+                    let bound = crate::compress::zlib_bound(pbf.len());
+                    let adjusted = match kept {
+                        0 => Some(bound),
+                        _ => bound.checked_mul(kept + skipped).map(|b| b / kept),
+                    };
+                    adjusted.is_some_and(|a| a <= adjusted_max_tile_size)
+                });
+            let compressed = if gzipped {
+                gzip(ctx, &pbf, o.fast || fits_anyway)
             } else {
                 pbf
             };
@@ -1944,8 +1958,9 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                 adjusted_tile_size = adjusted_tile_size.wrapping_mul(kept + skipped) / kept;
             }
 
-            if too_many_bytes
-                || (adjusted_tile_size > adjusted_max_tile_size && !o.p(P_KILOBYTE_LIMIT))
+            if !fits_anyway
+                && (too_many_bytes
+                    || (adjusted_tile_size > adjusted_max_tile_size && !o.p(P_KILOBYTE_LIMIT)))
             {
                 if adjusted_tile_size > res.tile_size_out {
                     res.tile_size_out = adjusted_tile_size;

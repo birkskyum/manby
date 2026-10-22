@@ -4,7 +4,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use rayon::prelude::*;
 use tippecanoe::attribute::preserve_attribute;
 use tippecanoe::clip::{
     close_poly, coalesce_polygon, get_mp_area, line_is_too_small, reduce_tiny_poly, remove_noop,
@@ -17,8 +16,8 @@ use tippecanoe::geometry::{
 use tippecanoe::globals::{ORDER_BY_SIZE, OrderField};
 use tippecanoe::mbtiles::{LayermapEntry, add_to_tilestats};
 use tippecanoe::mvt::{
-    MVT_BOOL, MVT_DOUBLE, MVT_FLOAT, MVT_INT, MVT_NULL, MVT_SINT, MVT_STRING, MVT_UINT, MvtFeature,
-    MvtLayer, MvtTile, MvtValue, stringified_to_mvt_value,
+    MVT_BOOL, MVT_DOUBLE, MVT_FLOAT, MVT_INT, MVT_NULL, MVT_SINT, MVT_STRING, MVT_UINT, MvtValue,
+    stringified_to_mvt_value,
 };
 use tippecanoe::options::*;
 use tippecanoe::serial::{
@@ -26,6 +25,7 @@ use tippecanoe::serial::{
 };
 use tippecanoe::tile::{Strategy, manage_gap};
 
+use super::encode::LayerEnc;
 use super::engine::Ctx;
 use super::read::{Cand, NO_LIST, ReadTile};
 use super::util::*;
@@ -65,6 +65,10 @@ pub struct MakeResult {
     pub tilestats: BTreeMap<String, LayermapEntry>,
     /// Set where tippecanoe would give up on the whole run.
     pub error: Option<String>,
+    /// The thresholds of the attempt that succeeded, if it was at full
+    /// detail with no detail reduced before it, which is when the same
+    /// attempt would come first in another pass.
+    pub reusable: Option<Thresholds>,
 }
 
 /// A feature that went into the tile: tippecanoe's `serial_feature` during tiling.
@@ -578,7 +582,21 @@ fn add_tilestats(
     add_to_tilestats(&mut ts.tilestats, key, val);
 }
 
+/// Counters for `MANBY_TIMING`: attempts, compressions, bytes compressed, nanoseconds compressing.
+pub static COUNTERS: [std::sync::atomic::AtomicU64; 4] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 4];
+
 fn gzip(data: &[u8], fast: bool) -> Vec<u8> {
+    use std::sync::atomic::Ordering::Relaxed;
+    let t = std::time::Instant::now();
+    let out = gzip_(data, fast);
+    COUNTERS[1].fetch_add(1, Relaxed);
+    COUNTERS[2].fetch_add(data.len() as u64, Relaxed);
+    COUNTERS[3].fetch_add(t.elapsed().as_nanos() as u64, Relaxed);
+    out
+}
+
+fn gzip_(data: &[u8], fast: bool) -> Vec<u8> {
     if fast {
         crate::compress::gzip(data, true)
     } else {
@@ -622,6 +640,7 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
         still_dropping: false,
         tilestats: BTreeMap::new(),
         error: None,
+        reusable: None,
     };
 
     let retain_points_multiplier = o.retain_points_multiplier;
@@ -658,8 +677,26 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
 
     let mark = !(o.p(P_CLIPPING) || o.p(P_DUPLICATION));
 
+    macro_rules! reusable_at {
+        ($line_detail:expr, $detail_reduced:expr) => {
+            if $line_detail == first_detail && $detail_reduced == 0 {
+                Some(Thresholds {
+                    gamma,
+                    mingap,
+                    minextent,
+                    mindrop_sequence,
+                    minattribute,
+                })
+            } else {
+                None
+            }
+        };
+    }
+
     let mut line_detail = first_detail;
     while line_detail >= min_detail || line_detail == detail {
+        COUNTERS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let trace_start = std::time::Instant::now();
         let mut count: i64 = 0;
         let mut accum_area: f64 = 0.0;
 
@@ -1267,13 +1304,17 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
 
             {
                 let shared_nodes = &shared_nodes;
-                features
-                    .par_iter_mut()
-                    .enumerate()
-                    .with_min_len(256)
-                    .for_each(|(i, f)| {
-                        simplify_and_scale(ctx, i, f, z, tx, ty, maxzoom, shared_nodes)
-                    });
+                let heavy = features.iter().any(|f| f.t as i32 != VT_POINT);
+                par_chunks_mut(
+                    features,
+                    if heavy { 2048 } else { 1 << 20 },
+                    ctx.threads,
+                    |start, part| {
+                        for (k, f) in part.iter_mut().enumerate() {
+                            simplify_and_scale(ctx, start + k, f, z, tx, ty, maxzoom, shared_nodes);
+                        }
+                    },
+                );
             }
 
             for f in features.iter_mut() {
@@ -1393,50 +1434,45 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
             }
         }
 
-        let mut tile = MvtTile::default();
+        let trace_select = trace_start.elapsed().as_secs_f64();
+        let mut tile: Vec<LayerEnc<'_>> = Vec::new();
+        let mut tile_geoms: Vec<&DrawVec> = Vec::new();
         let mut feature_count: usize = 0;
 
         for (li, lf) in layer_list.iter_mut() {
             let layer_features = &mut lf.features;
             feature_count += layer_features.len();
-
-            let mut layer = MvtLayer {
-                name: store.layers[*li as usize].name.clone(),
-                version: 2,
-                extent: 1i64 << tile_detail,
-                ..Default::default()
-            };
-
             for f in layer_features.iter_mut() {
                 let t = f.t as i32;
-
                 if t == VT_LINE || t == VT_POLYGON {
                     f.geometry = remove_noop(std::mem::take(&mut f.geometry), t, 0);
                 }
+            }
+
+            let name = &store.layers[*li as usize].name;
+            let mut layer = LayerEnc::new(&ctx.codes, name, 1i64 << tile_detail);
+
+            for f in layer_features.iter() {
+                let t = f.t as i32;
 
                 if f.geometry.is_empty() {
                     continue;
                 }
 
                 let sfe = &store.features[f.fi as usize];
-                let mut feature = MvtFeature {
-                    type_: t,
-                    geometry: to_feature(&f.geometry),
-                    id: sfe.id,
-                    has_id: sfe.has_id,
-                    ..Default::default()
-                };
+                layer.feature(t, sfe.has_id, sfe.id, tile_geoms.len());
+                tile_geoms.push(&f.geometry);
                 count += f.geometry.len() as i64;
 
                 for a in ax.of(f) {
                     if ax.live(a) {
-                        layer.tag(&mut feature, ax.key(a), &ctx.values[a.value as usize]);
+                        layer.tag_store(ax.key(a), ctx.key_slots[a.key as usize], a.value);
                     }
                 }
                 for a in 0..f.full_keys.len() {
                     let sv = &f.full_values[a];
                     let v = stringified_to_mvt_value(sv.type_, &sv.s);
-                    layer.tag(&mut feature, &f.full_keys[a], &v);
+                    layer.tag_extra(&f.full_keys[a], &v);
                 }
 
                 if o.a(A_CALCULATE_FEATURE_DENSITY) {
@@ -1453,23 +1489,21 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
                         ..Default::default()
                     };
                     v.numeric_value.set_sint_value(glow as i64);
-                    layer.tag(&mut feature, "tippecanoe_feature_density", &v);
+                    layer.tag_extra("tippecanoe_feature_density", &v);
 
                     let sv = SerialVal::new(MVT_DOUBLE, &glow.to_string());
                     add_tilestats(
                         &mut res.tilestats,
-                        &layer.name,
+                        name,
                         z,
                         "tippecanoe_feature_density",
                         &sv,
                     );
                 }
-
-                layer.features.push(feature);
             }
 
-            if !layer.features.is_empty() {
-                tile.layers.push(layer);
+            if !layer.is_empty() {
+                tile.push(layer);
             }
         }
 
@@ -1483,7 +1517,7 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
             adjusted_feature_count = adjusted_feature_count.wrapping_mul(skipped + kept) / kept;
         }
 
-        if adjusted_feature_count > 0 && !tile.layers.is_empty() {
+        if adjusted_feature_count > 0 && !tile.is_empty() {
             if too_many_features
                 || (adjusted_feature_count > adjusted_max_tile_features && !o.p(P_FEATURE_LIMIT))
             {
@@ -1545,14 +1579,45 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
                 }
             }
 
-            let pbf = tile.encode();
-            tile.layers.clear();
+            let trace_build = trace_start.elapsed().as_secs_f64();
+            let mut pbf: Vec<u8> = Vec::new();
+            for layer in std::mem::take(&mut tile) {
+                if let Err(message) = layer.finish(&tile_geoms, ctx.threads, &mut pbf) {
+                    res.len = -1;
+                    res.error = Some(message);
+                    return res;
+                }
+            }
+            let trace_encode = trace_start.elapsed().as_secs_f64();
+            let pbf_len = pbf.len();
 
             let compressed = if !o.p(P_TILE_COMPRESSION) {
                 gzip(&pbf, o.fast)
             } else {
                 pbf
             };
+            if std::env::var_os("MANBY_TRACE").is_some() {
+                static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+                let t0 = *T0.get_or_init(std::time::Instant::now);
+                eprintln!(
+                    "trace {:.3} {}/{}/{} mingap {} cands {} kept {} skipped {} features {}: select {:.3} build {:.3} encode {:.3} gzip {:.3}; {} -> {} bytes",
+                    t0.elapsed().as_secs_f64(),
+                    z,
+                    tx,
+                    ty,
+                    mingap,
+                    rt.cands.len(),
+                    kept,
+                    skipped,
+                    feature_count,
+                    trace_select,
+                    trace_build - trace_select,
+                    trace_encode - trace_build,
+                    trace_start.elapsed().as_secs_f64() - trace_encode,
+                    pbf_len,
+                    compressed.len()
+                );
+            }
 
             let mut adjusted_tile_size = compressed.len();
             if kept > 0 {
@@ -1637,11 +1702,13 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
                 res.len = count;
                 res.tile = Some(compressed);
                 res.strategy = Some(strategy);
+                res.reusable = reusable_at!(line_detail, detail_reduced);
                 return res;
             }
         } else {
             res.len = count;
             res.strategy = Some(strategy);
+            res.reusable = reusable_at!(line_detail, detail_reduced);
             return res;
         }
 
@@ -1882,4 +1949,57 @@ fn retry_threshold(
     } else {
         RetryOutcome::ReduceDetail
     }
+}
+
+/// Whether a tile that succeeded with `prev`'s thresholds would make the
+/// same selection with `th`, so that its result can stand for the attempt
+/// tippecanoe would make with `th`. Thresholds only ever grow within a zoom.
+pub fn reuse(
+    ctx: &Ctx<'_>,
+    rt: &ReadTile,
+    prev: MakeResult,
+    th: &Thresholds,
+) -> Option<MakeResult> {
+    let old = prev.reusable?;
+    if old.gamma != th.gamma || old.minextent != th.minextent || old.minattribute != th.minattribute
+    {
+        return None;
+    }
+    if old.mingap != th.mingap || old.mindrop_sequence != th.mindrop_sequence {
+        // Only candidates still kept when the thresholds are compared can be
+        // affected, and only by values between the old and new thresholds.
+        let store = ctx.store;
+        let affected = rt.cands.iter().any(|c| {
+            if c.dropped != FEATURE_KEPT {
+                return false;
+            }
+            if c.gap >= old.mingap && c.gap < th.mingap {
+                return true;
+            }
+            if old.mindrop_sequence != th.mindrop_sequence {
+                let f = &store.features[c.fi as usize];
+                let ds = calculate_drop_sequence(f.feature_minzoom, f.index);
+                if ds > old.mindrop_sequence && ds <= th.mindrop_sequence {
+                    return true;
+                }
+            }
+            false
+        });
+        if affected {
+            return None;
+        }
+    }
+
+    Some(MakeResult {
+        len: prev.len,
+        tile: prev.tile,
+        strategy: prev.strategy,
+        th_out: *th,
+        tile_size_out: 0,
+        feature_count_out: 0,
+        still_dropping: false,
+        tilestats: BTreeMap::new(),
+        error: None,
+        reusable: Some(*th),
+    })
 }

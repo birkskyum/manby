@@ -3,7 +3,7 @@
 use std::cmp::Ordering;
 
 use tippecanoe::geometry::{Draw, DrawVec, VT_LINETO, VT_MOVETO};
-use tippecanoe::mvt::{MVT_DOUBLE, MVT_FLOAT, MVT_INT, MVT_SINT, MVT_UINT, MvtGeometry, MvtValue};
+use tippecanoe::mvt::{MVT_DOUBLE, MVT_FLOAT, MVT_INT, MVT_SINT, MVT_UINT, MvtValue};
 use tippecanoe::text::bit_reverse;
 
 /// `SHIFT_RIGHT(a)`.
@@ -31,7 +31,8 @@ pub fn stable_sort_less<T: PartialOrd>(v: &mut [T]) {
 }
 
 pub fn choose_mingap(gaps: &mut [u64], f: f64, existing_gap: u64) -> u64 {
-    stable_sort_less(gaps);
+    // equal integers are indistinguishable, so this orders them as std::stable_sort does
+    gaps.sort_unstable();
 
     let mut ix = (gaps.len().wrapping_sub(1) as f64 * (1.0 - f)) as usize;
     while ix + 1 < gaps.len() && gaps[ix] <= existing_gap {
@@ -42,7 +43,8 @@ pub fn choose_mingap(gaps: &mut [u64], f: f64, existing_gap: u64) -> u64 {
 }
 
 pub fn choose_minextent(extents: &mut [i64], f: f64, existing_extent: i64) -> i64 {
-    stable_sort_less(extents);
+    // equal integers are indistinguishable, so this orders them as std::stable_sort does
+    extents.sort_unstable();
 
     let mut ix = (extents.len().wrapping_sub(1) as f64 * (1.0 - f)) as usize;
     while ix + 1 < extents.len() && extents[ix] <= existing_extent {
@@ -57,7 +59,8 @@ pub fn choose_mindrop_sequence(drop_sequences: &mut [u64], f: f64, existing: u64
         return u64::MAX;
     }
 
-    stable_sort_less(drop_sequences);
+    // equal integers are indistinguishable, so this orders them as std::stable_sort does
+    drop_sequences.sort_unstable();
 
     let mut ix = ((drop_sequences.len() - 1) as f64 * (1.0 - f)) as usize;
     while ix + 1 < drop_sequences.len() && drop_sequences[ix] <= existing {
@@ -208,8 +211,63 @@ pub fn draws_something(geom: &DrawVec) -> bool {
     false
 }
 
-pub fn to_feature(geom: &DrawVec) -> Vec<MvtGeometry> {
-    geom.iter()
-        .map(|g| MvtGeometry::new(g.op as i32, g.x, g.y))
-        .collect()
+/// Runs `f` over `0..n`, split into consecutive ranges on up to `threads`
+/// scoped threads when each gets at least `min_len`, and returns the results
+/// in order. Tile tasks use this instead of rayon so that a thread waiting for
+/// its helpers never picks up another tile's task in the meantime.
+pub fn par_ranges<R: Send>(
+    n: usize,
+    min_len: usize,
+    threads: usize,
+    f: impl Fn(std::ops::Range<usize>) -> R + Sync,
+) -> Vec<R> {
+    let parts = (n / min_len.max(1)).clamp(1, threads.max(1));
+    if parts <= 1 {
+        return vec![f(0..n)];
+    }
+    let range = |i: usize| n * i / parts..n * (i + 1) / parts;
+    let f = &f;
+    std::thread::scope(|s| {
+        let handles: Vec<_> = (1..parts).map(|i| s.spawn(move || f(range(i)))).collect();
+        let mut out = Vec::with_capacity(parts);
+        out.push(f(range(0)));
+        for h in handles {
+            match h.join() {
+                Ok(r) => out.push(r),
+                Err(e) => std::panic::resume_unwind(e),
+            }
+        }
+        out
+    })
+}
+
+/// Like `par_ranges`, for changing the items of a slice; `f` gets each part
+/// and the index of its first item.
+pub fn par_chunks_mut<T: Send>(
+    items: &mut [T],
+    min_len: usize,
+    threads: usize,
+    f: impl Fn(usize, &mut [T]) + Sync,
+) {
+    let n = items.len();
+    let parts = (n / min_len.max(1)).clamp(1, threads.max(1));
+    if parts <= 1 {
+        f(0, items);
+        return;
+    }
+    let size = n.div_ceil(parts);
+    let f = &f;
+    std::thread::scope(|s| {
+        let mut chunks = items.chunks_mut(size).enumerate();
+        let (_, first) = chunks.next().unwrap();
+        let handles: Vec<_> = chunks
+            .map(|(i, c)| s.spawn(move || f(i * size, c)))
+            .collect();
+        f(0, first);
+        for h in handles {
+            if let Err(e) = h.join() {
+                std::panic::resume_unwind(e);
+            }
+        }
+    });
 }

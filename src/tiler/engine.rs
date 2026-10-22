@@ -1,7 +1,10 @@
 //! The order of work: zoom levels, the passes tippecanoe makes over a zoom
 //! level when a tile needs a stricter threshold, and the parallelism.
 
-use std::collections::BTreeMap;
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap};
+use std::sync::Arc;
+use std::sync::mpsc::{Sender, channel};
 
 use rayon::prelude::*;
 use tippecanoe::errors::{EXIT_ARGS, EXIT_IMPOSSIBLE, EXIT_INCOMPLETE};
@@ -12,7 +15,8 @@ use tippecanoe::mvt::{MVT_NULL, MvtValue, stringified_to_mvt_value};
 use tippecanoe::options::*;
 use tippecanoe::tile::Strategy;
 
-use super::make::{MakeParams, MakeResult, Thresholds, make_tile};
+use super::encode::{ValueCodes, key_slot};
+use super::make::{MakeParams, MakeResult, Thresholds, make_tile, reuse};
 use super::read::{Carried, ReadParams, ReadTile, TileInput, read_tile};
 use super::{TileOptions, TileStats};
 use crate::error::Error;
@@ -29,10 +33,16 @@ pub struct Ctx<'a> {
     /// The position of each layer when the layers are sorted by name.
     pub layer_rank: Vec<u32>,
     pub filter: Option<JsonRef<'a>>,
+    /// The encodings of the values, for writing tiles.
+    pub codes: ValueCodes,
+    /// Each key's slot in tippecanoe's key dedup cache.
+    pub key_slots: Vec<u32>,
+    /// How many threads the work inside one tile may use.
+    pub threads: usize,
 }
 
 impl<'a> Ctx<'a> {
-    fn new(store: &'a FeatureStore, o: &'a TileOptions) -> Ctx<'a> {
+    pub fn new(store: &'a FeatureStore, o: &'a TileOptions, threads: usize) -> Ctx<'a> {
         let values: Vec<MvtValue> = store
             .values
             .par_iter()
@@ -48,7 +58,13 @@ impl<'a> Ctx<'a> {
             layer_rank[i] = rank as u32;
         }
 
+        let codes = ValueCodes::new(&values);
+        let key_slots = store.keys.iter().map(|k| key_slot(k)).collect();
+
         Ctx {
+            codes,
+            key_slots,
+            threads,
             store,
             o,
             values,
@@ -97,7 +113,228 @@ fn tippecanoe_threads(o: &TileOptions, useful_threads: usize) -> usize {
     threads.max(1)
 }
 
-pub fn run(store: &FeatureStore, o: &TileOptions, sink: &dyn TileSink) -> crate::Result<TileStats> {
+/// The first tile's input: every feature of the store.
+pub fn root_input(ctx: &Ctx<'_>) -> Option<TileInput> {
+    let store = ctx.store;
+    let o = ctx.o;
+    if store.features.is_empty() {
+        return None;
+    }
+    let (ox, oy) = if o.iz != 0 {
+        ((o.ix << (32 - o.iz)) as i64, (o.iy << (32 - o.iz)) as i64)
+    } else {
+        (0, 0)
+    };
+    let feats = store
+        .features
+        .par_iter()
+        .enumerate()
+        .with_min_len(4096)
+        .map(|(i, f)| {
+            let mut bbox = f.bbox;
+            if bbox[0] <= bbox[2] {
+                bbox[0] -= ox;
+                bbox[1] -= oy;
+                bbox[2] -= ox;
+                bbox[3] -= oy;
+            }
+            Carried {
+                fi: i as u32,
+                gap: 0,
+                geom_start: f.geom_start,
+                geom_len: f.geom_len,
+                bbox,
+            }
+        })
+        .collect();
+    Some(TileInput {
+        z: o.iz,
+        x: o.ix,
+        y: o.iy,
+        feats,
+        geom: Vec::new(),
+        root: true,
+    })
+}
+
+/// How many zoom levels the reading may run ahead of the last finished level.
+const LOOKAHEAD: usize = 3;
+
+enum Task {
+    Read {
+        level: usize,
+        input: TileInput,
+        rp: ReadParams,
+    },
+    Make {
+        level: usize,
+        idx: usize,
+        pass: usize,
+        rt: Arc<ReadTile>,
+        mp: MakeParams,
+        prev: Option<Box<MakeResult>>,
+    },
+}
+
+struct Ready {
+    key: (usize, u8, u64),
+    task: Task,
+}
+
+impl PartialEq for Ready {
+    fn eq(&self, o: &Ready) -> bool {
+        self.key == o.key
+    }
+}
+
+impl Eq for Ready {}
+
+impl PartialOrd for Ready {
+    fn partial_cmp(&self, o: &Ready) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(o))
+    }
+}
+
+impl Ord for Ready {
+    fn cmp(&self, o: &Ready) -> std::cmp::Ordering {
+        self.key.cmp(&o.key)
+    }
+}
+
+enum Event {
+    Read {
+        level: usize,
+        tile: ReadTile,
+    },
+    Made {
+        level: usize,
+        idx: usize,
+        pass: usize,
+        result: MakeResult,
+    },
+}
+
+/// The maximum zoom during a pass, and each tile's z, x, y and vertex count.
+type PassTiles = (i32, Vec<(i32, u32, u32, i64)>);
+
+/// One zoom level: the tiles that tippecanoe would read from one zoom's
+/// temporary files.
+struct Level {
+    z: i32,
+    /// tippecanoe's zoom counter when it starts on this level.
+    loop_z: i32,
+    nextzoom: Option<i32>,
+    threads: usize,
+    child_shards: i32,
+    max_zoom_increment: i32,
+    /// Inputs not read yet.
+    queued: Vec<TileInput>,
+    reading: usize,
+    /// For tippecanoe's count of temporary files with data: each input's
+    /// parent tile and its own position.
+    origins: Vec<((u32, u32), (u32, u32))>,
+    tiles: Vec<Arc<ReadTile>>,
+    inputs_complete: bool,
+    makes_started: bool,
+    pass: usize,
+    th: Thresholds,
+    results: Vec<Option<MakeResult>>,
+    outstanding: usize,
+    /// Per pass: the maximum zoom then and each tile's z, x, y and vertex count.
+    history: Vec<PassTiles>,
+    tilestats: Vec<BTreeMap<String, LayermapEntry>>,
+    zoom_tile_size: usize,
+    zoom_feature_count: usize,
+    strategy: Strategy,
+    /// The zoom counter after the last pass, where the strategies go.
+    strategy_z: i32,
+    err: bool,
+    done: bool,
+}
+
+impl Level {
+    fn new(z: i32, loop_z: i32, o: &TileOptions) -> Level {
+        Level {
+            z,
+            loop_z,
+            nextzoom: None,
+            threads: 1,
+            child_shards: 0,
+            max_zoom_increment: 0,
+            queued: Vec::new(),
+            reading: 0,
+            origins: Vec::new(),
+            tiles: Vec::new(),
+            inputs_complete: false,
+            makes_started: false,
+            pass: 0,
+            th: Thresholds {
+                gamma: o.gamma,
+                mingap: 0,
+                minextent: 0,
+                mindrop_sequence: 0,
+                minattribute: if o.drop_by_attribute_descending {
+                    f64::INFINITY
+                } else {
+                    f64::NEG_INFINITY
+                },
+            },
+            results: Vec::new(),
+            outstanding: 0,
+            history: Vec::new(),
+            tilestats: Vec::new(),
+            zoom_tile_size: 0,
+            zoom_feature_count: 0,
+            strategy: Strategy::default(),
+            strategy_z: z,
+            err: false,
+            done: false,
+        }
+    }
+
+    fn all_read(&self) -> bool {
+        self.inputs_complete && self.queued.is_empty() && self.reading == 0
+    }
+}
+
+struct Driver<'d, 's> {
+    ctx: &'s Ctx<'s>,
+    sink: &'s dyn TileSink,
+    scope: &'d rayon::Scope<'s>,
+    tx: Sender<Event>,
+    /// Tasks waiting for a thread, shallower levels first.
+    ready: BinaryHeap<Reverse<Ready>>,
+    seq: u64,
+    /// At most one task per thread runs at a time, so that a thread waiting
+    /// inside a task can only pick up that task's own parallel work, not
+    /// another whole tile.
+    max_in_flight: usize,
+    levels: Vec<Level>,
+    maxzoom: i32,
+    extend_zooms_max: i64,
+    finalized: usize,
+    in_flight: usize,
+    largest_written: i32,
+    stopped: bool,
+    most: i64,
+    stats: TileStats,
+    tilestats: Vec<BTreeMap<String, LayermapEntry>>,
+    error: Option<Error>,
+    timing: bool,
+    started: std::time::Instant,
+}
+
+/// Runs the tiling: a coordinator on the calling thread that hands the reading
+/// and making of tiles to the pool and applies tippecanoe's zoom-level rules
+/// to the results in zoom order.
+pub fn drive<'s>(
+    ctx: &'s Ctx<'s>,
+    root: Option<TileInput>,
+    sink: &'s dyn TileSink,
+    scope: &rayon::Scope<'s>,
+    threads: usize,
+) -> crate::Result<TileStats> {
+    let o = ctx.o;
     if let Some(what) = unsupported(o) {
         return Err(Error::new(
             EXIT_ARGS,
@@ -105,291 +342,594 @@ pub fn run(store: &FeatureStore, o: &TileOptions, sink: &dyn TileSink) -> crate:
         ));
     }
 
-    let ctx = Ctx::new(store, o);
-    let mut stats = TileStats::default();
+    let (tx, rx) = channel::<Event>();
+    let mut d = Driver {
+        ctx,
+        sink,
+        scope,
+        tx,
+        ready: BinaryHeap::new(),
+        seq: 0,
+        max_in_flight: threads.max(1),
+        levels: Vec::new(),
+        maxzoom: o.maxzoom,
+        extend_zooms_max: o.extend_zooms_max,
+        finalized: 0,
+        in_flight: 0,
+        largest_written: -1,
+        stopped: false,
+        most: 0,
+        stats: TileStats::default(),
+        tilestats: Vec::new(),
+        error: None,
+        timing: std::env::var_os("MANBY_TIMING").is_some(),
+        started: std::time::Instant::now(),
+    };
 
-    let mut maxzoom = o.maxzoom;
-    let mut extend_zooms_max = o.extend_zooms_max;
-    let mut largest_written: i32 = -1;
-    let mut tilestats: Vec<BTreeMap<String, LayermapEntry>> = Vec::new();
-
-    let mut level: Vec<TileInput> = Vec::new();
-    if !store.features.is_empty() {
-        let (ox, oy) = if o.iz != 0 {
-            ((o.ix << (32 - o.iz)) as i64, (o.iy << (32 - o.iz)) as i64)
-        } else {
-            (0, 0)
-        };
-        let feats = store
-            .features
-            .par_iter()
-            .enumerate()
-            .with_min_len(4096)
-            .map(|(i, f)| {
-                let mut bbox = f.bbox;
-                if bbox[0] <= bbox[2] {
-                    bbox[0] -= ox;
-                    bbox[1] -= oy;
-                    bbox[2] -= ox;
-                    bbox[3] -= oy;
-                }
-                Carried {
-                    fi: i as u32,
-                    gap: 0,
-                    geom_start: f.geom_start,
-                    geom_len: f.geom_len,
-                    bbox,
-                }
-            })
-            .collect();
-        level.push(TileInput {
-            z: o.iz,
-            x: o.ix,
-            y: o.iy,
-            feats,
-            geom: Vec::new(),
-            root: true,
-        });
+    if let Some(root) = root {
+        let mut level = Level::new(o.iz, o.iz, o);
+        level.origins.push(((root.x, root.y), (root.x, root.y)));
+        level.queued.push(root);
+        level.inputs_complete = true;
+        d.levels.push(level);
+        d.level_inputs_complete(0);
     }
 
-    // the temporary files with data at the next zoom, for tippecanoe's thread count
-    let mut useful_threads: usize = 1;
-
-    let mut z = o.iz;
-    while z <= maxzoom {
-        let mut most: i64 = 0;
-
-        let threads = tippecanoe_threads(o, useful_threads);
-        let child_shards = (o.temp_files / threads) as i32;
-        let max_zoom_increment = ((child_shards as f64).ln() / 4f64.ln()) as i32;
-        if !level.is_empty() {
-            if child_shards < 4 || max_zoom_increment < 1 {
-                return Err(Error::new(
-                    EXIT_IMPOSSIBLE,
-                    format!(
-                        "Internal error: {} shards, max zoom increment {}",
-                        child_shards, max_zoom_increment
-                    ),
-                ));
-            }
-            if (((child_shards - 1) << 1) & child_shards) != child_shards {
-                return Err(Error::new(
-                    EXIT_IMPOSSIBLE,
-                    format!("Internal error: {} shards not a power of 2", child_shards),
-                ));
-            }
+    loop {
+        d.pump();
+        if d.in_flight == 0 {
+            break;
         }
-
-        let level_z = level.first().map(|t| t.z).unwrap_or(z);
-        let mut nextzoom = level_z + 1;
-        if nextzoom < o.minzoom {
-            if level_z + max_zoom_increment > o.minzoom {
-                nextzoom = o.minzoom;
-            } else {
-                nextzoom = level_z + max_zoom_increment;
-            }
-        }
-
-        let rp = ReadParams {
-            nextzoom,
-            maxzoom,
-            extend_zooms_max,
+        let event = match rx.recv() {
+            Ok(e) => e,
+            Err(_) => break,
         };
-        let reads: Vec<ReadTile> = std::mem::take(&mut level)
-            .into_par_iter()
-            .map(|t| read_tile(&ctx, t, &rp))
-            .collect();
+        d.in_flight -= 1;
+        if d.error.is_some() {
+            d.ready.clear();
+            continue;
+        }
+        match event {
+            Event::Read { level, tile } => d.on_read(level, tile),
+            Event::Made {
+                level,
+                idx,
+                pass,
+                result,
+            } => d.on_made(level, idx, pass, result),
+        }
+    }
 
-        let mut err: i32 = i32::MAX;
+    if let Some(e) = d.error {
+        return Err(e);
+    }
+
+    let mut stats = d.stats;
+    if !stats.incomplete && stats.strategies.len() < (d.maxzoom + 1) as usize {
+        stats
+            .strategies
+            .resize((d.maxzoom + 1) as usize, Strategy::default());
+    }
+    let mut maxzoom = d.maxzoom;
+    if stats.incomplete {
+        maxzoom = stats.maxzoom;
+    } else if d.largest_written >= 0 && maxzoom > d.largest_written {
+        maxzoom = d.largest_written;
+    }
+    stats.maxzoom = maxzoom;
+    stats.layermap = merge_tilestats(d.tilestats);
+    Ok(stats)
+}
+
+impl<'d, 's> Driver<'d, 's> {
+    fn enqueue(&mut self, level: usize, kind: u8, task: Task) {
+        self.seq += 1;
+        self.ready.push(Reverse(Ready {
+            key: (level, kind, self.seq),
+            task,
+        }));
+    }
+
+    /// Hands ready tasks to the pool while threads are free.
+    fn pump(&mut self) {
+        while self.in_flight < self.max_in_flight {
+            let Some(Reverse(ready)) = self.ready.pop() else {
+                break;
+            };
+            self.in_flight += 1;
+            let ctx = self.ctx;
+            let tx = self.tx.clone();
+            match ready.task {
+                Task::Read { level, input, rp } => {
+                    self.scope.spawn(move |_| {
+                        let tile = read_tile(ctx, input, &rp);
+                        let _ = tx.send(Event::Read { level, tile });
+                    });
+                }
+                Task::Make {
+                    level,
+                    idx,
+                    pass,
+                    rt,
+                    mp,
+                    prev,
+                } => {
+                    self.scope.spawn(move |_| {
+                        let result = match prev.and_then(|prev| reuse(ctx, &rt, *prev, &mp.th)) {
+                            Some(reused) => reused,
+                            None => make_tile(ctx, &rt, &mp),
+                        };
+                        let _ = tx.send(Event::Made {
+                            level,
+                            idx,
+                            pass,
+                            result,
+                        });
+                    });
+                }
+            }
+        }
+    }
+
+    fn spawn_read(&mut self, k: usize, input: TileInput) {
+        let level = &mut self.levels[k];
+        let rp = ReadParams {
+            nextzoom: level.nextzoom.unwrap(),
+            maxzoom: self.maxzoom,
+            extend_zooms_max: self.extend_zooms_max,
+        };
+        level.reading += 1;
+        self.enqueue(
+            k,
+            0,
+            Task::Read {
+                level: k,
+                input,
+                rp,
+            },
+        );
+    }
+
+    fn spawn_make(&mut self, k: usize, idx: usize) {
+        self.spawn_make_after(k, idx, None);
+    }
+
+    /// Queues the making of tile `idx` of level `k` in its current pass;
+    /// `prev` is its result from the pass before, which may still hold.
+    fn spawn_make_after(&mut self, k: usize, idx: usize, prev: Option<Box<MakeResult>>) {
+        let level = &mut self.levels[k];
+        let pass = level.pass;
+        let loop_z = if pass == 0 { level.loop_z } else { level.z };
+        let o = self.ctx.o;
+        let simplification = if loop_z == self.maxzoom && o.maxzoom_simplification > 0.0 {
+            o.maxzoom_simplification
+        } else {
+            o.simplification
+        };
+        let mp = MakeParams {
+            maxzoom: self.maxzoom,
+            simplification,
+            th: level.th,
+        };
+        level.outstanding += 1;
+        let rt = level.tiles[idx].clone();
+        self.enqueue(
+            k,
+            1,
+            Task::Make {
+                level: k,
+                idx,
+                pass,
+                rt,
+                mp,
+                prev,
+            },
+        );
+    }
+
+    /// Spawns the reads that are waiting, if the level may read now.
+    fn release_reads(&mut self, k: usize) {
+        if self.stopped || k >= self.finalized + LOOKAHEAD || self.levels[k].nextzoom.is_none() {
+            return;
+        }
+        let queued = std::mem::take(&mut self.levels[k].queued);
+        for input in queued {
+            self.spawn_read(k, input);
+        }
+    }
+
+    fn makes_allowed(&self, k: usize) -> bool {
+        !self.stopped && self.levels[k].z <= self.maxzoom
+    }
+
+    fn start_makes(&mut self, k: usize) {
+        if self.levels[k].makes_started || !self.makes_allowed(k) {
+            return;
+        }
+        self.levels[k].makes_started = true;
+        let n = self.levels[k].tiles.len();
+        self.levels[k].results.resize_with(n, || None);
+        for idx in 0..n {
+            self.spawn_make(k, idx);
+        }
+    }
+
+    /// All the inputs of level `k` are known: work out what tippecanoe's
+    /// thread count would be, and from it the next zoom.
+    fn level_inputs_complete(&mut self, k: usize) {
+        let o = self.ctx.o;
+        let level = &mut self.levels[k];
+        level.inputs_complete = true;
+
+        let useful_threads = if k == 0 {
+            1
+        } else {
+            let prev = &self.levels[k - 1];
+            let threads = prev.threads;
+            let cs = prev.child_shards as u32;
+            let mzi = prev.max_zoom_increment as u32;
+            let mut parents: Vec<(u32, u32)> =
+                self.levels[k].origins.iter().map(|(p, _)| *p).collect();
+            parents.sort();
+            parents.dedup();
+            let mut shards = std::collections::BTreeSet::new();
+            for (parent, child) in &self.levels[k].origins {
+                let slot = parents.binary_search(parent).unwrap() % threads;
+                let j = (child.0.wrapping_shl(mzi) | (child.1 & ((1u32 << mzi) - 1)))
+                    & cs.wrapping_sub(1);
+                shards.insert(slot * cs as usize + j as usize);
+            }
+            shards.len()
+        };
+
+        let level = &mut self.levels[k];
+        let _ = &level;
+        level.threads = tippecanoe_threads(o, useful_threads);
+        level.child_shards = (o.temp_files / level.threads) as i32;
+        level.max_zoom_increment = ((level.child_shards as f64).ln() / 4f64.ln()) as i32;
+        if level.child_shards < 4 || level.max_zoom_increment < 1 {
+            self.error = Some(Error::new(
+                EXIT_IMPOSSIBLE,
+                format!(
+                    "Internal error: {} shards, max zoom increment {}",
+                    level.child_shards, level.max_zoom_increment
+                ),
+            ));
+            return;
+        }
+        if (((level.child_shards - 1) << 1) & level.child_shards) != level.child_shards {
+            self.error = Some(Error::new(
+                EXIT_IMPOSSIBLE,
+                format!(
+                    "Internal error: {} shards not a power of 2",
+                    level.child_shards
+                ),
+            ));
+            return;
+        }
+        if level.nextzoom.is_none() {
+            let mut nextzoom = level.z + 1;
+            if nextzoom < o.minzoom {
+                if level.z + level.max_zoom_increment > o.minzoom {
+                    nextzoom = o.minzoom;
+                } else {
+                    nextzoom = level.z + level.max_zoom_increment;
+                }
+            }
+            level.nextzoom = Some(nextzoom);
+        }
+
+        self.release_reads(k);
+        self.start_makes(k);
+        self.check_children_complete(k);
+        self.check_pass(k);
+    }
+
+    /// The next level's inputs are complete once this level is all read.
+    fn check_children_complete(&mut self, k: usize) {
+        if !self.levels[k].all_read() {
+            return;
+        }
+        if k + 1 < self.levels.len() && !self.levels[k + 1].inputs_complete {
+            self.level_inputs_complete(k + 1);
+        }
+    }
+
+    fn on_read(&mut self, k: usize, mut tile: ReadTile) {
+        let o = self.ctx.o;
+        self.levels[k].reading -= 1;
+        let children = std::mem::take(&mut tile.children);
+        let parent = (tile.x, tile.y);
+        let idx = self.levels[k].tiles.len();
+        self.levels[k].tiles.push(Arc::new(tile));
+
+        if !children.is_empty() {
+            if k + 1 == self.levels.len() {
+                let z = children[0].z;
+                let mut level = Level::new(z, self.levels[k].z + 1, o);
+                if z + 1 >= o.minzoom {
+                    level.nextzoom = Some(z + 1);
+                }
+                self.levels.push(level);
+                self.start_makes(k + 1);
+            }
+            let next = &mut self.levels[k + 1];
+            for child in children {
+                next.origins.push((parent, (child.x, child.y)));
+                next.queued.push(child);
+            }
+            self.release_reads(k + 1);
+        }
+
+        if self.levels[k].makes_started {
+            self.levels[k].results.push(None);
+            self.spawn_make(k, idx);
+        }
+
+        self.check_children_complete(k);
+        self.check_pass(k);
+    }
+
+    fn on_made(&mut self, k: usize, idx: usize, pass: usize, result: MakeResult) {
+        let level = &mut self.levels[k];
+        debug_assert_eq!(pass, level.pass);
+        level.outstanding -= 1;
+        level.results[idx] = Some(result);
+        self.check_pass(k);
+    }
+
+    fn check_pass(&mut self, k: usize) {
+        let level = &self.levels[k];
+        if level.done
+            || !level.makes_started
+            || !level.all_read()
+            || level.outstanding > 0
+            || level.results.len() != level.tiles.len()
+        {
+            return;
+        }
+        self.complete_pass(k);
+    }
+
+    /// Every tile of level `k` has been made in this pass: apply tippecanoe's
+    /// rules for the zoom level.
+    fn complete_pass(&mut self, k: usize) {
+        let o = self.ctx.o;
+        let maxzoom = self.maxzoom;
+        let level = &mut self.levels[k];
+
+        let mut order: Vec<usize> = (0..level.tiles.len()).collect();
+        order.sort_by_key(|&i| (level.tiles[i].x, level.tiles[i].y));
+
+        let mut z = if level.pass == 0 {
+            level.loop_z
+        } else {
+            level.z
+        };
+        let mut again = false;
+        let mut extend_zooms = false;
+        let mut strategy = Strategy::default();
+        let mut history = Vec::with_capacity(order.len());
         let mut error: Option<String> = None;
 
-        let mut th = Thresholds {
-            gamma: o.gamma,
-            mingap: 0,
-            minextent: 0,
-            mindrop_sequence: 0,
-            minattribute: if o.drop_by_attribute_descending {
-                f64::INFINITY
-            } else {
-                f64::NEG_INFINITY
-            },
-        };
-        let mut zoom_tile_size: usize = 0;
-        let mut zoom_feature_count: usize = 0;
-        let mut results: Vec<MakeResult>;
+        for &i in &order {
+            let rt = &level.tiles[i];
+            let r = level.results[i].as_mut().unwrap();
+            if rt.z > z {
+                z = rt.z;
+            }
+            history.push((rt.z, rt.x, rt.y, r.len));
 
-        loop {
-            let simplification = if z == maxzoom && o.maxzoom_simplification > 0.0 {
-                o.maxzoom_simplification
+            if r.len < 0 {
+                level.err = true;
+                if error.is_none() {
+                    error = r.error.take();
+                }
+            }
+
+            if let Some(s) = &r.strategy {
+                strategy.dropped_by_rate += s.dropped_by_rate;
+                strategy.dropped_by_gamma += s.dropped_by_gamma;
+                strategy.dropped_as_needed += s.dropped_as_needed;
+                strategy.coalesced_as_needed += s.coalesced_as_needed;
+                strategy.detail_reduced += s.detail_reduced;
+                strategy.tiny_polygons += s.tiny_polygons;
+                strategy.truncated_zooms += s.truncated_zooms;
+            }
+
+            if !r.tilestats.is_empty() {
+                level.tilestats.push(std::mem::take(&mut r.tilestats));
+            }
+
+            let th = &mut level.th;
+            let out = r.th_out;
+            if out.gamma > th.gamma {
+                th.gamma = out.gamma;
+                again = true;
+            }
+            if out.mingap > th.mingap {
+                th.mingap = out.mingap;
+                again = true;
+            }
+            if out.minextent > th.minextent {
+                th.minextent = out.minextent;
+                again = true;
+            }
+            if out.mindrop_sequence > th.mindrop_sequence {
+                th.mindrop_sequence = out.mindrop_sequence;
+                again = true;
+            }
+            let attr_propagate = if o.drop_by_attribute_descending {
+                out.minattribute < th.minattribute
             } else {
-                o.simplification
+                out.minattribute > th.minattribute
             };
-            let mp = MakeParams {
-                maxzoom,
-                simplification,
-                th,
-            };
-            results = reads
-                .par_iter()
-                .map(|rt| make_tile(&ctx, rt, &mp))
+            if attr_propagate {
+                th.minattribute = out.minattribute;
+                again = true;
+            }
+            level.zoom_tile_size = level.zoom_tile_size.max(r.tile_size_out);
+            level.zoom_feature_count = level.zoom_feature_count.max(r.feature_count_out);
+
+            if r.still_dropping {
+                extend_zooms = true;
+            }
+        }
+        level.history.push((maxzoom, history));
+
+        if let Some(message) = error {
+            self.error = Some(Error::new(EXIT_INCOMPLETE, message));
+            return;
+        }
+
+        if extend_zooms
+            && (o.a(A_EXTEND_ZOOMS) || self.extend_zooms_max > 0)
+            && z == self.maxzoom
+            && self.maxzoom < MAX_ZOOM
+        {
+            self.maxzoom += 1;
+            if self.extend_zooms_max > 0 {
+                self.extend_zooms_max -= 1;
+            }
+        }
+
+        let level = &mut self.levels[k];
+        strategy.tile_size = level.zoom_tile_size;
+        strategy.feature_count = level.zoom_feature_count;
+        level.strategy = strategy;
+        level.strategy_z = z;
+
+        if self.timing {
+            use std::sync::atomic::Ordering::Relaxed;
+            let c: Vec<u64> = super::make::COUNTERS
+                .iter()
+                .map(|c| c.swap(0, Relaxed))
                 .collect();
+            eprintln!(
+                "{:.3}s: z{} pass {} done: {} tiles; since last: {} attempts, {} compressions of {} MB taking {:.3}s",
+                self.started.elapsed().as_secs_f64(),
+                level.z,
+                level.pass,
+                level.tiles.len(),
+                c[0],
+                c[1],
+                c[2] >> 20,
+                c[3] as f64 / 1e9
+            );
+        }
 
-            let mut again = false;
-            let mut extend_zooms = false;
-            let mut strategy = Strategy::default();
-
-            for (rt, r) in reads.iter().zip(results.iter_mut()) {
-                if rt.z > z {
-                    z = rt.z;
-                }
-                if rt.z > largest_written {
-                    largest_written = rt.z;
-                }
-
-                if rt.z == mp.maxzoom {
-                    let a: u64 = ((rt.x as u64) << 32) | rt.y as u64;
-                    let b: u64 = ((stats.midx as u64) << 32) | stats.midy as u64;
-                    if r.len > most || (r.len == most && a < b) {
-                        stats.midx = rt.x;
-                        stats.midy = rt.y;
-                        most = r.len;
-                    }
-                }
-
-                if r.len < 0 {
-                    err = rt.z - 1;
-                    if error.is_none() {
-                        error = r.error.take();
-                    }
-                }
-
-                if let Some(s) = &r.strategy {
-                    strategy.dropped_by_rate += s.dropped_by_rate;
-                    strategy.dropped_by_gamma += s.dropped_by_gamma;
-                    strategy.dropped_as_needed += s.dropped_as_needed;
-                    strategy.coalesced_as_needed += s.coalesced_as_needed;
-                    strategy.detail_reduced += s.detail_reduced;
-                    strategy.tiny_polygons += s.tiny_polygons;
-                    strategy.truncated_zooms += s.truncated_zooms;
-                }
-
-                if !r.tilestats.is_empty() {
-                    tilestats.push(std::mem::take(&mut r.tilestats));
-                }
-
-                let out = r.th_out;
-                if out.gamma > th.gamma {
-                    th.gamma = out.gamma;
-                    again = true;
-                }
-                if out.mingap > th.mingap {
-                    th.mingap = out.mingap;
-                    again = true;
-                }
-                if out.minextent > th.minextent {
-                    th.minextent = out.minextent;
-                    again = true;
-                }
-                if out.mindrop_sequence > th.mindrop_sequence {
-                    th.mindrop_sequence = out.mindrop_sequence;
-                    again = true;
-                }
-                let attr_propagate = if o.drop_by_attribute_descending {
-                    out.minattribute < th.minattribute
-                } else {
-                    out.minattribute > th.minattribute
-                };
-                if attr_propagate {
-                    th.minattribute = out.minattribute;
-                    again = true;
-                }
-                zoom_tile_size = zoom_tile_size.max(r.tile_size_out);
-                zoom_feature_count = zoom_feature_count.max(r.feature_count_out);
-
-                if r.still_dropping {
-                    extend_zooms = true;
-                }
+        if again {
+            level.pass += 1;
+            let prevs: Vec<Option<Box<MakeResult>>> = level
+                .results
+                .iter_mut()
+                .map(|r| r.take().map(Box::new))
+                .collect();
+            for (idx, prev) in prevs.into_iter().enumerate() {
+                self.spawn_make_after(k, idx, prev);
             }
+            return;
+        }
 
-            if let Some(message) = error {
-                return Err(Error::new(EXIT_INCOMPLETE, message));
-            }
+        level.done = true;
+        self.try_finalize();
 
-            if extend_zooms
-                && (o.a(A_EXTEND_ZOOMS) || extend_zooms_max > 0)
-                && z == maxzoom
-                && maxzoom < MAX_ZOOM
+        // a level beyond the old maximum zoom may now be made
+        for j in 0..self.levels.len() {
+            if self.levels[j].tiles.len() + self.levels[j].reading + self.levels[j].queued.len() > 0
+                && self.levels[j].inputs_complete
             {
-                maxzoom += 1;
-                if extend_zooms_max > 0 {
-                    extend_zooms_max -= 1;
+                self.start_makes(j);
+                self.check_pass(j);
+            }
+        }
+    }
+
+    /// Writes out the finished levels in zoom order.
+    fn try_finalize(&mut self) {
+        while self.finalized < self.levels.len() && self.levels[self.finalized].done {
+            if self.stopped {
+                return;
+            }
+            let k = self.finalized;
+            if let Err(e) = self.finalize(k) {
+                self.error = Some(e);
+                return;
+            }
+            self.finalized += 1;
+            for j in self.finalized..self.levels.len() {
+                self.release_reads(j);
+            }
+        }
+
+        // levels deeper than the maximum zoom are never made once every level
+        // that could extend the maximum zoom is done
+        if self.finalized < self.levels.len()
+            && !self.levels[self.finalized].done
+            && self.levels[self.finalized].z > self.maxzoom
+        {
+            self.stopped = true;
+        }
+    }
+
+    fn finalize(&mut self, k: usize) -> crate::Result<()> {
+        let level = &mut self.levels[k];
+
+        self.most = 0;
+        for (pass_maxzoom, tiles) in &level.history {
+            for &(z, x, y, len) in tiles {
+                if z == *pass_maxzoom {
+                    let a: u64 = ((x as u64) << 32) | y as u64;
+                    let b: u64 = ((self.stats.midx as u64) << 32) | self.stats.midy as u64;
+                    if len > self.most || (len == self.most && a < b) {
+                        self.stats.midx = x;
+                        self.stats.midy = y;
+                        self.most = len;
+                    }
                 }
             }
-
-            if z as usize >= stats.strategies.len() {
-                stats.strategies.resize(z as usize + 1, Strategy::default());
-            }
-            strategy.tile_size = zoom_tile_size;
-            strategy.feature_count = zoom_feature_count;
-            stats.strategies[z as usize] = strategy;
-
-            if !again {
-                break;
-            }
-
-            // the tiles of this zoom are made again; merge what this pass
-            // added to the tilestats so it is not lost
-            let merged = merge_tilestats(std::mem::take(&mut tilestats));
-            if !merged.is_empty() {
-                tilestats.push(merged);
-            }
         }
 
-        for (rt, r) in reads.iter().zip(results.iter()) {
-            if let Some(tile) = &r.tile {
-                sink.write_tile(rt.z as u8, rt.x, rt.y, tile)?;
-                stats.tiles += 1;
+        let z = level.strategy_z;
+        if z as usize >= self.stats.strategies.len() {
+            self.stats
+                .strategies
+                .resize(z as usize + 1, Strategy::default());
+        }
+        self.stats.strategies[z as usize] = level.strategy;
+        if level.z > self.largest_written {
+            self.largest_written = level.z;
+        }
+
+        let mut order: Vec<usize> = (0..level.tiles.len()).collect();
+        order.sort_by_key(|&i| (level.tiles[i].x, level.tiles[i].y));
+        for &i in &order {
+            let rt = &level.tiles[i];
+            if let Some(r) = &level.results[i]
+                && let Some(tile) = &r.tile
+            {
+                self.sink.write_tile(rt.z as u8, rt.x, rt.y, tile)?;
+                self.stats.tiles += 1;
             }
         }
 
-        let merged = merge_tilestats(std::mem::take(&mut tilestats));
-        if !merged.is_empty() {
-            tilestats.push(merged);
+        self.tilestats.append(&mut level.tilestats);
+        if self.tilestats.len() > 64 {
+            let merged = merge_tilestats(std::mem::take(&mut self.tilestats));
+            self.tilestats.push(merged);
         }
 
-        // the next zoom's input, in tile order
-        let mut next: Vec<TileInput> = Vec::new();
-        let mut shards = std::collections::BTreeSet::new();
-        let span_mask = (1u32 << max_zoom_increment) - 1;
-        for (k, rt) in reads.into_iter().enumerate() {
-            for child in rt.children {
-                let j = ((child.x.wrapping_shl(max_zoom_increment as u32) | (child.y & span_mask))
-                    & (child_shards as u32).wrapping_sub(1)) as usize;
-                shards.insert((k % threads) * child_shards as usize + j);
-                next.push(child);
-            }
-        }
-        next.sort_by_key(|t| (t.x, t.y));
-        useful_threads = shards.len();
-        level = next;
-
-        if err != i32::MAX {
-            stats.incomplete = true;
-            stats.maxzoom = err;
-            stats.layermap = merge_tilestats(tilestats);
-            return Ok(stats);
+        if level.err {
+            self.stopped = true;
+            self.stats.incomplete = true;
+            self.stats.maxzoom = level.z - 1;
         }
 
-        z += 1;
+        // free the level's memory
+        level.tiles = Vec::new();
+        level.results = Vec::new();
+        Ok(())
     }
-
-    if largest_written >= 0 && maxzoom > largest_written {
-        maxzoom = largest_written;
-    }
-
-    stats.maxzoom = maxzoom;
-    stats.layermap = merge_tilestats(tilestats);
-    Ok(stats)
 }
 
 /// Merges the attribute statistics of several tiles. Every entry came from

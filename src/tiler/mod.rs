@@ -6,6 +6,7 @@
 //! go into the tile, and retrying with stricter thresholds when it is too big,
 //! then works on those candidates without reading them again.
 
+mod encode;
 mod engine;
 mod make;
 mod read;
@@ -242,5 +243,11 @@ pub fn tile_with(
         .num_threads(threads)
         .build()
         .map_err(|e| crate::Error::new(tippecanoe::errors::EXIT_PTHREAD, e.to_string()))?;
-    pool.install(|| engine::run(store, topts, sink))
+    let started = std::time::Instant::now();
+    let ctx = pool.install(|| engine::Ctx::new(store, topts, threads));
+    let root = pool.install(|| engine::root_input(&ctx));
+    if std::env::var_os("MANBY_TIMING").is_some() {
+        eprintln!("setup {:.3}s", started.elapsed().as_secs_f64());
+    }
+    pool.in_place_scope(|scope| engine::drive(&ctx, root, sink, scope, threads))
 }

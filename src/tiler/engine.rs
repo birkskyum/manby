@@ -16,7 +16,7 @@ use tippecanoe::options::*;
 use tippecanoe::tile::Strategy;
 
 use super::encode::{ValueCodes, key_slot};
-use super::make::{MakeParams, MakeResult, Thresholds, make_tile, reuse};
+use super::make::{MakeParams, MakeResult, Thresholds, dropping_features, make_tile, reuse};
 use super::read::{Carried, ReadParams, ReadTile, TileInput, read_tile};
 use super::{TileOptions, TileStats};
 use crate::error::Error;
@@ -81,9 +81,14 @@ impl<'a> Ctx<'a> {
     }
 }
 
-fn unsupported(o: &TileOptions) -> Option<&'static str> {
-    if o.a(A_VARIABLE_DEPTH_PYRAMID) {
-        return Some("variable depth pyramids (-at)");
+fn unsupported(ctx: &Ctx<'_>) -> Option<&'static str> {
+    let store = ctx.store;
+    if ctx.o.a(A_VARIABLE_DEPTH_PYRAMID)
+        && (store.pool_offsets.len() != store.attrs.len()
+            || store.segment_layers.is_empty()
+            || store.initial_x.is_empty())
+    {
+        return Some("variable depth pyramids (-at) without the store's serialized layout");
     }
     None
 }
@@ -151,6 +156,8 @@ pub fn root_input(ctx: &Ctx<'_>) -> Option<TileInput> {
         feats,
         geom: Vec::new(),
         root: true,
+        skip_unless_dropping: false,
+        complexity: Some(o.estimated_complexity),
     })
 }
 
@@ -231,6 +238,14 @@ struct Level {
     /// parent tile and its own position.
     origins: Vec<((u32, u32), (u32, u32))>,
     tiles: Vec<Arc<ReadTile>>,
+    /// With `-at`: each tile's children, until it is known whether the tile
+    /// writes them.
+    held: Vec<Vec<TileInput>>,
+    /// With `-at`: whether each tile's children must not try to stop early,
+    /// from the pass in which the tile was first made.
+    children_must_go_on: Vec<Option<bool>>,
+    /// Whether any pass made a tile rather than skipping them all.
+    wrote: bool,
     inputs_complete: bool,
     makes_started: bool,
     pass: usize,
@@ -262,6 +277,9 @@ impl Level {
             reading: 0,
             origins: Vec::new(),
             tiles: Vec::new(),
+            held: Vec::new(),
+            children_must_go_on: Vec::new(),
+            wrote: false,
             inputs_complete: false,
             makes_started: false,
             pass: 0,
@@ -320,6 +338,9 @@ struct Driver<'d, 's> {
     error: Option<Error>,
     timing: bool,
     started: std::time::Instant,
+    /// `-at`: levels are made one after the other, since whether a tile is
+    /// made depends on the outcome of its parent's level.
+    variable_depth: bool,
 }
 
 /// Runs the tiling: a coordinator on the calling thread that hands the reading
@@ -333,7 +354,7 @@ pub fn drive<'s>(
     threads: usize,
 ) -> crate::Result<TileStats> {
     let o = ctx.o;
-    if let Some(what) = unsupported(o) {
+    if let Some(what) = unsupported(ctx) {
         return Err(Error::new(
             EXIT_ARGS,
             format!("manby does not support {} yet", what),
@@ -362,6 +383,7 @@ pub fn drive<'s>(
         error: None,
         timing: o.timing,
         started: std::time::Instant::now(),
+        variable_depth: o.a(A_VARIABLE_DEPTH_PYRAMID),
     };
 
     if let Some(root) = root {
@@ -495,10 +517,16 @@ impl<'d, 's> Driver<'d, 's> {
     /// Queues the making of tile `idx` of level `k` in its current pass;
     /// `prev` is its result from the pass before, which may still hold.
     fn spawn_make_after(&mut self, k: usize, idx: usize, prev: Option<Box<MakeResult>>) {
+        let o = self.ctx.o;
         let level = &mut self.levels[k];
         let pass = level.pass;
+        if level.tiles[idx].skip_unless_dropping
+            && !dropping_features(&level.th, o.drop_by_attribute_descending)
+        {
+            level.results[idx] = Some(skipped(level.th));
+            return;
+        }
         let loop_z = if pass == 0 { level.loop_z } else { level.z };
-        let o = self.ctx.o;
         let simplification = if loop_z == self.maxzoom && o.maxzoom_simplification > 0.0 {
             o.maxzoom_simplification
         } else {
@@ -625,7 +653,7 @@ impl<'d, 's> Driver<'d, 's> {
 
     /// The next level's inputs are complete once this level is all read.
     fn check_children_complete(&mut self, k: usize) {
-        if !self.levels[k].all_read() {
+        if self.variable_depth || !self.levels[k].all_read() {
             return;
         }
         if k + 1 < self.levels.len() && !self.levels[k + 1].inputs_complete {
@@ -641,7 +669,10 @@ impl<'d, 's> Driver<'d, 's> {
         let idx = self.levels[k].tiles.len();
         self.levels[k].tiles.push(Arc::new(tile));
 
-        if !children.is_empty() {
+        if self.variable_depth {
+            self.levels[k].held.push(children);
+            self.levels[k].children_must_go_on.push(None);
+        } else if !children.is_empty() {
             if k + 1 == self.levels.len() {
                 let z = children[0].z;
                 let mut level = Level::new(z, self.levels[k].z + 1, o);
@@ -672,6 +703,9 @@ impl<'d, 's> Driver<'d, 's> {
         let level = &mut self.levels[k];
         debug_assert_eq!(pass, level.pass);
         level.outstanding -= 1;
+        if level.children_must_go_on.len() > idx && level.children_must_go_on[idx].is_none() {
+            level.children_must_go_on[idx] = Some(result.children_must_go_on);
+        }
         level.results[idx] = Some(result);
         self.check_pass(k);
     }
@@ -713,10 +747,14 @@ impl<'d, 's> Driver<'d, 's> {
         for &i in &order {
             let rt = &level.tiles[i];
             let r = level.results[i].as_mut().unwrap();
+            history.push((rt.z, rt.x, rt.y, r.len));
+            if r.skipped {
+                continue;
+            }
+            level.wrote = true;
             if rt.z > z {
                 z = rt.z;
             }
-            history.push((rt.z, rt.x, rt.y, r.len));
 
             if r.len < 0 {
                 level.err = true;
@@ -828,10 +866,15 @@ impl<'d, 's> Driver<'d, 's> {
             for (idx, prev) in prevs.into_iter().enumerate() {
                 self.spawn_make_after(k, idx, prev);
             }
+            // tiles that are skipped are done at once
+            self.check_pass(k);
             return;
         }
 
         level.done = true;
+        if self.variable_depth {
+            self.release_children(k);
+        }
         self.try_finalize();
 
         // a level beyond the old maximum zoom may now be made
@@ -843,6 +886,54 @@ impl<'d, 's> Driver<'d, 's> {
                 self.check_pass(j);
             }
         }
+    }
+
+    /// With `-at`, once level `k` is done: the children of the tiles that
+    /// wrote theirs become the next level, those of tiles that stopped early
+    /// to be made only if their level drops features.
+    fn release_children(&mut self, k: usize) {
+        let o = self.ctx.o;
+        if self.levels[k].err {
+            return;
+        }
+        let level = &mut self.levels[k];
+        let mut order: Vec<usize> = (0..level.tiles.len()).collect();
+        order.sort_by_key(|&i| (level.tiles[i].x, level.tiles[i].y));
+
+        let mut next: Vec<((u32, u32), TileInput)> = Vec::new();
+        for &i in &order {
+            let r = level.results[i].as_ref().unwrap();
+            if r.skipped {
+                continue;
+            }
+            let rt = &level.tiles[i];
+            let must_go_on = level.children_must_go_on[i].unwrap_or(false);
+            for mut child in std::mem::take(&mut level.held[i]) {
+                child.skip_unless_dropping = r.truncated && child.z == rt.z + 1;
+                if must_go_on {
+                    // large enough not to try to stop early
+                    child.complexity = Some(1i64 << 32);
+                }
+                next.push(((rt.x, rt.y), child));
+            }
+        }
+        level.held = Vec::new();
+        if next.is_empty() {
+            return;
+        }
+
+        debug_assert_eq!(k + 1, self.levels.len());
+        let z = next[0].1.z;
+        let mut nl = Level::new(z, self.levels[k].z + 1, o);
+        if z + 1 >= o.minzoom {
+            nl.nextzoom = Some(z + 1);
+        }
+        for (parent, child) in next {
+            nl.origins.push((parent, (child.x, child.y)));
+            nl.queued.push(child);
+        }
+        self.levels.push(nl);
+        self.level_inputs_complete(k + 1);
     }
 
     /// Writes out the finished levels in zoom order.
@@ -897,7 +988,7 @@ impl<'d, 's> Driver<'d, 's> {
                 .resize(z as usize + 1, Strategy::default());
         }
         self.stats.strategies[z as usize] = level.strategy;
-        if level.z > self.largest_written {
+        if level.wrote && level.z > self.largest_written {
             self.largest_written = level.z;
         }
 
@@ -929,6 +1020,26 @@ impl<'d, 's> Driver<'d, 's> {
         level.tiles = Vec::new();
         level.results = Vec::new();
         Ok(())
+    }
+}
+
+/// The result for a tile skipped because its parent stopped early: tippecanoe
+/// reads past it and counts it as one vertex.
+fn skipped(th: Thresholds) -> MakeResult {
+    MakeResult {
+        len: 1,
+        tile: None,
+        strategy: None,
+        th_out: th,
+        tile_size_out: 0,
+        feature_count_out: 0,
+        still_dropping: false,
+        tilestats: BTreeMap::new(),
+        error: None,
+        reusable: None,
+        truncated: false,
+        children_must_go_on: false,
+        skipped: true,
     }
 }
 

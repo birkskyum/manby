@@ -16,7 +16,7 @@ use tippecanoe::tile::Strategy;
 use super::TileOptions;
 use super::util::shift_right;
 use crate::sink::TileSink;
-use crate::store::FeatureStore;
+use crate::store::{FeatureStore, PoolOffsets};
 
 /// tippecanoe-rs keeps its options in globals, so tests that set them take turns.
 pub static GLOBALS: Mutex<()> = Mutex::new(());
@@ -78,9 +78,16 @@ pub fn input_layermap(store: &FeatureStore) -> BTreeMap<String, LayermapEntry> {
         .collect()
 }
 
-/// Tiles `store` with tippecanoe-rs. The caller holds `GLOBALS` and has set them.
-pub fn reference(store: &FeatureStore, o: &TileOptions) -> Reference {
-    let dir = tempdir();
+/// The string pool and the zoom 0 temporary file that tippecanoe would
+/// write for `store`, with each key's and value's offset in the pool.
+struct Zoom0 {
+    pool: Vec<u8>,
+    key_off: Vec<i64>,
+    value_off: Vec<i64>,
+    data: Vec<u8>,
+}
+
+fn zoom0(store: &FeatureStore, o: &TileOptions) -> Zoom0 {
     let gs = o.geometry_scale;
 
     // the string pool: a type byte, the string and a NUL for each key and value
@@ -144,6 +151,37 @@ pub fn reference(store: &FeatureStore, o: &TileOptions) -> Reference {
     tippecanoe::serial::serialize_ulong_long(&mut data, 0);
     let complexity = data.len() as i64;
     data[0..8].copy_from_slice(&complexity.to_ne_bytes());
+    Zoom0 {
+        pool,
+        key_off,
+        value_off,
+        data,
+    }
+}
+
+/// Fills in what `-at` needs to know about the temporary files that the
+/// reference reads: one segment, whose layer numbers are the store's, the
+/// pool offsets, and the size of the zoom 0 file.
+pub fn serialized_layout(store: &mut FeatureStore, o: &mut TileOptions) {
+    let z0 = zoom0(store, o);
+    store.initial_x = vec![0];
+    store.initial_y = vec![0];
+    store.segment_layers = vec![(0..store.layers.len() as i64).collect()];
+    store.pool_offsets = store
+        .attrs
+        .iter()
+        .map(|a| PoolOffsets {
+            key: z0.key_off[a.key as usize],
+            value: z0.value_off[a.value as usize],
+        })
+        .collect();
+    o.estimated_complexity = z0.data.len() as i64;
+}
+
+/// Tiles `store` with tippecanoe-rs. The caller holds `GLOBALS` and has set them.
+pub fn reference(store: &FeatureStore, o: &TileOptions) -> Reference {
+    let dir = tempdir();
+    let Zoom0 { pool, data, .. } = zoom0(store, o);
 
     let geomname = format!("{}/geom0", dir);
     {

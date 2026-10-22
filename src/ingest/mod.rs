@@ -239,6 +239,7 @@ fn parse_range(
 #[allow(clippy::too_many_arguments)]
 fn read_units(
     data: &[u8],
+    mapped: bool,
     units: &[Unit],
     sep: u8,
     reading: &geojson::Reading<'_>,
@@ -261,9 +262,17 @@ fn read_units(
         })
         .collect();
 
-    let chunks: Vec<Chunk> = ranges
+    // the lines of each range are counted while its pages are at hand
+    let chunks: Vec<(Chunk, i32)> = ranges
         .par_iter()
-        .map(|&(_, r)| parse_range(data, r, reading, layers, 0))
+        .map(|&(_, r)| {
+            let chunk = parse_range(data, r, reading, layers, 0);
+            let lines = count_lines(&data[r.0..r.1]);
+            if mapped {
+                crate::mem::release_mapped(&data[r.0..r.1]);
+            }
+            (chunk, lines)
+        })
         .collect();
 
     let mut accepted = Vec::new();
@@ -278,7 +287,7 @@ fn read_units(
 
         while i < ranges.len() && ranges[i].0 == u {
             let range = ranges[i].1;
-            let mut chunk = chunks.next().unwrap();
+            let (mut chunk, lines) = chunks.next().unwrap();
             i += 1;
             if stopped {
                 continue;
@@ -310,7 +319,7 @@ fn read_units(
                 unit: u,
                 line_offset,
             });
-            line_offset += count_lines(&data[range.0..range.1]);
+            line_offset += lines;
             if ends {
                 // tippecanoe stops reading this unit at its error.
                 stopped = true;
@@ -661,7 +670,8 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
             }
         };
 
-        let accepted = read_units(&data, &units, sep, &reading, &layer_names, threads);
+        let mapped = matches!(data, Data::Map(_));
+        let accepted = read_units(&data, mapped, &units, sep, &reading, &layer_names, threads);
 
         // Messages in the order of the input, and the first fatal error.
         let mut fatal = None;

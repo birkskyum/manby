@@ -44,24 +44,26 @@ const FEATURE_WEIGHT: u64 = 8;
 /// Splits a sequence of weighted items into at most `width` consecutive
 /// ranges of about equal weight, each of at least `READ_WEIGHT`.
 fn split_by_weight(
-    weights: impl Iterator<Item = u64> + Clone,
+    weights: impl ExactSizeIterator<Item = u64> + Clone,
     width: usize,
-) -> Vec<std::ops::Range<usize>> {
+) -> Vec<(std::ops::Range<usize>, u64)> {
+    let n = weights.len();
     let total: u64 = weights.clone().sum();
-    let n = weights.clone().count();
     let parts = (total / READ_WEIGHT).clamp(1, width.max(1) as u64);
     let mut out = Vec::with_capacity(parts as usize);
     let mut first = 0;
     let mut seen = 0u64;
+    let mut cut = 0u64;
     for (i, w) in weights.enumerate() {
         seen += w;
         if seen * parts >= total * (out.len() as u64 + 1) && (out.len() as u64) + 1 < parts {
-            out.push(first..i + 1);
+            out.push((first..i + 1, seen - cut));
             first = i + 1;
+            cut = seen;
         }
     }
     if first < n || out.is_empty() {
-        out.push(first..n);
+        out.push((first..n, total - cut));
     }
     out
 }
@@ -246,6 +248,9 @@ impl Layout<'_> {
                 .map(|r| r.vertices as u64 + FEATURE_WEIGHT * r.count as u64),
             width,
         )
+        .into_iter()
+        .map(|(r, _)| r)
+        .collect()
     }
 
     fn cursor(&self, runs: std::ops::Range<usize>) -> Cursor<'_> {
@@ -652,7 +657,9 @@ pub fn read_tile(
             ctx.helpers.width(),
         );
         par_ranges(&ctx.helpers, groups.len(), 1, |r| {
-            read_chunk(ctx, input, Source::Root(groups[r.start].clone()), rp)
+            let (range, weight) = groups[r.start].clone();
+            let vertices = weight - range.len() as u64 * FEATURE_WEIGHT;
+            read_chunk(ctx, input, Source::Root(range, vertices as usize), rp)
         })
     } else {
         let groups = layout.groups(ctx.helpers.width());
@@ -941,7 +948,8 @@ fn assign_dropped(ctx: &Ctx<'_>, rt: &mut ReadTile) {
 /// The features a read chunk reads: a range of the store's for the first
 /// tile, otherwise some runs of the input.
 enum Source<'a> {
-    Root(std::ops::Range<usize>),
+    /// The features, and their vertices.
+    Root(std::ops::Range<usize>, usize),
     Runs(&'a Layout<'a>, std::ops::Range<usize>),
 }
 
@@ -969,13 +977,7 @@ fn read_chunk(ctx: &Ctx<'_>, input: &TileInput, source: Source<'_>, rp: &ReadPar
 
     // room for every feature and vertex, so that nothing grows by copying
     let (features, vertices) = match &source {
-        Source::Root(r) => (
-            r.len(),
-            store.features[r.clone()]
-                .iter()
-                .map(|f| f.geom_len as usize)
-                .sum(),
-        ),
+        Source::Root(r, vertices) => (r.len(), *vertices),
         Source::Runs(layout, r) => layout.runs[r.clone()].iter().fold((0, 0), |(f, v), run| {
             (f + run.count as usize, v + run.vertices as usize)
         }),
@@ -984,7 +986,7 @@ fn read_chunk(ctx: &Ctx<'_>, input: &TileInput, source: Source<'_>, rp: &ReadPar
     out.geom.reserve(vertices);
 
     let (mut root, mut cursor) = match source {
-        Source::Root(r) => (Some(r), None),
+        Source::Root(r, _) => (Some(r), None),
         Source::Runs(layout, r) => (None, Some(layout.cursor(r))),
     };
 

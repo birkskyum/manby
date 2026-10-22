@@ -11,3 +11,9 @@
 
 `run.sh` times manby against tippecanoe-rs, alternating the two, and checks the tiles match.
 Build both in release mode first (`cargo build --release` in each repository).
+
+`large.sh` runs manby with a memory budget (`BUDGET`, default 1G) on inputs several times
+larger than it, which it makes on the first run: `points40m.geojsonl`, 40 million points
+(5.6 GB), and `tracts20.geojsonl`, the tracts 20 times over, moved north and south by
+`repeat.py` (3 GB). It reports wall time and peak resident memory, and checks the tiles
+against tippecanoe-rs's.

@@ -30,7 +30,7 @@ use super::encode::LayerEnc;
 use super::engine::Ctx;
 use super::filter::prefilter_tile;
 use super::geom::{get_mp_area, line_is_too_small, reduce_tiny_poly};
-use super::read::{Cand, NO_LIST, ReadTile};
+use super::read::{NO_LIST, ReadTile};
 use super::util::*;
 use crate::store::Attr;
 use tippecanoe::plugin::filter_layers;
@@ -100,6 +100,34 @@ pub fn dropping_features(th: &Thresholds, drop_by_attribute_descending: bool) ->
     th.mingap != 0 || th.minextent != 0 || th.mindrop_sequence != 0 || dropping_by_attribute
 }
 
+/// A vector that most features leave empty, in 8 bytes until it is used.
+#[derive(Clone, Debug, Default)]
+#[allow(clippy::box_collection)]
+struct Lazy<T>(Option<Box<Vec<T>>>);
+
+impl<T> std::ops::Deref for Lazy<T> {
+    type Target = Vec<T>;
+
+    fn deref(&self) -> &Vec<T> {
+        match &self.0 {
+            Some(v) => v,
+            None => const { &Vec::new() },
+        }
+    }
+}
+
+impl<T> std::ops::DerefMut for Lazy<T> {
+    fn deref_mut(&mut self) -> &mut Vec<T> {
+        self.0.get_or_insert_with(Default::default)
+    }
+}
+
+impl<T> From<Vec<T>> for Lazy<T> {
+    fn from(v: Vec<T>) -> Lazy<T> {
+        Lazy((!v.is_empty()).then(|| Box::new(v)))
+    }
+}
+
 /// A feature that went into the tile: tippecanoe's `serial_feature` during tiling.
 #[derive(Clone, Debug)]
 struct TF {
@@ -108,9 +136,10 @@ struct TF {
     t: i8,
     geometry: DrawVec,
     /// The feature's attributes once something has changed them.
-    attrs: Option<Vec<Attr>>,
-    full_keys: Vec<Arc<String>>,
-    full_values: Vec<SerialVal>,
+    #[allow(clippy::box_collection)]
+    attrs: Option<Box<Vec<Attr>>>,
+    full_keys: Lazy<Arc<String>>,
+    full_values: Lazy<SerialVal>,
     extent: i64,
     index: u64,
     reduced: bool,
@@ -135,11 +164,13 @@ struct Attrs<'a> {
 }
 
 impl<'a> Attrs<'a> {
-    fn cand(&self, c: &Cand) -> &'a [Attr] {
-        if c.attrs != NO_LIST {
-            &self.rt.attr_lists[c.attrs as usize]
+    /// The attributes of candidate `i`.
+    fn cand(&self, i: usize) -> &'a [Attr] {
+        let attrs = self.rt.extra(i).attrs;
+        if attrs != NO_LIST {
+            &self.rt.attr_lists[attrs as usize]
         } else {
-            let f = &self.ctx.store.features[c.fi as usize];
+            let f = &self.ctx.store.features[self.rt.cands[i].fi as usize];
             self.ctx.store.feature_attrs(f)
         }
     }
@@ -151,7 +182,7 @@ impl<'a> Attrs<'a> {
     {
         match &tf.attrs {
             Some(a) => a,
-            None => self.cand(&self.rt.cands[tf.cand as usize]),
+            None => self.cand(tf.cand as usize),
         }
     }
 
@@ -176,7 +207,7 @@ impl<'a> Attrs<'a> {
                 .filter(|a| self.live(a))
                 .copied()
                 .collect();
-            tf.attrs = Some(list);
+            tf.attrs = Some(Box::new(list));
         }
     }
 }
@@ -199,7 +230,7 @@ fn promote_attribute(ax: &Attrs<'_>, key: &str, p: &mut TF, key_pool: &mut KeyPo
 }
 
 /// `preserve_attributes`: accumulates the attributes of the dropped candidate onto `p`.
-fn preserve_attributes(ax: &Attrs<'_>, c: &Cand, p: &mut TF, key_pool: &mut KeyPool) {
+fn preserve_attributes(ax: &Attrs<'_>, c: usize, p: &mut TF, key_pool: &mut KeyPool) {
     let accum = &ax.ctx.o.attribute_accum;
     if accum.is_empty() {
         return;
@@ -215,8 +246,9 @@ fn preserve_attributes(ax: &Attrs<'_>, c: &Cand, p: &mut TF, key_pool: &mut KeyP
             preserve_attribute(op, key, &sv, &mut p.full_keys, &mut p.full_values, key_pool);
         }
     }
-    if c.full != NO_LIST {
-        let (keys, values) = &ax.rt.full[c.full as usize];
+    let full = ax.rt.extra(c).full;
+    if full != NO_LIST {
+        let (keys, values) = &ax.rt.full[full as usize];
         for (key, sv) in keys.iter().zip(values.iter()) {
             if let Some(op) = accum.get(key.as_str()) {
                 promote_attribute(ax, key, p, key_pool);
@@ -227,11 +259,12 @@ fn preserve_attributes(ax: &Attrs<'_>, c: &Cand, p: &mut TF, key_pool: &mut KeyP
 }
 
 /// The full keys and values a candidate arrives with, from the prefilter.
-fn cand_full(rt: &ReadTile, c: &Cand) -> (Vec<Arc<String>>, Vec<SerialVal>) {
-    if c.full == NO_LIST {
+fn cand_full(rt: &ReadTile, c: usize) -> (Vec<Arc<String>>, Vec<SerialVal>) {
+    let full = rt.extra(c).full;
+    if full == NO_LIST {
         (Vec::new(), Vec::new())
     } else {
-        rt.full[c.full as usize].clone()
+        rt.full[full as usize].clone()
     }
 }
 
@@ -1007,7 +1040,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
             if (dropped == FEATURE_DROPPED || drop_rest)
                 && let Some(w) = find_feature_to_accumulate_onto(&layer.features, t, i64::MAX)
             {
-                preserve_attributes(&ax, c, &mut layer.features[w], &mut key_pool);
+                preserve_attributes(&ax, seq, &mut layer.features[w], &mut key_pool);
                 strategy.dropped_by_rate += 1;
                 can_stop_early = false;
                 continue;
@@ -1023,7 +1056,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                             dropped = (layer.multiplier_cluster_size + 1) as i32;
                             false
                         } else {
-                            preserve_attributes(&ax, c, &mut layer.features[w], &mut key_pool);
+                            preserve_attributes(&ax, seq, &mut layer.features[w], &mut key_pool);
                             drop_rest = true;
                             true
                         }
@@ -1052,7 +1085,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                         target.geometry[0].y = (y / (target.clustered + 1) as f64) as i64;
                     }
 
-                    preserve_attributes(&ax, c, target, &mut key_pool);
+                    preserve_attributes(&ax, seq, target, &mut key_pool);
                     strategy.coalesced_as_needed += 1;
                     drop_rest = true;
                     can_stop_early = false;
@@ -1070,7 +1103,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                     if $add_area {
                         coalesced_area += extent as f64;
                     }
-                    preserve_attributes(&ax, c, target, &mut key_pool);
+                    preserve_attributes(&ax, seq, target, &mut key_pool);
                     strategy.coalesced_as_needed += 1;
                     drop_rest = true;
                     can_stop_early = false;
@@ -1082,7 +1115,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                     && manage_gap(f.index(), &mut previndex, scale, gamma, &mut gap) != 0
                     && let Some(w) = find_feature_to_accumulate_onto(&layer.features, t, i64::MAX)
                 {
-                    preserve_attributes(&ax, c, &mut layer.features[w], &mut key_pool);
+                    preserve_attributes(&ax, seq, &mut layer.features[w], &mut key_pool);
                     strategy.dropped_by_gamma += 1;
                     drop_rest = true;
                     can_stop_early = false;
@@ -1167,15 +1200,15 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                         continue;
                     }
                 } else if o.a(A_DROP_BY_ATTRIBUTE_AS_NEEDED) {
-                    let full = cand_full(rt, c);
+                    let full = cand_full(rt, seq);
                     let probe = TF {
                         cand: seq as u32,
                         fi: c.fi,
                         t,
                         geometry: DrawVec::new(),
                         attrs: None,
-                        full_keys: full.0,
-                        full_values: full.1,
+                        full_keys: full.0.into(),
+                        full_values: full.1.into(),
                         extent,
                         index: f.index(),
                         reduced: false,
@@ -1317,7 +1350,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                         dropped = FEATURE_KEPT;
                     }
 
-                    let full = cand_full(rt, c);
+                    let full = cand_full(rt, seq);
                     let mut tf = TF {
                         cand: seq as u32,
                         fi: c.fi,
@@ -1327,8 +1360,8 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                             None => cg.to_vec(),
                         },
                         attrs: None,
-                        full_keys: full.0,
-                        full_values: full.1,
+                        full_keys: full.0.into(),
+                        full_values: full.1.into(),
                         extent,
                         index: f.index(),
                         reduced: !still_need_simplification_after_reduction,
@@ -1360,7 +1393,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                         other_multiplier_cluster_features_count += 1;
                     }
 
-                    shared_nodes.extend_from_slice(rt.cand_edges(c));
+                    shared_nodes.extend_from_slice(rt.cand_edges(seq));
 
                     if line_detail == detail && o.extra_detail >= 0 && z == maxzoom {
                         tf.extra_detail = o.extra_detail;

@@ -16,7 +16,7 @@ use tippecanoe::serial::KeyPool;
 use tippecanoe::write_json::{JsonWriter, layer_to_geojson};
 
 use super::engine::Ctx;
-use super::read::{Cand, Geoms, NO_LIST, ReadTile};
+use super::read::{Cand, CandExtra, Geoms, NO_LIST, ReadTile};
 use crate::store::Chunked;
 use crate::store::{Feature, FeatureStore, Layer};
 
@@ -98,6 +98,7 @@ pub fn prefilter_tile(
             x: tx,
             y: ty,
             cands: Chunked::default(),
+            extras: Chunked::default(),
             geom: Geoms::default(),
             edges: Chunked::default(),
             attr_lists: Chunked::default(),
@@ -156,6 +157,8 @@ pub fn prefilter_tile(
             gap: sf.gap,
             geom_start,
             geom_len,
+        });
+        out.rt.extras.push(CandExtra {
             edge_start: 0,
             edge_len: 0,
             attrs: NO_LIST,
@@ -174,7 +177,7 @@ fn write_candidates(ctx: &Ctx<'_>, rt: &ReadTile, write_to: i32) {
     {
         let mut state = JsonWriter::new_file(&mut fp);
         let mut scratch = DrawVec::new();
-        for c in rt.cands.iter() {
+        for (i, c) in rt.cands.iter().enumerate() {
             let f = &store.features[c.fi as usize];
             let mut tmp_layer = MvtLayer {
                 extent: 1i64 << 32,
@@ -206,8 +209,9 @@ fn write_candidates(ctx: &Ctx<'_>, rt: &ReadTile, write_to: i32) {
                 ..Default::default()
             };
 
-            let attrs = if c.attrs != NO_LIST {
-                &rt.attr_lists[c.attrs as usize][..]
+            let attrs = rt.extra(i).attrs;
+            let attrs = if attrs != NO_LIST {
+                &rt.attr_lists[attrs as usize][..]
             } else {
                 store.feature_attrs(f)
             };

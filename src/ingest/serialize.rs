@@ -16,8 +16,8 @@ use tippecanoe::geometry::{
 use tippecanoe::milo::dtoa_milo;
 use tippecanoe::mvt::{MVT_DOUBLE, MVT_STRING};
 use tippecanoe::options::*;
-use tippecanoe::projection::{PROJECTIONS, encode_hilbert, encode_quadkey};
-use tippecanoe::serial::{SerialVal, coerce_value};
+use tippecanoe::projection::{PROJECTIONS, encode_hilbert, encode_quadkey, encode_vertex};
+use tippecanoe::serial::{SerialVal, Vertex, coerce_value};
 
 use super::chunk::{Chunk, MessageKind};
 use crate::options::Options;
@@ -618,8 +618,99 @@ fn coerce(key: &str, v: &mut SerialVal, types: &HashMap<String, i32>) {
     }
 }
 
-/// The vertices and nodes of `--no-simplification-of-shared-nodes`.
-fn shared_nodes(_chunk: &mut Chunk, _cfg: &Config<'_>, _t: i32, _geom: &DrawVec) {
-    // Not supported yet: the options check refuses -pn before reading.
-    let _ = distance_from_line;
+/// `add_scaled_node`
+fn add_scaled_node(chunk: &mut Chunk, cfg: &Config<'_>, g: Draw) {
+    let x = cfg.SHIFT_LEFT(g.x);
+    let y = cfg.SHIFT_LEFT(g.y);
+    chunk.nodes.push(encode_vertex(x as u32, y as u32));
+}
+
+/// The vertices and nodes of `--no-simplification-of-shared-nodes`: every
+/// vertex with its neighbors, and the points that must not be simplified away.
+fn shared_nodes(chunk: &mut Chunk, cfg: &Config<'_>, t: i32, sg: &DrawVec) {
+    if t != VT_POLYGON && t != VT_LINE {
+        return;
+    }
+    let mut i = 0;
+    while i < sg.len() {
+        if sg[i].op == VT_MOVETO {
+            let mut j = i + 1;
+            while j < sg.len() && sg[j].op == VT_LINETO {
+                j += 1;
+            }
+
+            if t == VT_POLYGON && j - i >= 4 {
+                for k in i..j - 1 {
+                    // % (j - i - 1) because we don't want the duplicate last point
+                    chunk.vertices.push(Vertex::new(
+                        sg[(k - i) % (j - i - 1) + i],
+                        sg[(k - i + 1) % (j - i - 1) + i],
+                        sg[(k - i + 2) % (j - i - 1) + i],
+                    ));
+                }
+            } else if t == VT_LINE && j - i >= 2 {
+                let mut k = i;
+                while k + 2 < j {
+                    chunk
+                        .vertices
+                        .push(Vertex::new(sg[k], sg[k + 1], sg[k + 2]));
+                    k += 1;
+                }
+            }
+
+            // since the starting point is never simplified away,
+            // don't let it be simplified away in any other polygons either.
+            // Needs to appear twice here so that the check below will see
+            // it as appearing in multiple features.
+            add_scaled_node(chunk, cfg, sg[i]);
+
+            if t == VT_LINE && j - i >= 2 {
+                // linestrings also need to preserve the last point
+                add_scaled_node(chunk, cfg, sg[j - 1]);
+            } else if t == VT_POLYGON && j - i >= 4 {
+                // To avoid letting polygons get simplified away to nothing,
+                // also keep the furthest-away point from the initial point
+                // (which Douglas-Peucker simplification would keep anyway,
+                // if its search weren't being split up by polygon side).
+                let mut far: f64 = 0.0;
+                let mut which = i;
+                for k in i + 1..j - 1 {
+                    let xd = (sg[k].x - sg[i].x) as f64;
+                    let yd = (sg[k].y - sg[i].y) as f64;
+                    let d = xd * xd + yd * yd;
+                    if d > far || ((d == far) && (sg[k] < sg[which])) {
+                        far = d;
+                        which = k;
+                    }
+                }
+
+                add_scaled_node(chunk, cfg, sg[which]);
+
+                // And, likewise, the point most distant from those two points,
+                // which probably would also be the one that Douglas-Peucker
+                // would keep next.
+                far = 0.0;
+                let mut which2 = i;
+                for k in i + 1..j - 1 {
+                    let d = distance_from_line(
+                        sg[k].x,
+                        sg[k].y,
+                        sg[i].x,
+                        sg[i].y,
+                        sg[which].x,
+                        sg[which].y,
+                    );
+                    if (d > far) || ((d == far) && (sg[k] < sg[which2])) {
+                        far = d;
+                        which2 = k;
+                    }
+                }
+
+                add_scaled_node(chunk, cfg, sg[which2]);
+            }
+
+            i = j - 1;
+        }
+        i += 1;
+    }
 }

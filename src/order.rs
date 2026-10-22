@@ -89,7 +89,11 @@ fn calc_feature_minzoom(
                 // so track where that was so we can make sure
                 // not to cluster something else that is *too*
                 // far away into it.
-                for d in ds.iter_mut().take(maxzoom as usize + 1).skip(i as usize + 1) {
+                for d in ds
+                    .iter_mut()
+                    .take(maxzoom as usize + 1)
+                    .skip(i as usize + 1)
+                {
                     d.previndex = ix;
                 }
 
@@ -319,8 +323,8 @@ fn order1(store: &mut FeatureStore, o: &Options, out: &mut Out) -> crate::Result
             // Go one zoom level beyond what is strictly necessary for nearby features.
             let want = nearby_ft / 2.0;
 
-            maxzoom = ((360.0 / (0.00000274 * want)).ln() / 2f64.ln() - full_detail as f64).ceil()
-                as i32;
+            maxzoom =
+                ((360.0 / (0.00000274 * want)).ln() / 2f64.ln() - full_detail as f64).ceil() as i32;
             if maxzoom < 0 {
                 maxzoom = 0;
             }
@@ -413,8 +417,7 @@ fn order1(store: &mut FeatureStore, o: &Options, out: &mut Out) -> crate::Result
 
         let mut total_tile_count: f64 = 0.0;
         for i in 1..=maxzoom {
-            let tile_count =
-                (area_sum / (((1i64 << (32 - i)) * (1i64 << (32 - i))) as f64)).ceil();
+            let tile_count = (area_sum / (((1i64 << (32 - i)) * (1i64 << (32 - i))) as f64)).ceil();
             total_tile_count += tile_count;
 
             // 2M tiles is an arbitrary limit, chosen to make tiling jobs
@@ -537,7 +540,14 @@ fn guess_basezoom_droprate(
 
             tile[zu].fullcount += 1;
 
-            if manage_gap(f.ix, &mut tile[zu].previndex, scale, gamma, &mut tile[zu].gap) != 0 {
+            if manage_gap(
+                f.ix,
+                &mut tile[zu].previndex,
+                scale,
+                gamma,
+                &mut tile[zu].gap,
+            ) != 0
+            {
                 continue;
             }
 
@@ -575,7 +585,9 @@ fn guess_basezoom_droprate(
     }
 
     if obasezoom < 0 && *basezoom > maxzoom {
-        out.always("Couldn't find a suitable base zoom. Working from the other direction.\n".into());
+        out.always(
+            "Couldn't find a suitable base zoom. Working from the other direction.\n".into(),
+        );
         if gamma == 0.0 {
             out.always("You might want to try -g1 to limit near-duplicates.\n".into());
         }
@@ -687,7 +699,8 @@ fn assign_minzooms(
 
     if drop_denser == 0 {
         for f in features.iter_mut() {
-            f.feature_minzoom = calc_feature_minzoom(f.ix, f.t as i32, &mut ds, maxzoom, gamma, o) as i8;
+            f.feature_minzoom =
+                calc_feature_minzoom(f.ix, f.t as i32, &mut ds, maxzoom, gamma, o) as i8;
         }
         return;
     }

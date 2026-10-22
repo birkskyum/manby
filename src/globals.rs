@@ -64,6 +64,12 @@ pub static QUIET_PROGRESS: AtomicI32 = AtomicI32::new(0);
 pub static LOGGER: JsonLogger = JsonLogger::new();
 pub static PROGRESS_INTERVAL: AtomicF64 = AtomicF64::new(0.0);
 pub static LAST_PROGRESS: AtomicF64 = AtomicF64::new(0.0);
+
+/// tile-join and tippecanoe-decode link their own `progress_time()`, which always
+/// returns false. They clear this at startup, and `tippecanoe_main::progress_time`
+/// returns false while it is clear.
+pub static PROGRESS_TIME_ENABLED: AtomicBool = AtomicBool::new(true);
+
 pub static EXTRA_DETAIL: AtomicI32 = AtomicI32::new(-1);
 
 pub static CPUS: AtomicUsize = AtomicUsize::new(0);

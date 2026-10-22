@@ -211,7 +211,7 @@ fn serialized_len(
         n += varint_len(zigzag(f.tippecanoe_maxzoom as i64));
     }
     if f.has_id {
-        n += varint_len(f.id);
+        n += varint_len(store.id(fi));
     }
     n += varint_len(zigzag(f.segment as i64));
 

@@ -371,10 +371,11 @@ fn coalcmp(ax: &Attrs<'_>, c1: &TF, c2: &TF) -> i32 {
     }
 
     if f1.has_id && f2.has_id {
-        if f1.id < f2.id {
+        let (id1, id2) = (store.id(c1.fi as usize), store.id(c2.fi as usize));
+        if id1 < id2 {
             return -1;
         }
-        if f1.id > f2.id {
+        if id1 > id2 {
             return 1;
         }
     }
@@ -1781,7 +1782,13 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                 }
 
                 let sfe = &store.features[f.fi as usize];
-                layer.feature(t, sfe.has_id, sfe.id, tile_geoms.len(), &f.geometry);
+                layer.feature(
+                    t,
+                    sfe.has_id,
+                    store.id(f.fi as usize),
+                    tile_geoms.len(),
+                    &f.geometry,
+                );
                 tile_geoms.push(&f.geometry);
                 count += f.geometry.len() as i64;
 

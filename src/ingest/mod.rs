@@ -1068,6 +1068,7 @@ fn merge(
         .map(|a| std::mem::take(&mut a.chunk.features))
         .collect();
     let feature_counts: Vec<usize> = chunk_features.iter().map(|f| f.len()).collect();
+    let mut ids = join_sparse(&mut parts, &feature_counts, |c| &mut c.ids);
     let extents = join_sparse(&mut parts, &feature_counts, |c| &mut c.extents);
     let label_points = join_sparse(&mut parts, &feature_counts, |c| &mut c.label_points);
     let chunks: Vec<&Chunk> = parts.chunks.iter().map(|a| &a.chunk).collect();
@@ -1173,7 +1174,6 @@ fn merge(
         jobs.into_par_iter()
             .enumerate()
             .for_each(|(ci, (out, chunk_features))| {
-                let c = chunks[ci];
                 let seq_base = parts.seq_base[ci];
                 let segment = parts.segment[ci];
                 let lr = &layer_remap[ci];
@@ -1190,15 +1190,19 @@ fn merge(
                     }
                     crate::buf::relieve();
                 }
-                for &i in &c.generate_ids {
-                    // SAFETY: every feature of the chunk was written just above.
-                    let f = unsafe { out[i as usize].assume_init_mut() };
-                    f.id = f.seq + 1;
-                }
             });
     }
     // SAFETY: the chunks' slices cover all `total` places, and each was written.
     unsafe { features.set_len(total) };
+    // --generate-ids: the id is the sequence number + 1
+    let mut first = 0;
+    for (c, &n) in chunks.iter().zip(&feature_counts) {
+        for &i in &c.generate_ids {
+            let fi = first + i as usize;
+            crate::store::set_sparse(&mut ids, fi, features[fi].seq + 1);
+        }
+        first += n;
+    }
 
     let mut geometry = Geometry::default();
     for (part, vertices) in geometries {
@@ -1263,6 +1267,7 @@ fn merge(
 
     let mut store = FeatureStore {
         features,
+        ids,
         extents,
         label_points,
         geometry,

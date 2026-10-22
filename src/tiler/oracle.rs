@@ -129,7 +129,7 @@ fn zoom0(store: &FeatureStore, o: &TileOptions) -> Zoom0 {
             t: f.t,
             feature_minzoom: f.feature_minzoom,
             has_id: f.has_id,
-            id: f.id,
+            id: store.id(fi),
             tippecanoe_minzoom: f.tippecanoe_minzoom as i32,
             tippecanoe_maxzoom: f.tippecanoe_maxzoom as i32,
             geometry,

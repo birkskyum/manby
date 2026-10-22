@@ -594,8 +594,6 @@ pub fn serialize_feature(
         keep_index: cfg.keep_index,
         ix: bbox_index,
         seq,
-        // the id is serialized only if there is one
-        id: if has_id { id } else { 0 },
         geom_start,
         geom_len: scaled_geometry.len() as u32,
         attr_start,
@@ -609,6 +607,7 @@ pub fn serialize_feature(
         segment: 0,
     });
     let i = chunk.features.len() - 1;
+    crate::store::set_sparse(&mut chunk.ids, i, if has_id { id } else { 0 });
     crate::store::set_sparse(&mut chunk.extents, i, sf_extent);
     crate::store::set_sparse(&mut chunk.label_points, i, label_point);
 

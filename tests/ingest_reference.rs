@@ -410,7 +410,7 @@ fn store_features(s: &FeatureStore) -> Vec<Feat> {
             label_point: s.label_point(fi),
             extent: s.extent(fi),
             has_id: f.has_id,
-            id: f.id,
+            id: s.id(fi),
             minzoom: f.tippecanoe_minzoom as i32,
             maxzoom: f.tippecanoe_maxzoom as i32,
             layer: s.layers[f.layer as usize].name.clone(),

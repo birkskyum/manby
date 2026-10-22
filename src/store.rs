@@ -14,8 +14,8 @@ use tippecanoe::geometry::{Draw, DrawVec, VT_LINETO, VT_MOVETO};
 use tippecanoe::mbtiles::LayermapEntry;
 use tippecanoe::serial::SerialVal;
 
-/// One input feature, in 64 bytes. Its extent and label point, which only
-/// some options give lines and polygons, are in `FeatureStore`'s columns.
+/// One input feature, in 56 bytes. Its id, extent and label point, which
+/// many features do not have, are in `FeatureStore`'s columns.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Feature {
     /// The position on the space-filling curve that features are sorted by,
@@ -24,7 +24,6 @@ pub struct Feature {
     /// Input sequence number, tippecanoe's `seq`, which keeps the order of
     /// features with the same index deterministic.
     pub seq: u64,
-    pub id: u64,
     /// The feature's vertices are `geometry[geom_start..geom_start + geom_len]`.
     pub geom_start: u64,
     /// The feature's attributes are `attrs[attr_start..attr_start + attr_len]`.
@@ -531,6 +530,8 @@ pub struct FeatureStore {
     pub extents: Buf<i64>,
     /// Each feature's `label_point`, in the same way.
     pub label_points: Buf<u64>,
+    /// Each feature's id, in the same way; 0 for one without `has_id`.
+    pub ids: Buf<u64>,
     /// World coordinates (2^32 per side at zoom 0), with tippecanoe's move and
     /// line ops, as `decode_geometry` returns them at zoom 0.
     pub geometry: Geometry,
@@ -585,13 +586,19 @@ impl FeatureStore {
         self.extents.get(i).copied().unwrap_or(0)
     }
 
+    /// Feature `i`'s id.
+    pub fn id(&self, i: usize) -> u64 {
+        self.ids.get(i).copied().unwrap_or(0)
+    }
+
     /// Feature `i`'s label point.
     pub fn label_point(&self, i: usize) -> u64 {
         self.label_points.get(i).copied().unwrap_or(0)
     }
 
-    /// Sets feature `i`'s extent and label point.
-    pub fn set_extras(&mut self, i: usize, extent: i64, label_point: u64) {
+    /// Sets feature `i`'s id, extent and label point.
+    pub fn set_extras(&mut self, i: usize, id: u64, extent: i64, label_point: u64) {
+        set_sparse(&mut self.ids, i, id);
         set_sparse(&mut self.extents, i, extent);
         set_sparse(&mut self.label_points, i, label_point);
     }
@@ -599,7 +606,7 @@ impl FeatureStore {
     /// Sorts the features by index and sequence, which makes every key
     /// distinct, and their extents and label points with them.
     pub fn sort_features(&mut self) {
-        if self.extents.is_empty() && self.label_points.is_empty() {
+        if self.ids.is_empty() && self.extents.is_empty() && self.label_points.is_empty() {
             self.features.par_sort_unstable_by_key(|f| (f.ix, f.seq));
             return;
         }
@@ -608,6 +615,7 @@ impl FeatureStore {
         let features = &self.features;
         order.par_sort_unstable_by_key(|&i| (features[i as usize].ix, features[i as usize].seq));
         self.features = order.iter().map(|&i| features[i as usize]).collect();
+        permute(&mut self.ids, &order);
         permute(&mut self.extents, &order);
         permute(&mut self.label_points, &order);
     }

@@ -864,7 +864,7 @@ fn stream_complexity(ctx: &Ctx<'_>, input: &TileInput, layout: &Layout<'_>) -> i
             serialize_int(&mut s, f.tippecanoe_maxzoom as i32);
         }
         if f.has_id {
-            serialize_ulong_long(&mut s, f.id);
+            serialize_ulong_long(&mut s, store.id(fi as usize));
         }
         serialize_int(&mut s, f.segment as i32);
 
@@ -1211,7 +1211,7 @@ fn filter_feature(
             type_: MVT_UINT,
             ..Default::default()
         };
-        v.numeric_value.set_uint_value(f.id);
+        v.numeric_value.set_uint_value(store.id(fi as usize));
         attributes.entry("$id".to_string()).or_insert(v);
     }
 

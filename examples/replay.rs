@@ -328,7 +328,6 @@ fn main() {
             // the temporary file is already in order; the tiler does not read the sort key
             ix: sf.index,
             seq: sf.seq as u64,
-            id: sf.id,
             geom_start,
             geom_len: sf.geometry.len() as u32,
             attr_start,
@@ -342,7 +341,7 @@ fn main() {
             segment: sf.segment as u16,
         });
         let fi = store.features.len() - 1;
-        store.set_extras(fi, sf.extent, sf.label_point);
+        store.set_extras(fi, sf.id, sf.extent, sf.label_point);
     }
     eprintln!(
         "loaded {} features, {} values in {:.2}s",

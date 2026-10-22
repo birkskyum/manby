@@ -20,7 +20,9 @@ all: $(BINS)
 .PHONY: cargo-build
 cargo-build:
 	$(CARGO) build --profile $(PROFILE)
-	for b in $(BINS); do cp target/$(PROFILE)/$$b $$b; done
+	# Replace rather than overwrite, since macOS kills a signed program
+	# that was rewritten in place.
+	for b in $(BINS); do rm -f $$b && cp target/$(PROFILE)/$$b $$b; done
 
 $(BINS): cargo-build ;
 

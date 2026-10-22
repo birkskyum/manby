@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{File, OpenOptions};
-use std::io::{Seek, SeekFrom, Write};
+use std::io::Write;
 use std::os::fd::{FromRawFd, IntoRawFd};
 use std::os::unix::fs::FileExt;
 use std::sync::Mutex;
@@ -21,7 +21,7 @@ use crate::clip::{
     reduce_tiny_poly, remove_noop, simple_clip_poly, to_tile_scale,
 };
 use crate::compression::{Compressor, Decompressor};
-use crate::cstd::{perror, strerror};
+use crate::cstd::perror;
 use crate::dirtiles::{Zxy, dir_erase_zoom, dir_write_tile};
 use crate::errors::{
     EXIT_CLOSE, EXIT_IMPOSSIBLE, EXIT_INCOMPLETE, EXIT_OPEN, EXIT_PTHREAD, EXIT_READ, EXIT_SEEK,

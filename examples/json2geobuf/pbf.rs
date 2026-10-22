@@ -180,6 +180,8 @@ impl Pbf {
     }
 }
 
+// The range check is written the way pbf.js writes it.
+#[allow(clippy::manual_range_contains)]
 fn write_big_varint(val: f64, pbf: &mut Pbf) {
     let mut low: i32;
     let mut high: i32;

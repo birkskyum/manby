@@ -243,6 +243,8 @@ impl Encoder {
         self.write_props(feature, pbf, true);
     }
 
+    // Same branch structure as encode.js, where MultiPoint and LineString share a body.
+    #[allow(clippy::if_same_then_else)]
     fn write_geometry(&self, geom: &Value, pbf: &mut Pbf) {
         let ty = get(geom, "type");
         pbf.write_varint_field(1, geometry_type(&ty));

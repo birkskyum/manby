@@ -1,8 +1,5 @@
 //! A faithful Rust port of tippecanoe. See PORTING.md for how the C++ maps to Rust.
 
-// The port is in progress: most functions are stubs, so their parameters are unused.
-#![allow(unused_variables, dead_code, unused_imports)]
-
 // Vendored libraries
 pub mod getopt;
 pub mod jsonpull;

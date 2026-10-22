@@ -1,6 +1,6 @@
 //! Port of text.cpp.
 
-use crate::cstd::{atof, perror};
+use crate::cstd::atof;
 use crate::errors::{EXIT_JSON, EXIT_OPEN};
 use std::io::Read;
 

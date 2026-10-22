@@ -9,7 +9,9 @@ use crate::geometry::{Point, PointF64};
 use crate::intersect::{IntersectList, IntersectNode};
 use crate::point::NIL;
 use crate::ring::RingManager;
-use crate::ring_util::{add_local_maximum_point, add_local_minimum_point, add_point, round_towards_max};
+use crate::ring_util::{
+    add_local_maximum_point, add_local_minimum_point, add_point, round_towards_max,
+};
 use crate::stable_sort::stable_sort;
 use crate::util::values_are_equal;
 
@@ -70,7 +72,11 @@ pub(crate) fn intersection_compare(b1: &Bound, b2: &Bound) -> bool {
     !(b1.current_x > b2.current_x && !slopes_equal_edges(b1.ce(), b2.ce()))
 }
 
-fn build_intersect_list(active_bounds: &mut ActiveBoundList, bnds: &[Bound], intersects: &mut IntersectList) -> Result<()> {
+fn build_intersect_list(
+    active_bounds: &mut ActiveBoundList,
+    bnds: &[Bound],
+    intersects: &mut IntersectList,
+) -> Result<()> {
     bubble_sort(
         active_bounds,
         |b1, b2| intersection_compare(&bnds[b1], &bnds[b2]),
@@ -78,9 +84,15 @@ fn build_intersect_list(active_bounds: &mut ActiveBoundList, bnds: &[Bound], int
             // on_intersection_swap
             let mut pt = PointF64::default();
             if !get_edge_intersection(bnds[b1].ce(), bnds[b2].ce(), &mut pt) {
-                return Err(Error::new("Trying to find intersection of lines that do not intersect"));
+                return Err(Error::new(
+                    "Trying to find intersection of lines that do not intersect",
+                ));
             }
-            intersects.push(IntersectNode { bound1: b1, bound2: b2, pt });
+            intersects.push(IntersectNode {
+                bound1: b1,
+                bound2: b2,
+                pt,
+            });
             Ok(())
         },
     )
@@ -209,7 +221,9 @@ pub(crate) fn intersect_bounds(
                 }
                 ClipType::Difference => {
                     if ((bnds[b1].poly_type == PolygonType::Clip) && (b1_wc2 > 0) && (b2_wc2 > 0))
-                        || ((bnds[b1].poly_type == PolygonType::Subject) && (b1_wc2 <= 0) && (b2_wc2 <= 0))
+                        || ((bnds[b1].poly_type == PolygonType::Subject)
+                            && (b1_wc2 <= 0)
+                            && (b2_wc2 <= 0))
                     {
                         add_local_minimum_point(b1, b2, active_bounds, pt, bnds, rings);
                     }
@@ -315,7 +329,9 @@ pub(crate) fn process_intersections(
 
     // Sort the intersection list
     // intersect_node declares its own move operations, so it is not trivially copy assignable.
-    stable_sort(&mut intersects, false, |n1, n2| intersect_list_sorter(n1, n2, bnds));
+    stable_sort(&mut intersects, false, |n1, n2| {
+        intersect_list_sorter(n1, n2, bnds)
+    });
 
     process_intersect_list(
         &mut intersects,

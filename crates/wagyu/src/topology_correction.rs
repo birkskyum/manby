@@ -7,8 +7,9 @@ use crate::config::{Error, Result};
 use crate::geometry::BoundingBox;
 use crate::point::{NIL, PointNode, PointPtr, RingPtr, same_pos};
 use crate::ring::{
-    RingManager, area_from_point, assign_as_child, assign_as_sibling, create_new_ring, reassign_as_child,
-    remove_ring, remove_ring_and_points, reverse_ring, ring_depth, ring_is_hole, ring1_replaces_ring2,
+    RingManager, area_from_point, assign_as_child, assign_as_sibling, create_new_ring,
+    reassign_as_child, remove_ring, remove_ring_and_points, reverse_ring, ring_depth, ring_is_hole,
+    ring1_replaces_ring2,
 };
 use crate::ring_util::{poly2_contains_poly1, update_points_ring};
 use crate::stable_sort::stable_sort;
@@ -216,7 +217,11 @@ fn correct_self_intersection(pt1: PointPtr, pt2: PointPtr, manager: &mut RingMan
     new_ring
 }
 
-fn correct_repeated_points(manager: &mut RingManager, new_rings: &mut Vec<RingPtr>, points: &[PointPtr]) {
+fn correct_repeated_points(
+    manager: &mut RingManager,
+    new_rings: &mut Vec<RingPtr>,
+    points: &[PointPtr],
+) {
     for itr1 in 0..points.len() {
         if manager.points[points[itr1]].ring == NIL {
             continue;
@@ -268,7 +273,11 @@ fn for_each_repeated_run<F: FnMut(&mut RingManager, &[PointPtr]) -> Result<()>>(
     Ok(())
 }
 
-fn find_and_correct_repeated_points(r: RingPtr, manager: &mut RingManager, new_rings: &mut Vec<RingPtr>) {
+fn find_and_correct_repeated_points(
+    r: RingPtr,
+    manager: &mut RingManager,
+    new_rings: &mut Vec<RingPtr>,
+) {
     let sorted_points = sort_ring_points(r, manager);
     // Find sets of repeated points
     let _ = for_each_repeated_run(&sorted_points, manager, |manager, run| {
@@ -299,7 +308,11 @@ fn reassign_children_if_necessary(
     Ok(())
 }
 
-fn find_parent_in_tree(r: RingPtr, possible_parent: RingPtr, manager: &mut RingManager) -> Result<bool> {
+fn find_parent_in_tree(
+    r: RingPtr,
+    possible_parent: RingPtr,
+    manager: &mut RingManager,
+) -> Result<bool> {
     // Before starting this we are assuming that possible_parent
     // and r have opposite signs of their areas
 
@@ -329,12 +342,20 @@ fn find_parent_in_tree(r: RingPtr, possible_parent: RingPtr, manager: &mut RingM
     Ok(false)
 }
 
-fn assign_new_ring_parents(manager: &mut RingManager, original_ring: RingPtr, new_rings: &mut Vec<RingPtr>) -> Result<()> {
+fn assign_new_ring_parents(
+    manager: &mut RingManager,
+    original_ring: RingPtr,
+    new_rings: &mut Vec<RingPtr>,
+) -> Result<()> {
     // First lets remove any rings that have zero area
     // or have no points
     let mut kept = Vec::with_capacity(new_rings.len());
     for &r in new_rings.iter() {
-        let remove = if manager.rings[r].points == NIL { true } else { value_is_zero(manager.area(r)) };
+        let remove = if manager.rings[r].points == NIL {
+            true
+        } else {
+            value_is_zero(manager.area(r))
+        };
         if !remove {
             kept.push(r);
         }
@@ -376,7 +397,9 @@ fn assign_new_ring_parents(manager: &mut RingManager, original_ring: RingPtr, ne
 
     // Now we want to sort rings from the largest in absolute area to the smallest
     // as we will assign the rings with the largest areas first
-    stable_sort(new_rings, true, |&r1, &r2| manager.area(r1).abs() > manager.area(r2).abs());
+    stable_sort(new_rings, true, |&r1, &r2| {
+        manager.area(r1).abs() > manager.area(r2).abs()
+    });
 
     for r_itr in 0..new_rings.len() {
         let r = new_rings[r_itr];
@@ -449,7 +472,11 @@ fn assign_new_ring_parents(manager: &mut RingManager, original_ring: RingPtr, ne
     Ok(())
 }
 
-fn correct_ring_self_intersections(manager: &mut RingManager, r: RingPtr, correct_tree: bool) -> Result<bool> {
+fn correct_ring_self_intersections(
+    manager: &mut RingManager,
+    r: RingPtr,
+    correct_tree: bool,
+) -> Result<bool> {
     if manager.rings[r].corrected || manager.rings[r].points == NIL {
         return Ok(false);
     }
@@ -573,8 +600,14 @@ fn process_single_intersection(
         }
     }
     if !found {
-        let int_pt_origin = PointPtrPair { op1: op_origin_1, op2: op_origin_2 };
-        let int_pt_search = PointPtrPair { op1: op_origin_2, op2: op_origin_1 };
+        let int_pt_origin = PointPtrPair {
+            op1: op_origin_1,
+            op2: op_origin_2,
+        };
+        let int_pt_search = PointPtrPair {
+            op1: op_origin_2,
+            op2: op_origin_1,
+        };
         connection_map.emplace(ring_origin, int_pt_origin);
         connection_map.emplace(ring_search, int_pt_search);
         return Ok(());
@@ -592,7 +625,10 @@ fn process_single_intersection(
             }
         }
         if missing {
-            let int_pt_origin = PointPtrPair { op1: op_origin_1, op2: op_origin_2 };
+            let int_pt_origin = PointPtrPair {
+                op1: op_origin_1,
+                op2: op_origin_2,
+            };
             connection_map.emplace(ring_origin, int_pt_origin);
         }
         return Ok(());
@@ -753,7 +789,11 @@ fn process_single_intersection(
     Ok(())
 }
 
-fn correct_chained_repeats(manager: &mut RingManager, connection_map: &mut ConnectionMap, points: &[PointPtr]) -> Result<()> {
+fn correct_chained_repeats(
+    manager: &mut RingManager,
+    connection_map: &mut ConnectionMap,
+    points: &[PointPtr],
+) -> Result<()> {
     for itr1 in 0..points.len() {
         if manager.points[points[itr1]].ring == NIL {
             continue;
@@ -871,7 +911,10 @@ fn fix_collinear_path(path: &CollinearPath, pts: &mut [PointNode]) -> CollinearR
         }
         pts[prev].next = path.end_1;
         pts[path.end_1].prev = prev;
-        CollinearResult { pt1: path.end_1, pt2: NIL }
+        CollinearResult {
+            pt1: path.end_1,
+            pt2: NIL,
+        }
     } else if spike_right {
         let prev = pts[path.start_1].prev;
         let mut itr = path.start_1;
@@ -881,7 +924,10 @@ fn fix_collinear_path(path: &CollinearPath, pts: &mut [PointNode]) -> CollinearR
         }
         pts[prev].next = path.end_2;
         pts[path.end_2].prev = prev;
-        CollinearResult { pt1: path.end_2, pt2: NIL }
+        CollinearResult {
+            pt1: path.end_2,
+            pt2: NIL,
+        }
     } else {
         let prev_1 = pts[path.start_1].prev;
         let prev_2 = pts[path.start_2].prev;
@@ -906,22 +952,35 @@ fn fix_collinear_path(path: &CollinearPath, pts: &mut [PointNode]) -> CollinearR
         } else if path.start_1 == path.end_1 {
             pts[prev_2].next = path.end_2;
             pts[path.end_2].prev = prev_2;
-            CollinearResult { pt1: path.end_2, pt2: NIL }
+            CollinearResult {
+                pt1: path.end_2,
+                pt2: NIL,
+            }
         } else if path.start_2 == path.end_2 {
             pts[prev_1].next = path.end_1;
             pts[path.end_1].prev = prev_1;
-            CollinearResult { pt1: path.end_1, pt2: NIL }
+            CollinearResult {
+                pt1: path.end_1,
+                pt2: NIL,
+            }
         } else {
             pts[prev_1].next = path.end_2;
             pts[path.end_2].prev = prev_1;
             pts[prev_2].next = path.end_1;
             pts[path.end_1].prev = prev_2;
-            CollinearResult { pt1: path.end_1, pt2: path.end_2 }
+            CollinearResult {
+                pt1: path.end_1,
+                pt2: path.end_2,
+            }
         }
     }
 }
 
-fn find_start_and_end_of_collinear_edges(pt_a: PointPtr, pt_b: PointPtr, pts: &[PointNode]) -> CollinearPath {
+fn find_start_and_end_of_collinear_edges(
+    pt_a: PointPtr,
+    pt_b: PointPtr,
+    pts: &[PointNode],
+) -> CollinearPath {
     let next = |p: PointPtr| pts[p].next;
     let prev = |p: PointPtr| pts[p].prev;
     let eq = |a: PointPtr, b: PointPtr| same_pos(pts, a, b);
@@ -1019,7 +1078,12 @@ fn find_start_and_end_of_collinear_edges(pt_a: PointPtr, pt_b: PointPtr, pts: &[
     while !same_ring && eq(end_a, prev(end_a)) && end_a != pt_a {
         end_a = prev(end_a);
     }
-    CollinearPath { start_1: start_a, end_1: end_a, start_2: start_b, end_2: end_b }
+    CollinearPath {
+        start_1: start_a,
+        end_1: end_a,
+        start_2: start_b,
+        end_2: end_b,
+    }
 }
 
 fn has_collinear_edge(pt_a: PointPtr, pt_b: PointPtr, pts: &[PointNode]) -> bool {
@@ -1056,7 +1120,11 @@ fn process_collinear_edges_same_ring(pt_a: PointPtr, pt_b: PointPtr, manager: &m
     }
 }
 
-fn process_collinear_edges_different_rings(pt_a: PointPtr, pt_b: PointPtr, manager: &mut RingManager) {
+fn process_collinear_edges_different_rings(
+    pt_a: PointPtr,
+    pt_b: PointPtr,
+    manager: &mut RingManager,
+) {
     let ring_a = manager.points[pt_a].ring;
     let ring_b = manager.points[pt_b].ring;
     let ring_a_larger = manager.area(ring_a).abs() > manager.area(ring_b).abs();
@@ -1114,11 +1182,15 @@ fn remove_duplicate_points(pt_a: PointPtr, pt_b: PointPtr, manager: &mut RingMan
             return true;
         }
     }
-    while same_pos(&manager.points, manager.points[pt_a].next, pt_a) && manager.points[pt_a].next != pt_a {
+    while same_pos(&manager.points, manager.points[pt_a].next, pt_a)
+        && manager.points[pt_a].next != pt_a
+    {
         let remove = manager.points[pt_a].next;
         unlink_duplicate(pt_a, remove, true, manager);
     }
-    while same_pos(&manager.points, manager.points[pt_a].prev, pt_a) && manager.points[pt_a].prev != pt_a {
+    while same_pos(&manager.points, manager.points[pt_a].prev, pt_a)
+        && manager.points[pt_a].prev != pt_a
+    {
         let remove = manager.points[pt_a].prev;
         unlink_duplicate(pt_a, remove, false, manager);
     }
@@ -1129,11 +1201,15 @@ fn remove_duplicate_points(pt_a: PointPtr, pt_b: PointPtr, manager: &mut RingMan
     if manager.points[pt_b].ring == NIL {
         return true;
     }
-    while same_pos(&manager.points, manager.points[pt_b].next, pt_b) && manager.points[pt_b].next != pt_b {
+    while same_pos(&manager.points, manager.points[pt_b].next, pt_b)
+        && manager.points[pt_b].next != pt_b
+    {
         let remove = manager.points[pt_b].next;
         unlink_duplicate(pt_b, remove, true, manager);
     }
-    while same_pos(&manager.points, manager.points[pt_b].prev, pt_b) && manager.points[pt_b].prev != pt_b {
+    while same_pos(&manager.points, manager.points[pt_b].prev, pt_b)
+        && manager.points[pt_b].prev != pt_b
+    {
         let remove = manager.points[pt_b].prev;
         unlink_duplicate(pt_b, remove, false, manager);
     }
@@ -1273,7 +1349,9 @@ pub(crate) fn correct_topology(manager: &mut RingManager) -> Result<()> {
     // Sort all the points, this will be used for the locating of chained rings
     // and the collinear edges and only needs to be done once.
     let mut all_points = std::mem::take(&mut manager.all_points);
-    stable_sort(&mut all_points, true, |&op1, &op2| point_ptr_cmp(op1, op2, manager));
+    stable_sort(&mut all_points, true, |&op1, &op2| {
+        point_ptr_cmp(op1, op2, manager)
+    });
     manager.all_points = all_points;
 
     // Initially the orientations of the rings

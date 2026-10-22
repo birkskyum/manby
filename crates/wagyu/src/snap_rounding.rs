@@ -1,12 +1,16 @@
 //! Port of `snap_rounding.hpp`.
 
-use crate::active_bound_list::{ActiveBoundList, current_edge_is_horizontal, insert_bound_into_abl, next_edge_in_bound};
+use crate::active_bound_list::{
+    ActiveBoundList, current_edge_is_horizontal, insert_bound_into_abl, next_edge_in_bound,
+};
 use crate::bound::Bound;
 use crate::bubble_sort::bubble_sort;
 use crate::config::{Error, Result};
 use crate::edge::is_horizontal;
 use crate::geometry::{Point, PointF64};
-use crate::intersect_util::{get_edge_intersection, intersection_compare, round_point, update_current_x};
+use crate::intersect_util::{
+    get_edge_intersection, intersection_compare, round_point, update_current_x,
+};
 use crate::local_minimum::{LocalMinimum, LocalMinimumPtr, local_minimum_sorter};
 use crate::point::NIL;
 use crate::ring::RingManager;
@@ -33,7 +37,9 @@ fn process_hot_pixel_intersections(
             // hp_intersection_swap
             let mut pt = PointF64::default();
             if !get_edge_intersection(bnds[b1].ce(), bnds[b2].ce(), &mut pt) {
-                return Err(Error::new("Trying to find intersection of lines that do not intersect"));
+                return Err(Error::new(
+                    "Trying to find intersection of lines that do not intersect",
+                ));
             }
             add_to_hot_pixels(round_point(pt), manager);
             Ok(())
@@ -57,7 +63,8 @@ fn horizontals_at_top_scanbeam(
         let mut bnd_next = *bnd_curr + 1;
         while bnd_next != active_bounds.len()
             && (active_bounds[bnd_next] == NIL
-                || bnds[active_bounds[bnd_next]].current_x < bnds[active_bounds[*bnd_curr]].current_x)
+                || bnds[active_bounds[bnd_next]].current_x
+                    < bnds[active_bounds[*bnd_curr]].current_x)
         {
             let n = active_bounds[bnd_next];
             if n != NIL && bnds[n].ce().top.y != top_y && bnds[n].ce().bot.y != top_y {
@@ -75,7 +82,8 @@ fn horizontals_at_top_scanbeam(
             let mut bnd_prev = *bnd_curr - 1;
             while *bnd_curr != 0
                 && (active_bounds[bnd_prev] == NIL
-                    || bnds[active_bounds[bnd_prev]].current_x > bnds[active_bounds[*bnd_curr]].current_x)
+                    || bnds[active_bounds[bnd_prev]].current_x
+                        > bnds[active_bounds[*bnd_curr]].current_x)
             {
                 let p = active_bounds[bnd_prev];
                 if p != NIL && bnds[p].ce().top.y != top_y && bnds[p].ce().bot.y != top_y {
@@ -163,13 +171,19 @@ fn insert_local_minima_into_abl_hot_pixel(
     }
 }
 
-pub(crate) fn build_hot_pixels(minima_list: &[LocalMinimum], bnds: &mut [Bound], manager: &mut RingManager) -> Result<()> {
+pub(crate) fn build_hot_pixels(
+    minima_list: &[LocalMinimum],
+    bnds: &mut [Bound],
+    manager: &mut RingManager,
+) -> Result<()> {
     let mut active_bounds: ActiveBoundList = Vec::new();
     let mut scanbeam: ScanbeamList = Vec::new();
     let mut scanline_y = i64::MAX;
 
     let mut minima_sorted: Vec<LocalMinimumPtr> = (0..minima_list.len()).collect();
-    stable_sort(&mut minima_sorted, true, |&a, &b| local_minimum_sorter(&minima_list[a], &minima_list[b]));
+    stable_sort(&mut minima_sorted, true, |&a, &b| {
+        local_minimum_sorter(&minima_list[a], &minima_list[b])
+    });
     let mut current_lm = 0;
 
     setup_scanbeam(minima_list, &mut scanbeam);
@@ -196,7 +210,13 @@ pub(crate) fn build_hot_pixels(minima_list: &[LocalMinimum], bnds: &mut [Bound],
             &mut scanbeam,
         );
 
-        process_hot_pixel_edges_at_top_of_scanbeam(scanline_y, &mut scanbeam, &mut active_bounds, bnds, manager);
+        process_hot_pixel_edges_at_top_of_scanbeam(
+            scanline_y,
+            &mut scanbeam,
+            &mut active_bounds,
+            bnds,
+            manager,
+        );
     }
     sort_hot_pixels(manager);
     Ok(())

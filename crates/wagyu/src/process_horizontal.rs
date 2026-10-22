@@ -3,7 +3,9 @@
 //! Iterators into the active bound list and the hot pixels are indices. A reverse iterator is
 //! held as the index of the element it points at, with -1 for `rend()`.
 
-use crate::active_bound_list::{ActiveBoundList, current_edge_is_horizontal, get_maxima_pair, is_maxima, next_edge_in_bound};
+use crate::active_bound_list::{
+    ActiveBoundList, current_edge_is_horizontal, get_maxima_pair, is_maxima, next_edge_in_bound,
+};
 use crate::bound::Bound;
 use crate::config::{ClipType, FillType};
 use crate::geometry::Point;
@@ -37,7 +39,8 @@ fn process_horizontal_left_to_right(
     let mut hp_itr = rings.current_hp_itr;
     while hp_itr != rings.hot_pixels.len()
         && (rings.hot_pixels[hp_itr].y > scanline_y
-            || (rings.hot_pixels[hp_itr].y == scanline_y && rings.hot_pixels[hp_itr].x < bnds[hb].ce().bot.x))
+            || (rings.hot_pixels[hp_itr].y == scanline_y
+                && rings.hot_pixels[hp_itr].x < bnds[hb].ce().bot.x))
     {
         hp_itr += 1;
     }
@@ -80,7 +83,12 @@ fn process_horizontal_left_to_right(
 
         // note: may be done multiple times
         if bnds[hb].ring != NIL {
-            add_point_to_ring(hb, Point::new(wround(bnds[b].current_x), scanline_y), bnds, rings);
+            add_point_to_ring(
+                hb,
+                Point::new(wround(bnds[b].current_x), scanline_y),
+                bnds,
+                rings,
+            );
         }
 
         // OK, so far we're still in range of the horizontal Edge  but make sure
@@ -166,7 +174,8 @@ fn process_horizontal_right_to_left(
     let mut hp_itr_fwd = rings.current_hp_itr;
     while hp_itr_fwd != rings.hot_pixels.len()
         && (rings.hot_pixels[hp_itr_fwd].y < scanline_y
-            || (rings.hot_pixels[hp_itr_fwd].y == scanline_y && rings.hot_pixels[hp_itr_fwd].x < bnds[hb].ce().top.x))
+            || (rings.hot_pixels[hp_itr_fwd].y == scanline_y
+                && rings.hot_pixels[hp_itr_fwd].x < bnds[hb].ce().top.x))
     {
         hp_itr_fwd += 1;
     }
@@ -209,7 +218,12 @@ fn process_horizontal_right_to_left(
 
         // note: may be done multiple times
         if bnds[hb].ring != NIL {
-            add_point_to_ring(hb, Point::new(wround(bnds[b].current_x), scanline_y), bnds, rings);
+            add_point_to_ring(
+                hb,
+                Point::new(wround(bnds[b].current_x), scanline_y),
+                bnds,
+                rings,
+            );
         }
 
         // OK, so far we're still in range of the horizontal Edge  but make sure
@@ -315,7 +329,9 @@ pub(crate) fn process_horizontals(
 ) {
     let mut bnd_itr = 0;
     while bnd_itr != active_bounds.len() {
-        if active_bounds[bnd_itr] != NIL && current_edge_is_horizontal(&bnds[active_bounds[bnd_itr]]) {
+        if active_bounds[bnd_itr] != NIL
+            && current_edge_is_horizontal(&bnds[active_bounds[bnd_itr]])
+        {
             let mut horz = bnd_itr;
             bnd_itr = process_horizontal(
                 scanline_y,

@@ -7,7 +7,12 @@ use crate::config::{Error, Result};
 use crate::geometry::{BoundingBox, Point};
 use crate::point::{NIL, PointNode, PointPtr, RingPtr};
 
-pub(crate) fn area_from_point(points: &[PointNode], mut op: PointPtr, size: &mut usize, bbox: &mut BoundingBox) -> f64 {
+pub(crate) fn area_from_point(
+    points: &[PointNode],
+    mut op: PointPtr,
+    size: &mut usize,
+    bbox: &mut BoundingBox,
+) -> f64 {
     let start_op = op;
     *size = 0;
     let mut a = 0.0;
@@ -46,8 +51,8 @@ pub(crate) fn area_from_point(points: &[PointNode], mut op: PointPtr, size: &mut
 pub(crate) struct Ring {
     pub ring_index: usize, // To support unset 0 is undefined and indexes offset by 1
 
-    pub size_: usize,       // number of points in the ring
-    pub area_: f64,         // area of the ring
+    pub size_: usize,      // number of points in the ring
+    pub area_: f64,        // area of the ring
     pub bbox: BoundingBox, // bounding box of the ring
 
     pub parent: RingPtr,
@@ -120,7 +125,8 @@ impl RingManager {
     pub fn recalculate_stats(&mut self, r: RingPtr) {
         let ring = &mut self.rings[r];
         if ring.points != NIL {
-            ring.area_ = area_from_point(&self.points, ring.points, &mut ring.size_, &mut ring.bbox);
+            ring.area_ =
+                area_from_point(&self.points, ring.points, &mut ring.size_, &mut ring.bbox);
             ring.is_hole_ = !(ring.area_ > 0.0);
         }
     }
@@ -148,7 +154,11 @@ impl RingManager {
 
     /// `parent == nullptr ? manager.children : parent->children`
     pub fn children_of(&mut self, parent: RingPtr) -> &mut Vec<RingPtr> {
-        if parent == NIL { &mut self.children } else { &mut self.rings[parent].children }
+        if parent == NIL {
+            &mut self.children
+        } else {
+            &mut self.rings[parent].children
+        }
     }
 }
 
@@ -162,7 +172,13 @@ pub(crate) fn create_new_ring(manager: &mut RingManager) -> RingPtr {
 
 pub(crate) fn create_new_point(r: RingPtr, pt: Point, rings: &mut RingManager) -> PointPtr {
     let point = rings.points.len();
-    rings.points.push(PointNode { ring: r, x: pt.x, y: pt.y, next: point, prev: point });
+    rings.points.push(PointNode {
+        ring: r,
+        x: pt.x,
+        y: pt.y,
+        next: point,
+        prev: point,
+    });
     rings.all_points.push(point);
     point
 }
@@ -175,7 +191,13 @@ pub(crate) fn create_new_point_before(
 ) -> PointPtr {
     let point = rings.points.len();
     let prev = rings.points[before_this_point].prev;
-    rings.points.push(PointNode { ring: r, x: pt.x, y: pt.y, next: before_this_point, prev });
+    rings.points.push(PointNode {
+        ring: r,
+        x: pt.x,
+        y: pt.y,
+        next: before_this_point,
+        prev,
+    });
     rings.points[before_this_point].prev = point;
     rings.points[prev].next = point;
     rings.all_points.push(point);
@@ -201,25 +223,39 @@ pub(crate) fn remove_from_children(r: RingPtr, children: &mut [RingPtr]) {
     }
 }
 
-pub(crate) fn assign_as_child(new_ring: RingPtr, parent: RingPtr, manager: &mut RingManager) -> Result<()> {
+pub(crate) fn assign_as_child(
+    new_ring: RingPtr,
+    parent: RingPtr,
+    manager: &mut RingManager,
+) -> Result<()> {
     // Assigning as a child assumes that this is
     // a brand new ring. Therefore it does
     // not have any existing relationships
     if (parent == NIL && manager.is_hole(new_ring))
         || (parent != NIL && manager.is_hole(new_ring) == manager.is_hole(parent))
     {
-        return Err(Error::new("Trying to assign a child that is the same orientation as the parent"));
+        return Err(Error::new(
+            "Trying to assign a child that is the same orientation as the parent",
+        ));
     }
     set_to_children(new_ring, manager.children_of(parent));
     manager.rings[new_ring].parent = parent;
     Ok(())
 }
 
-pub(crate) fn reassign_as_child(ring: RingPtr, parent: RingPtr, manager: &mut RingManager) -> Result<()> {
+pub(crate) fn reassign_as_child(
+    ring: RingPtr,
+    parent: RingPtr,
+    manager: &mut RingManager,
+) -> Result<()> {
     // Reassigning a ring assumes it already
     // has an existing parent
-    if (parent == NIL && manager.is_hole(ring)) || (parent != NIL && manager.is_hole(ring) == manager.is_hole(parent)) {
-        return Err(Error::new("Trying to re-assign a child that is the same orientation as the parent"));
+    if (parent == NIL && manager.is_hole(ring))
+        || (parent != NIL && manager.is_hole(ring) == manager.is_hole(parent))
+    {
+        return Err(Error::new(
+            "Trying to re-assign a child that is the same orientation as the parent",
+        ));
     }
 
     // Remove the old child relationship
@@ -232,7 +268,11 @@ pub(crate) fn reassign_as_child(ring: RingPtr, parent: RingPtr, manager: &mut Ri
     Ok(())
 }
 
-pub(crate) fn assign_as_sibling(new_ring: RingPtr, sibling: RingPtr, manager: &mut RingManager) -> Result<()> {
+pub(crate) fn assign_as_sibling(
+    new_ring: RingPtr,
+    sibling: RingPtr,
+    manager: &mut RingManager,
+) -> Result<()> {
     // Assigning as a sibling assumes that this is
     // a brand new ring. Therefore it does
     // not have any existing relationships
@@ -307,7 +347,12 @@ pub(crate) fn remove_ring_and_points(
     manager.rings[r].reset_stats();
 }
 
-pub(crate) fn remove_ring(r: RingPtr, manager: &mut RingManager, remove_children: bool, remove_from_parent: bool) {
+pub(crate) fn remove_ring(
+    r: RingPtr,
+    manager: &mut RingManager,
+    remove_children: bool,
+    remove_from_parent: bool,
+) {
     // Removes a ring and any children that might be
     // under that ring.
     let n = manager.rings[r].children.len();

@@ -7,7 +7,6 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use rayon::prelude::*;
 use tippecanoe::clip::{clip_lines, clip_point, remove_noop, simple_clip_poly};
 use tippecanoe::evaluator::evaluate;
 use tippecanoe::geometry::{
@@ -21,14 +20,14 @@ use tippecanoe::serial::{FEATURE_ADDED_FOR_MULTIPLIER_DENSITY, FEATURE_DROPPED, 
 use tippecanoe::text::bit_reverse;
 
 use super::engine::Ctx;
-use super::util::shift_right;
+use super::util::{par_ranges, shift_right};
 use crate::store::Attr;
 
 /// `pow(2, 64)`.
 const TWO_TO_THE_64: f64 = 18446744073709551616.0;
 
 /// How many input features one parallel job reads.
-const CHUNK: usize = 8192;
+const CHUNK: usize = 16384;
 
 /// A feature on its way to a tile: what tippecanoe writes into the temporary
 /// file for the tile. Only the clipped geometry and the gap change on the way
@@ -125,10 +124,9 @@ struct ChunkOut {
 /// Reads one tile.
 pub fn read_tile(ctx: &Ctx<'_>, input: TileInput, rp: &ReadParams) -> ReadTile {
     let n = input.feats.len();
-    let chunks: Vec<ChunkOut> = (0..n.div_ceil(CHUNK))
-        .into_par_iter()
-        .map(|k| read_chunk(ctx, &input, k * CHUNK, ((k + 1) * CHUNK).min(n), rp))
-        .collect();
+    let chunks: Vec<ChunkOut> = par_ranges(n, CHUNK, ctx.threads, |r| {
+        read_chunk(ctx, &input, r.start, r.end, rp)
+    });
 
     let mut out = ReadTile {
         z: input.z,

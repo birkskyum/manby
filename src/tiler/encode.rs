@@ -1,0 +1,379 @@
+//! Encoding a tile into exactly the bytes that tippecanoe-rs's
+//! `MvtTile::encode` makes from the layers `MvtLayer::tag` builds, without
+//! building those layers first.
+//!
+//! tippecanoe dedups keys through a direct-mapped cache, which can repeat a
+//! key, so keys go through the same cache here. Values are sorted by their
+//! encoded bytes and merged when equal before they are written, so they can
+//! be deduped any way at all on the way in.
+
+use std::collections::HashMap;
+
+use rayon::prelude::*;
+use tippecanoe::geometry::DrawVec;
+use tippecanoe::mvt::{
+    MVT_BOOL, MVT_CLOSEPATH, MVT_DOUBLE, MVT_FLOAT, MVT_INT, MVT_LINETO, MVT_MOVETO, MVT_SINT,
+    MVT_STRING, MVT_UINT, MvtValue,
+};
+use tippecanoe::protozero::{add_varint_to_buffer, encode_zigzag32, encode_zigzag64};
+use tippecanoe::text::fnv1a;
+
+use super::util::par_ranges;
+
+/// The size of tippecanoe's key dedup cache.
+const DEDUP_SLOTS: u64 = 65536;
+
+pub fn key_slot(key: &str) -> u32 {
+    (fnv1a(key.as_bytes()) % DEDUP_SLOTS) as u32
+}
+
+fn field(out: &mut Vec<u8>, tag: u32, wire: u32) {
+    add_varint_to_buffer(out, ((tag << 3) | wire) as u64);
+}
+
+fn bytes_field(out: &mut Vec<u8>, tag: u32, value: &[u8]) {
+    field(out, tag, 2);
+    add_varint_to_buffer(out, value.len() as u64);
+    out.extend_from_slice(value);
+}
+
+/// The encoded `Value` message of a tile value. `None` for nulls, which are never written.
+pub fn encode_value(v: &MvtValue) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(12);
+    let n = &v.numeric_value;
+    match v.type_ {
+        MVT_STRING => bytes_field(&mut out, 1, v.string_value.as_bytes()),
+        MVT_FLOAT => {
+            field(&mut out, 2, 5);
+            out.extend_from_slice(&n.float_value().to_le_bytes());
+        }
+        MVT_DOUBLE => {
+            field(&mut out, 3, 1);
+            out.extend_from_slice(&n.double_value().to_le_bytes());
+        }
+        MVT_INT => {
+            field(&mut out, 4, 0);
+            add_varint_to_buffer(&mut out, n.int_value() as u64);
+        }
+        MVT_UINT => {
+            field(&mut out, 5, 0);
+            add_varint_to_buffer(&mut out, n.uint_value());
+        }
+        MVT_SINT => {
+            field(&mut out, 6, 0);
+            add_varint_to_buffer(&mut out, encode_zigzag64(n.sint_value()));
+        }
+        MVT_BOOL => {
+            field(&mut out, 7, 0);
+            out.push(n.bool_value() as u8);
+        }
+        _ => return None,
+    }
+    Some(out)
+}
+
+/// The encodings of the store's attribute values, and their order by those bytes.
+pub struct ValueCodes {
+    bytes: Vec<u8>,
+    off: Vec<u32>,
+    /// Equal for values with equal encodings.
+    rank: Vec<u32>,
+}
+
+impl ValueCodes {
+    pub fn new(values: &[MvtValue]) -> ValueCodes {
+        let encoded: Vec<Vec<u8>> = values
+            .par_iter()
+            .with_min_len(4096)
+            .map(|v| encode_value(v).unwrap_or_default())
+            .collect();
+        let mut bytes = Vec::with_capacity(encoded.iter().map(|e| e.len()).sum());
+        let mut off = Vec::with_capacity(encoded.len() + 1);
+        for e in &encoded {
+            off.push(bytes.len() as u32);
+            bytes.extend_from_slice(e);
+        }
+        off.push(bytes.len() as u32);
+
+        let mut order: Vec<u32> = (0..encoded.len() as u32).collect();
+        order.par_sort_by(|&a, &b| encoded[a as usize].cmp(&encoded[b as usize]));
+        let mut rank = vec![0u32; encoded.len()];
+        let mut r = 0u32;
+        for (i, &v) in order.iter().enumerate() {
+            if i > 0 && encoded[v as usize] != encoded[order[i - 1] as usize] {
+                r += 1;
+            }
+            rank[v as usize] = r;
+        }
+
+        ValueCodes { bytes, off, rank }
+    }
+
+    fn get(&self, v: u32) -> &[u8] {
+        &self.bytes[self.off[v as usize] as usize..self.off[v as usize + 1] as usize]
+    }
+}
+
+enum Val {
+    Store(u32),
+    Extra(Vec<u8>),
+}
+
+struct Feat {
+    t: i32,
+    has_id: bool,
+    id: u64,
+    /// Key index and local value index, alternating.
+    tags: Vec<u32>,
+    /// Which of the caller's geometries is this feature's.
+    geom: usize,
+}
+
+/// One layer being encoded.
+pub struct LayerEnc<'c> {
+    codes: &'c ValueCodes,
+    name: String,
+    extent: i64,
+    keys: Vec<String>,
+    key_cache: HashMap<u32, u32>,
+    vals: Vec<Val>,
+    store_vals: HashMap<u32, u32>,
+    extra_vals: HashMap<Vec<u8>, u32>,
+    feats: Vec<Feat>,
+}
+
+impl<'c> LayerEnc<'c> {
+    pub fn new(codes: &'c ValueCodes, name: &str, extent: i64) -> LayerEnc<'c> {
+        LayerEnc {
+            codes,
+            name: name.to_string(),
+            extent,
+            keys: Vec::new(),
+            key_cache: HashMap::new(),
+            vals: Vec::new(),
+            store_vals: HashMap::new(),
+            extra_vals: HashMap::new(),
+            feats: Vec::new(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.feats.is_empty()
+    }
+
+    /// Starts a feature; its tags follow.
+    pub fn feature(&mut self, t: i32, has_id: bool, id: u64, geom: usize) {
+        self.feats.push(Feat {
+            t,
+            has_id,
+            id,
+            tags: Vec::new(),
+            geom,
+        });
+    }
+
+    fn key(&mut self, key: &str, slot: u32) -> u32 {
+        if let Some(&k) = self.key_cache.get(&slot)
+            && self.keys[k as usize] == key
+        {
+            return k;
+        }
+        let k = self.keys.len() as u32;
+        self.keys.push(key.to_string());
+        self.key_cache.insert(slot, k);
+        k
+    }
+
+    /// Tags the current feature with a store value.
+    pub fn tag_store(&mut self, key: &str, slot: u32, value: u32) {
+        let k = self.key(key, slot);
+        let next = self.vals.len() as u32;
+        let v = *self.store_vals.entry(value).or_insert(next);
+        if v == next {
+            self.vals.push(Val::Store(value));
+        }
+        let tags = &mut self.feats.last_mut().unwrap().tags;
+        tags.push(k);
+        tags.push(v);
+    }
+
+    /// Tags the current feature with a value that is not in the store.
+    pub fn tag_extra(&mut self, key: &str, value: &MvtValue) {
+        let k = self.key(key, key_slot(key));
+        let bytes = encode_value(value).unwrap_or_default();
+        let next = self.vals.len() as u32;
+        let v = match self.extra_vals.get(&bytes) {
+            Some(&v) => v,
+            None => {
+                self.extra_vals.insert(bytes.clone(), next);
+                self.vals.push(Val::Extra(bytes));
+                next
+            }
+        };
+        let tags = &mut self.feats.last_mut().unwrap().tags;
+        tags.push(k);
+        tags.push(v);
+    }
+
+    fn val_bytes(&self, v: u32) -> &[u8] {
+        match &self.vals[v as usize] {
+            Val::Store(s) => self.codes.get(*s),
+            Val::Extra(b) => b,
+        }
+    }
+
+    /// Appends the layer message to `out`. `geometries[i]` is feature geometry `i`.
+    pub fn finish(
+        self,
+        geometries: &[&DrawVec],
+        threads: usize,
+        out: &mut Vec<u8>,
+    ) -> Result<(), String> {
+        let mut layer: Vec<u8> = Vec::new();
+        field(&mut layer, 15, 0);
+        add_varint_to_buffer(&mut layer, 2);
+        bytes_field(&mut layer, 1, self.name.as_bytes());
+        field(&mut layer, 5, 0);
+        add_varint_to_buffer(&mut layer, self.extent as u32 as u64);
+
+        for key in &self.keys {
+            bytes_field(&mut layer, 3, key.as_bytes());
+        }
+
+        // the values, sorted by their bytes and merged when equal
+        let mut order: Vec<u32> = (0..self.vals.len() as u32).collect();
+        if self.extra_vals.is_empty() {
+            let rank = |v: u32| match &self.vals[v as usize] {
+                Val::Store(s) => self.codes.rank[*s as usize],
+                Val::Extra(_) => unreachable!(),
+            };
+            order.sort_unstable_by_key(|&v| (rank(v), v));
+        } else {
+            order.sort_by(|&a, &b| self.val_bytes(a).cmp(self.val_bytes(b)).then(a.cmp(&b)));
+        }
+        let mut mapping = vec![0u32; self.vals.len()];
+        let mut index = 0u32;
+        let mut i = 0;
+        while i < order.len() {
+            let bytes = self.val_bytes(order[i]);
+            bytes_field(&mut layer, 4, bytes);
+            mapping[order[i] as usize] = index;
+            while i + 1 < order.len() && self.val_bytes(order[i + 1]) == bytes {
+                mapping[order[i + 1] as usize] = index;
+                i += 1;
+            }
+            index += 1;
+            i += 1;
+        }
+
+        let encode = |f: &Feat, out: &mut Vec<u8>| -> Result<(), String> {
+            let mut feature: Vec<u8> = Vec::with_capacity(16 + f.tags.len());
+            if f.t >= 0 {
+                field(&mut feature, 3, 0);
+                add_varint_to_buffer(&mut feature, f.t as i64 as u64);
+            }
+            if !f.tags.is_empty() {
+                let mut packed = Vec::with_capacity(f.tags.len() * 2);
+                for (j, &t) in f.tags.iter().enumerate() {
+                    let t = if j % 2 == 1 { mapping[t as usize] } else { t };
+                    add_varint_to_buffer(&mut packed, t as u64);
+                }
+                bytes_field(&mut feature, 2, &packed);
+            }
+            if f.has_id {
+                field(&mut feature, 1, 0);
+                add_varint_to_buffer(&mut feature, f.id);
+            }
+            let geometry = encode_geometry(geometries[f.geom])?;
+            if !geometry.is_empty() {
+                let mut packed = Vec::with_capacity(geometry.len() * 2);
+                for g in geometry {
+                    add_varint_to_buffer(&mut packed, g as u64);
+                }
+                bytes_field(&mut feature, 4, &packed);
+            }
+            bytes_field(out, 2, &feature);
+            Ok(())
+        };
+
+        if self.feats.len() >= 16384 {
+            let chunks: Vec<Result<Vec<u8>, String>> =
+                par_ranges(self.feats.len(), 8192, threads, |r| {
+                    let mut out = Vec::new();
+                    for f in &self.feats[r] {
+                        encode(f, &mut out)?;
+                    }
+                    Ok(out)
+                });
+            for c in chunks {
+                layer.extend_from_slice(&c?);
+            }
+        } else {
+            for f in &self.feats {
+                encode(f, &mut layer)?;
+            }
+        }
+
+        bytes_field(out, 3, &layer);
+        Ok(())
+    }
+}
+
+/// The geometry commands of a feature, as `MvtTile::encode` writes them.
+fn encode_geometry(geom: &DrawVec) -> Result<Vec<u32>, String> {
+    let mut geometry: Vec<u32> = Vec::with_capacity(geom.len() * 2 + 2);
+
+    let mut px: i64 = 0;
+    let mut py: i64 = 0;
+    let mut cmd_idx: i32 = -1;
+    let mut cmd: i32 = -1;
+    let mut length: i32 = 0;
+
+    for g in geom {
+        let op = g.op as i32;
+
+        if op != cmd {
+            if cmd_idx >= 0 {
+                geometry[cmd_idx as usize] = ((length << 3) | (cmd & ((1 << 3) - 1))) as u32;
+            }
+
+            cmd = op;
+            length = 0;
+            cmd_idx = geometry.len() as i32;
+            geometry.push(0);
+        }
+
+        if op == MVT_MOVETO || op == MVT_LINETO {
+            let dx = g.x - px;
+            let dy = g.y - py;
+
+            if dx < i32::MIN as i64
+                || dx > i32::MAX as i64
+                || dy < i32::MIN as i64
+                || dy > i32::MAX as i64
+            {
+                return Err(format!(
+                    "Internal error: Geometry delta is too big: {},{}",
+                    dx, dy
+                ));
+            }
+
+            geometry.push(encode_zigzag32(dx as i32));
+            geometry.push(encode_zigzag32(dy as i32));
+
+            px = g.x;
+            py = g.y;
+            length += 1;
+        } else if op == MVT_CLOSEPATH {
+            length += 1;
+        } else {
+            return Err("Internal error: corrupted geometry".to_string());
+        }
+    }
+
+    if cmd_idx >= 0 {
+        geometry[cmd_idx as usize] = ((length << 3) | (cmd & ((1 << 3) - 1))) as u32;
+    }
+
+    Ok(geometry)
+}

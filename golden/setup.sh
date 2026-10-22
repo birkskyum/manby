@@ -4,12 +4,12 @@
 # is real, so that the files the recipes write stay here. ./tippecanoe is
 # manby, under the name the expected outputs record in generator_options.
 #
-#   golden/setup.sh <tippecanoe-rs tests> <scratch directory> <manby> <tippecanoe-decode>
+#   golden/setup.sh <tippecanoe-rs tests> <scratch directory> <manby> <tippecanoe-rs release directory>
 set -e
 src=$(cd "$1" && pwd)
 dst=$2
 manby=$(cd "$(dirname "$3")" && pwd)/$(basename "$3")
-decode=$(cd "$(dirname "$4")" && pwd)/$(basename "$4")
+bin=$(cd "$4" && pwd)
 
 rm -rf "$dst/tests"
 mkdir -p "$dst/tests"
@@ -30,4 +30,6 @@ for dir in "$src"/*/; do
 	done
 done
 ln -sf "$manby" "$dst/tippecanoe"
-ln -sf "$decode" "$dst/tippecanoe-decode"
+ln -sf "$bin/tippecanoe-decode" "$dst/tippecanoe-decode"
+ln -sf "$bin/tippecanoe-json-tool" "$dst/tippecanoe-json-tool"
+ln -sf "$bin/examples/json2geobuf" "$dst/json2geobuf"

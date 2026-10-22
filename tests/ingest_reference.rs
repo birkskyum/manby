@@ -564,11 +564,6 @@ fn golden_cases() -> Vec<(String, Vec<String>)> {
     cases
 }
 
-/// Whether a difference comes from something manby does not read yet.
-fn unsupported(e: &str) -> bool {
-    e.contains("manby reads only GeoJSON")
-}
-
 #[test]
 fn reference_golden() {
     let _lock = GLOBALS.lock().unwrap_or_else(|e| e.into_inner());
@@ -582,9 +577,7 @@ fn reference_golden() {
         for (cpus, chunk_bytes, threads) in [(4, 0, 0), (1, 100, 3), (16, 7, 5)] {
             match compare(&argv, cpus, chunk_bytes, threads) {
                 Ok(_) => compared += 1,
-                Err(e)
-                    if unsupported(&e) || e.starts_with("parse:") || e.starts_with("resolve:") =>
-                {
+                Err(e) if e.starts_with("parse:") || e.starts_with("resolve:") => {
                     skipped.push(format!("{}: {}", name, e));
                     break;
                 }

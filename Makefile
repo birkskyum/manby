@@ -24,9 +24,11 @@ cargo-build:
 
 $(BINS): cargo-build ;
 
-# The test recipes below run ./tippecanoe and the other programs, so they have to
-# wait for the build, even with -j.
-$(addsuffix .check,$(wildcard tests/*/out/*.json)): | $(BINS)
+# The test recipes below run ./tippecanoe and the other programs without always
+# depending on them, so build those first, even with -j.
+test:
+	$(MAKE) all
+	$(MAKE) test-recipes
 
 # The unit tests from unit.cpp live next to the code they test.
 .PHONY: unit
@@ -40,7 +42,7 @@ clean:
 TESTS = $(wildcard tests/*/out/*.json)
 SPACE = $(NULL) $(NULL)
 
-test: tippecanoe tippecanoe-decode $(addsuffix .check,$(TESTS)) raw-tiles-test parallel-test radix-sort-test pbf-test join-test enumerate-test decode-test join-filter-test unit json-tool-test allow-existing-test csv-test layer-json-test pmtiles-test decode-pmtiles-test overzoom-test flatgeobuf-test
+test-recipes: tippecanoe tippecanoe-decode $(addsuffix .check,$(TESTS)) raw-tiles-test parallel-test radix-sort-test pbf-test join-test enumerate-test decode-test join-filter-test unit json-tool-test allow-existing-test csv-test layer-json-test pmtiles-test decode-pmtiles-test overzoom-test flatgeobuf-test
 
 suffixes = json json.gz
 

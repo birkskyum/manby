@@ -116,6 +116,11 @@ pub struct TileOptions {
     pub timing: bool,
     /// Report every attempt at every tile to stderr.
     pub trace: bool,
+    /// `-t`: where temporary files go.
+    pub tmpdir: std::path::PathBuf,
+    /// Bytes of tile data kept in memory while it waits for its tile to be
+    /// read or written out; the rest waits in temporary files.
+    pub rest_memory: usize,
     /// Write MapLibre Tiles instead of MVT (`--tile-format=mlt`).
     pub mlt: Option<crate::mlt::MltSettings>,
 }
@@ -170,6 +175,8 @@ impl Default for TileOptions {
             fast: false,
             timing: false,
             trace: false,
+            tmpdir: std::path::PathBuf::from("/tmp"),
+            rest_memory: 128 << 20,
             mlt: None,
         }
     }
@@ -228,6 +235,8 @@ impl TileOptions {
             fast: o.fast,
             timing: false,
             trace: false,
+            tmpdir: std::path::PathBuf::from(&o.tmpdir),
+            rest_memory: 128 << 20,
             mlt: (o.tile_format == crate::mlt::TileFormat::Mlt).then_some(
                 crate::mlt::MltSettings {
                     profile: o.mlt_profile,

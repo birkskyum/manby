@@ -310,6 +310,8 @@ fn check_stats(store: &FeatureStore, o: &TileOptions) -> (usize, Vec<Strategy>) 
         let sink = MemorySink::default();
         let topts = TileOptions {
             threads,
+            // with 2 threads, all waiting tile data goes through temporary files
+            rest_memory: if threads == 2 { 0 } else { o.rest_memory },
             ..o.clone()
         };
         let stats = tile_with(store, &topts, &sink).expect("tiling failed");

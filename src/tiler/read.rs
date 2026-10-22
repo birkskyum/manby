@@ -35,12 +35,40 @@ use tippecanoe::serial::SerialVal;
 /// `pow(2, 64)`.
 const TWO_TO_THE_64: f64 = 18446744073709551616.0;
 
-/// How many input features one parallel job reads.
-const CHUNK: usize = 16384;
+/// How much one parallel read job reads at least: vertices, and a few for
+/// each feature.
+const READ_WEIGHT: u64 = 1 << 17;
+const FEATURE_WEIGHT: u64 = 8;
+
+/// Splits a sequence of weighted items into at most `width` consecutive
+/// ranges of about equal weight, each of at least `READ_WEIGHT`.
+fn split_by_weight(
+    weights: impl Iterator<Item = u64> + Clone,
+    width: usize,
+) -> Vec<std::ops::Range<usize>> {
+    let total: u64 = weights.clone().sum();
+    let n = weights.clone().count();
+    let parts = (total / READ_WEIGHT).clamp(1, width.max(1) as u64);
+    let mut out = Vec::with_capacity(parts as usize);
+    let mut first = 0;
+    let mut seen = 0u64;
+    for (i, w) in weights.enumerate() {
+        seen += w;
+        if seen * parts >= total * (out.len() as u64 + 1) && (out.len() as u64) + 1 < parts {
+            out.push(first..i + 1);
+            first = i + 1;
+        }
+    }
+    if first < n || out.is_empty() {
+        out.push(first..n);
+    }
+    out
+}
 
 /// How many features of a tile input a run holds at most, so that reading
 /// can be split at run boundaries.
 const RUN: u32 = 4096;
+const RUN_VERTICES: u32 = 1 << 15;
 
 /// No feature: the run is the first of its input.
 const NO_FEATURE: u32 = u32::MAX;
@@ -121,11 +149,6 @@ impl TileInput {
             skip_unless_dropping: false,
             complexity: None,
         }
-    }
-
-    /// The number of features.
-    pub fn len(&self) -> usize {
-        self.count
     }
 
     /// About how much memory reading and making the tile takes.
@@ -218,21 +241,13 @@ struct Layout<'a> {
 
 impl Layout<'_> {
     /// Splits the runs into at most `parts` groups of about equal feature counts.
-    fn groups(&self, count: usize, parts: usize) -> Vec<std::ops::Range<usize>> {
-        let mut out = Vec::with_capacity(parts);
-        let mut first = 0;
-        let mut seen = 0usize;
-        for (i, r) in self.runs.iter().enumerate() {
-            seen += r.count as usize;
-            if seen * parts >= count * (out.len() + 1) && out.len() + 1 < parts {
-                out.push(first..i + 1);
-                first = i + 1;
-            }
-        }
-        if first < self.runs.len() || out.is_empty() {
-            out.push(first..self.runs.len());
-        }
-        out
+    fn groups(&self, width: usize) -> Vec<std::ops::Range<usize>> {
+        split_by_weight(
+            self.runs
+                .iter()
+                .map(|r| r.vertices as u64 + FEATURE_WEIGHT * r.count as u64),
+            width,
+        )
     }
 
     fn cursor(&self, runs: std::ops::Range<usize>) -> Cursor<'_> {
@@ -294,13 +309,14 @@ pub fn store_inputs(inputs: &mut [TileInput], spool: &Arc<Spool>) -> crate::Resu
         t.encode(&mut all);
         ends.push(all.len());
     }
-    let Stored::Spooled { at, .. } = spool.store(&all)? else {
+    let Stored::Spooled { shard, at, .. } = spool.store(&all)? else {
         unreachable!();
     };
     let mut from = 0;
     for (t, end) in inputs.iter_mut().zip(ends) {
         t.data = Stored::Spooled {
             spool: spool.clone(),
+            shard,
             at: at + from as u64,
             len: end - from,
         };
@@ -594,14 +610,20 @@ pub fn read_tile(
         None if ctx.o.a(A_VARIABLE_DEPTH_PYRAMID) => stream_complexity(ctx, input, &layout),
         None => 0,
     };
-    let n = input.len();
-    let parts = (n / CHUNK).clamp(1, ctx.helpers.width());
+
     let chunks: Vec<ChunkOut> = if input.root {
-        par_ranges(&ctx.helpers, n, CHUNK, |r| {
-            read_chunk(ctx, input, Source::Root(r), rp)
+        let groups = split_by_weight(
+            ctx.store
+                .features
+                .iter()
+                .map(|f| f.geom_len as u64 + FEATURE_WEIGHT),
+            ctx.helpers.width(),
+        );
+        par_ranges(&ctx.helpers, groups.len(), 1, |r| {
+            read_chunk(ctx, input, Source::Root(groups[r.start].clone()), rp)
         })
     } else {
-        let groups = layout.groups(n, parts);
+        let groups = layout.groups(ctx.helpers.width());
         par_ranges(&ctx.helpers, groups.len(), 1, |r| {
             debug_assert_eq!(r.len(), 1);
             read_chunk(
@@ -1320,7 +1342,11 @@ fn rewrite(
                 }
             };
             let part = &mut children[i];
-            if part.runs.last().is_none_or(|r| r.count >= RUN) {
+            if part
+                .runs
+                .last()
+                .is_none_or(|r| r.count >= RUN || r.vertices >= RUN_VERTICES)
+            {
                 part.runs.push(Run {
                     start: part.data.len() as u64,
                     count: 0,

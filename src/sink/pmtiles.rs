@@ -48,7 +48,7 @@ pub const TILETYPE_MLT: u8 = 0x6;
 const SHARDS: usize = 64;
 const CHUNK: usize = 4 << 20;
 /// Bytes of tile data per parallel write at `finish`.
-const PIECE: u64 = 16 << 20;
+const PIECE: u64 = 4 << 20;
 /// Bytes of spilled tile data a shard collects before writing them out.
 const SPILL_BATCH: usize = 1 << 20;
 
@@ -117,15 +117,33 @@ impl Shard {
         (chunk as u64) << 32 | off as u64
     }
 
-    fn data<'a>(&'a self, c: &Content, spill: &'a [u8]) -> &'a [u8] {
+    /// Appends the tile's data to `out`. Spilled data is read from the
+    /// file rather than mapped, so that it stays out of the process's memory.
+    fn data_into(
+        &self,
+        c: &Content,
+        spill: Option<&File>,
+        out: &mut Vec<u8>,
+    ) -> std::io::Result<()> {
         let (from, to) = (c.pos as usize, c.pos as usize + c.len as usize);
         match c.place {
-            Place::Spilled => &spill[from..to],
-            Place::Batch => &self.batch[from..to],
+            Place::Spilled => {
+                let at = out.len();
+                out.resize(at + c.len as usize, 0);
+                match spill {
+                    Some(f) => f.read_exact_at(&mut out[at..], c.pos),
+                    None => Err(std::io::Error::other("PMTiles spill file missing")),
+                }
+            }
+            Place::Batch => {
+                out.extend_from_slice(&self.batch[from..to]);
+                Ok(())
+            }
             Place::Memory => {
                 let chunk = &self.chunks[(c.pos >> 32) as usize];
                 let off = (c.pos & 0xFFFF_FFFF) as usize;
-                &chunk[off..off + c.len as usize]
+                out.extend_from_slice(&chunk[off..off + c.len as usize]);
+                Ok(())
             }
         }
     }
@@ -336,18 +354,10 @@ impl TileSink for PmtilesSink {
                 this.spill_write(&bytes, at)?;
             }
         }
-        let spill_map = match this.spill.get() {
-            Some(Ok(f)) if this.spill_len.load(Ordering::Relaxed) > 0 => {
-                // SAFETY: the spill file is private to this sink (unlinked at
-                // creation) and nothing writes to it any more.
-                Some(
-                    unsafe { memmap2::Mmap::map(f) }
-                        .map_err(|e| Error::new(EXIT_OPEN, io_message("PMTiles spill file", &e)))?,
-                )
-            }
+        let spill: Option<&File> = match this.spill.get() {
+            Some(Ok(f)) => Some(f),
             _ => None,
         };
-        let spill: &[u8] = spill_map.as_deref().unwrap_or(&[]);
 
         let layout = Layout::new(&shards)?;
         let metadata = tileset_metadata(metadata, this.tile_format);
@@ -383,7 +393,7 @@ impl TileSink for PmtilesSink {
                 let mut buf = Vec::with_capacity(bytes as usize);
                 for &(s, n) in &layout.order[from..to] {
                     let shard = &shards[s as usize];
-                    buf.extend_from_slice(shard.data(&shard.contents[n as usize], spill));
+                    shard.data_into(&shard.contents[n as usize], spill, &mut buf)?;
                 }
                 this.file.write_all_at(&buf, at)
             })

@@ -91,6 +91,7 @@ const REGION: usize = 256 << 10;
 const SPOOL_SHARDS: usize = 8;
 /// Regions read back from the file that a spool keeps for the next reads.
 const CACHED: usize = 64;
+const NO_SHARD: u32 = u32::MAX;
 
 /// How many bytes of data at rest may stay in memory; the rest goes to
 /// temporary files.
@@ -137,7 +138,7 @@ pub struct Spool {
     kept: RwLock<BTreeMap<u64, Vec<u8>>>,
     kept_bytes: AtomicU64,
     /// Regions in the file, by start, with their lengths.
-    written: Mutex<BTreeMap<u64, usize>>,
+    written: RwLock<BTreeMap<u64, usize>>,
     cache: Mutex<Vec<(u64, Arc<Vec<u8>>)>>,
 }
 
@@ -157,7 +158,7 @@ impl Spool {
             shards: (0..SPOOL_SHARDS).map(|_| Mutex::new(None)).collect(),
             kept: RwLock::new(BTreeMap::new()),
             kept_bytes: AtomicU64::new(0),
-            written: Mutex::new(BTreeMap::new()),
+            written: RwLock::new(BTreeMap::new()),
             cache: Mutex::new(Vec::new()),
         })
     }
@@ -179,7 +180,7 @@ impl Spool {
         self.file()?
             .write_all_at(&buf, start)
             .map_err(|e| Error::new(EXIT_WRITE, format!("{}: {}", self.dir.display(), e)))?;
-        self.written.lock().unwrap().insert(start, buf.len());
+        self.written.write().unwrap().insert(start, buf.len());
         Ok(())
     }
 
@@ -191,6 +192,7 @@ impl Spool {
             self.retire(at, data.to_vec())?;
             return Ok(Stored::Spooled {
                 spool: self.clone(),
+                shard: NO_SHARD,
                 at,
                 len,
             });
@@ -216,6 +218,7 @@ impl Spool {
         r.buf.extend_from_slice(data);
         Ok(Stored::Spooled {
             spool: self.clone(),
+            shard: shard as u32,
             at,
             len,
         })
@@ -224,12 +227,12 @@ impl Spool {
     /// Reads `out.len()` bytes from `at`. With `sequential`, a region read
     /// from the file is kept for the reads that follow, for a reader that
     /// goes through the data in about the order it was written.
-    fn read(&self, at: u64, out: &mut [u8], sequential: bool) -> crate::Result<()> {
+    fn read(&self, shard: u32, at: u64, out: &mut [u8], sequential: bool) -> crate::Result<()> {
         let n = out.len() as u64;
         let within = |start: u64, len: usize| at >= start && at + n <= start + len as u64;
         // a region leaves its shard only after it is kept or written out
-        for shard in &self.shards {
-            let region = shard.lock().unwrap();
+        if let Some(region) = self.shards.get(shard as usize) {
+            let region = region.lock().unwrap();
             if let Some(r) = region.as_ref()
                 && within(r.start, r.buf.len())
             {
@@ -250,7 +253,7 @@ impl Spool {
         }
         let region = self
             .written
-            .lock()
+            .read()
             .unwrap()
             .range(..=at)
             .next_back()
@@ -301,6 +304,8 @@ pub enum Stored {
     Mem(Vec<u8>),
     Spooled {
         spool: Arc<Spool>,
+        /// The buffer it went through, if any.
+        shard: u32,
         at: u64,
         len: usize,
     },
@@ -331,9 +336,14 @@ impl Stored {
     fn load1(&self, sequential: bool) -> crate::Result<Cow<'_, [u8]>> {
         match self {
             Stored::Mem(v) => Ok(Cow::Borrowed(v)),
-            Stored::Spooled { spool, at, len } => {
+            Stored::Spooled {
+                spool,
+                shard,
+                at,
+                len,
+            } => {
                 let mut out = vec![0u8; *len];
-                spool.read(*at, &mut out, sequential)?;
+                spool.read(*shard, *at, &mut out, sequential)?;
                 Ok(Cow::Owned(out))
             }
         }

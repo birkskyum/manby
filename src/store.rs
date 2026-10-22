@@ -130,10 +130,22 @@ impl<T> Chunked<T> {
     }
 
     fn locate(&self, i: usize) -> (usize, usize) {
-        let p = if self.parts.len() == 1 {
+        let n = self.parts.len();
+        let p = if n == 1 {
             0
         } else {
-            self.ends.partition_point(|&e| e <= i)
+            // the parts are often about the same size, so first try the
+            // part that the position would be in if they all were
+            let guess = (i as u64)
+                .checked_mul(n as u64)
+                .map_or(0, |x| x / self.len().max(1) as u64) as usize;
+            let guess = guess.min(n - 1);
+            let start = if guess == 0 { 0 } else { self.ends[guess - 1] };
+            if start <= i && i < self.ends[guess] {
+                guess
+            } else {
+                self.ends.partition_point(|&e| e <= i)
+            }
         };
         let start = if p == 0 { 0 } else { self.ends[p - 1] };
         (p, i - start)

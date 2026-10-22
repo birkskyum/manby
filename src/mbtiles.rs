@@ -112,7 +112,11 @@ pub struct Metadata {
 
 /// `s.c_str()`: the text up to the first NUL, as a C string.
 pub fn c_str(s: &str) -> CString {
-    let b = s.as_bytes();
+    c_str_bytes(s.as_bytes())
+}
+
+/// `s.c_str()` for a `std::string` that may hold bytes that are not UTF-8.
+pub fn c_str_bytes(b: &[u8]) -> CString {
     let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
     CString::new(&b[..end]).unwrap()
 }

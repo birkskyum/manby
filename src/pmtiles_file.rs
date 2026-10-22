@@ -13,7 +13,7 @@ use rusqlite::types::{ToSqlOutput, ValueRef};
 use crate::errors::{EXIT_EXISTS, EXIT_JSON, EXIT_OPEN, EXIT_SQLITE};
 use crate::jsonpull::{JsonPull, JsonType};
 use crate::mbtiles::{
-    Metadata, c_str, sqlite3_errmsg, sqlite3_exec, sqlite3_mprintf, sqlite3_open,
+    Metadata, c_str, c_str_bytes, sqlite3_errmsg, sqlite3_exec, sqlite3_mprintf, sqlite3_open,
 };
 use crate::mvt::{compress, decompress};
 use crate::pmtiles::{self, EntryV3, EntryZxy};
@@ -536,43 +536,51 @@ pub fn pmtilesmeta2tmp(fname: &str, pmtiles_map: &[u8]) -> Connection {
                 continue;
             }
 
-            let key = key.string();
-            if key == "vector_layers" && value.type_() == JsonType::Array {
+            let key = key.raw_string_bytes();
+            if key == b"vector_layers" && value.type_() == JsonType::Array {
                 has_json = true;
                 state.nospace = true;
                 state.json_write_string("vector_layers");
                 state.nospace = true;
                 state.json_write_json(&value.stringify());
-            } else if key == "tilestats" && value.type_() == JsonType::Hash {
+            } else if key == b"tilestats" && value.type_() == JsonType::Hash {
                 has_json = true;
                 state.nospace = true;
                 state.json_write_string("tilestats");
                 state.nospace = true;
                 state.json_write_json(&value.stringify());
-            } else if key == "strategies" && value.type_() == JsonType::Array {
-                let v = c_str(&value.stringify());
+            } else if key == b"strategies" && value.type_() == JsonType::Array {
+                let v = c_str_bytes(&value.stringify_raw());
                 let sql = sqlite3_mprintf!(
                     c"INSERT INTO metadata (name, value) VALUES ('strategies', %Q);",
                     v.as_ptr()
                 );
                 if let Err(err) = sqlite3_exec(&db, &sql) {
-                    eprintln!("set {} in metadata: {}", c_str(key).to_string_lossy(), err);
+                    eprintln!(
+                        "set {} in metadata: {}",
+                        c_str_bytes(key).to_string_lossy(),
+                        err
+                    );
                 }
-            } else if key == "tippecanoe_decisions" && value.type_() == JsonType::Hash {
-                let v = c_str(&value.stringify());
+            } else if key == b"tippecanoe_decisions" && value.type_() == JsonType::Hash {
+                let v = c_str_bytes(&value.stringify_raw());
                 let sql = sqlite3_mprintf!(
                     c"INSERT INTO metadata (name, value) VALUES ('tippecanoe_decisions', %Q);",
                     v.as_ptr()
                 );
                 if let Err(err) = sqlite3_exec(&db, &sql) {
-                    eprintln!("set {} in metadata: {}", c_str(key).to_string_lossy(), err);
+                    eprintln!(
+                        "set {} in metadata: {}",
+                        c_str_bytes(key).to_string_lossy(),
+                        err
+                    );
                 }
             } else if value.type_() != JsonType::String {
-                eprintln!("{}", c_str(key).to_string_lossy());
+                eprintln!("{}", c_str_bytes(key).to_string_lossy());
                 eprintln!("{}: non-string in metadata", fname);
             } else {
-                let k = c_str(key);
-                let v = c_str(value.string());
+                let k = c_str_bytes(key);
+                let v = c_str_bytes(value.raw_string_bytes());
                 let sql = sqlite3_mprintf!(
                     c"INSERT INTO metadata (name, value) VALUES (%Q, %Q);",
                     k.as_ptr(),

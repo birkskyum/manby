@@ -38,6 +38,17 @@ make test
 
 manby is a library first. `manby::run(&Options)` reads, tiles and writes a tileset and returns an error instead of exiting, and the command is a thin layer over it.
 
+## MapLibre Tiles
+
+`--tile-format=mlt` writes [MapLibre Tiles](https://maplibre.org/maplibre-tile-spec/) instead of Mapbox Vector Tiles, with the same features, into PMTiles, MBTiles or a directory. The tiles are 2 to 45% smaller than MVT on the benchmarks, and MapLibre GL JS 5.12 and later reads them from a vector source with `encoding: "mlt"`. The encoder, mlt-core, needs Rust 1.98, so MLT output is a cargo feature.
+
+```sh
+cargo +1.98.1 build --release --features mlt
+manby -zg --drop-densest-as-needed --tile-format=mlt -o places.pmtiles places.geojson
+```
+
+DESIGN.md describes the choices behind the tiles, and `make test-golden-mlt` checks them against the MVT tiles of the same runs.
+
 ## License
 
 BSD 2-Clause, see [LICENSE.md](LICENSE.md).

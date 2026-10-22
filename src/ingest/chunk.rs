@@ -245,6 +245,11 @@ pub struct Chunk {
     pub values: Interner,
     pub layers: Vec<ChunkLayer>,
     pub layer_index: HashMap<String, u32>,
+    /// `--no-simplification-of-shared-nodes`: the vertices with their
+    /// neighbors, and the nodes that must be kept, as tippecanoe writes them
+    /// to its vertex and node files.
+    pub vertices: Vec<tippecanoe::serial::Vertex>,
+    pub nodes: Vec<u64>,
     /// Features that `--generate-ids` gives the id seq + 1.
     pub generate_ids: Vec<u32>,
 

@@ -822,6 +822,15 @@ fn merge(
         }
     }
 
+    let (shared_nodes, shared_nodes_bloom) = if options
+        .prevent
+        .get(tippecanoe::options::P_SIMPLIFY_SHARED_NODES)
+    {
+        shared_nodes(&chunks, options.geometry_scale)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
     FeatureStore {
         features,
         geometry,
@@ -844,7 +853,60 @@ fn merge(
         dist_sum: parts.dist_sum,
         dist_count: parts.dist_count,
         area_sum: parts.area_sum,
+        shared_nodes,
+        shared_nodes_bloom,
     }
+}
+
+/// The nodes that tippecanoe keeps through simplification with
+/// `--no-simplification-of-shared-nodes`: the ones the readers marked, and the
+/// middle points of vertices whose neighbors differ between features. Sorted
+/// and without duplicates, with tippecanoe's bloom filter of them.
+fn shared_nodes(
+    chunks: &[&Chunk],
+    geometry_scale: i32,
+) -> (Vec<tippecanoe::serial::Node>, Vec<u8>) {
+    let mut vertices: Vec<tippecanoe::serial::Vertex> = chunks
+        .iter()
+        .flat_map(|c| c.vertices.iter().copied())
+        .collect();
+    vertices.par_sort_unstable();
+
+    let mut nodes: Vec<u64> = chunks
+        .iter()
+        .flat_map(|c| c.nodes.iter().copied())
+        .collect();
+    let zero = tippecanoe::geometry::Draw::new(tippecanoe::geometry::VT_MOVETO, 0, 0);
+    let mut prev = tippecanoe::serial::Vertex::new(zero, zero, zero);
+    for v in vertices {
+        if v.mid == prev.mid && (v.p1 != prev.p1 || v.p2 != prev.p2) {
+            let x = v.mid.x * (1i64 << geometry_scale);
+            let y = v.mid.y * (1i64 << geometry_scale);
+            nodes.push(tippecanoe::projection::encode_vertex(x as u32, y as u32));
+        }
+        prev = v;
+    }
+    nodes.par_sort_unstable();
+    nodes.dedup();
+    // tippecanoe starts its duplicate check from ULONG_MAX
+    if nodes.first() == Some(&u64::MAX) {
+        nodes.clear();
+    }
+
+    let mut bloom = vec![0u8; 34567891]; // circa 34MB, size nowhere near a power of 2
+    let bits = (bloom.len() * 8) as u64;
+    for &n in &nodes {
+        let bloom_ix = (n % bits) as usize;
+        bloom[bloom_ix >> 3] |= 1 << (bloom_ix & 7);
+    }
+
+    (
+        nodes
+            .into_iter()
+            .map(|index| tippecanoe::serial::Node { index })
+            .collect(),
+        bloom,
+    )
 }
 
 #[cfg(test)]

@@ -84,6 +84,11 @@ pub struct FeatureStore {
     pub dist_sum: f64,
     pub dist_count: usize,
     pub area_sum: f64,
+    /// `--no-simplification-of-shared-nodes`: the points shared between
+    /// features, sorted, and tippecanoe's bloom filter of them. Both are
+    /// empty without that option.
+    pub shared_nodes: Vec<tippecanoe::serial::Node>,
+    pub shared_nodes_bloom: Vec<u8>,
 }
 
 impl FeatureStore {

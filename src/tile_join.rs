@@ -25,7 +25,8 @@ use crate::evaluator::{evaluate_feature, parse_filter, read_filter};
 use crate::geometry::SourceTile;
 use crate::getopt::{Getopt, LongOption, NO_ARGUMENT, REQUIRED_ARGUMENT};
 use crate::globals::{
-    CPUS, MAX_TILESTATS_ATTRIBUTES, MAX_TILESTATS_SAMPLE_VALUES, MAX_TILESTATS_VALUES, QUIET,
+    CPUS, MAX_TILESTATS_ATTRIBUTES, MAX_TILESTATS_SAMPLE_VALUES, MAX_TILESTATS_VALUES,
+    PROGRESS_TIME_ENABLED, QUIET,
 };
 use crate::jsonpull::{JsonPull, JsonRef, JsonTree, JsonType};
 use crate::mbtiles::{
@@ -66,6 +67,10 @@ static UNIDECODE_DATA: RwLock<Vec<String>> = RwLock::new(Vec::new());
 
 static WANT_OVERZOOM: AtomicBool = AtomicBool::new(false);
 static BUFFER: AtomicI32 = AtomicI32::new(5);
+
+// The C++ defines progress_time() here to always return false. main()
+// clears PROGRESS_TIME_ENABLED, which makes tippecanoe_main::progress_time
+// do the same.
 
 fn relaxed(v: &AtomicI32) -> i32 {
     v.load(Ordering::Relaxed)
@@ -1651,6 +1656,7 @@ fn getline_lines(content: &[u8]) -> Vec<&[u8]> {
 }
 
 pub fn main() {
+    PROGRESS_TIME_ENABLED.store(false, Ordering::Relaxed);
     restore_sigpipe();
 
     let mut argv: Vec<String> = std::env::args_os()

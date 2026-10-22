@@ -1,18 +1,6 @@
 # Golden tests that manby does not pass yet, one per line, with the reason.
 # Paths are as in tippecanoe's tests directory.
 
-# The tiler does not run -C and -c filters yet
-tests/ne_110m_admin_0_countries/out/--coalesce_-z2_-Ccat.json
-tests/ne_110m_populated_places/out/-yNAME_-Ccat_-z5.json
-tests/ne_110m_populated_places/out/-yNAME_-z0_-c.%2ftests%2ffilter%2fnull.json
-tests/ne_110m_populated_places/out/-yNAME_-z4_-C.%2ftests%2ffilter%2fremove.json
-tests/ne_110m_populated_places/out/-yNAME_-z4_-C.%2ftests%2ffilter%2frename.json
-tests/ne_110m_populated_places/out/-yNAME_-z4_-C.%2ftests%2ffilter%2frename_-c.%2ftests%2ffilter%2frename2.json
-tests/ne_110m_populated_places/out/-yNAME_-z5_-c.%2ftests%2ffilter%2frename.json
-tests/ne_110m_populated_places/out/-yNAME_-z5_-ccat.json
-tests/ne_110m_populated_places/out/-z0_-C.%2ftests%2ffilter%2fnull.json
-tests/ne_110m_populated_places/out/-z4_-yNAME_-c.%2ftests%2ffilter%2fremove.json
-
 # The tiler does not make variable depth pyramids (-at) yet
 tests/minzoom-variable-depth/out/-Z10_-z11_--generate-variable-depth-tile-pyramid.json
 tests/ne_110m_populated_places/out/-z20_-r1_--generate-variable-depth-tile-pyramid_--limit-tile-feature-count_50.json
@@ -20,6 +8,3 @@ tests/tl_2022_11_tract/out/-z14_-Z12_--coalesce-densest-as-needed_--generate-var
 tests/tl_2022_11_tract/out/-z17_-Z10_--generate-variable-depth-tile-pyramid_--drop-by-attribute-as-needed%3dALAND_-M15000.json
 tests/tl_2022_11_tract/out/-z17_-Z10_--coalesce-densest-as-needed_--generate-variable-depth-tile-pyramid_-M15000.json
 tests/tl_2022_11_tract/out/-z17_-Z12_--coalesce-densest-as-needed_--generate-variable-depth-tile-pyramid_-M10000.json
-
-# The tiler does not detect shared borders yet
-tests/border/out/-z1_--detect-shared-borders.json

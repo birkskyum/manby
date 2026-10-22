@@ -546,3 +546,25 @@ fn polygons_shared_borders() {
     o.max_tile_size = 20000;
     check(&store, &o);
 }
+
+#[test]
+fn filters() {
+    let store = points(3000, 67, 18, 6);
+    let mut o = options(6);
+    flag(&mut o, A_DROP_DENSEST_AS_NEEDED);
+    o.max_tile_size = 20000;
+    o.prefilter = Some("cat".to_string());
+    assert!(check(&store, &o) > 10);
+    o.prefilter = None;
+    o.postfilter = Some("cat".to_string());
+    check(&store, &o);
+    let store = polygons(1000, 71, 18, 6);
+    let mut o = options(6);
+    o.prefilter = Some("cat".to_string());
+    o.postfilter = Some("cat".to_string());
+    o.attribute_accum
+        .insert("pop".to_string(), AttributeOp::Sum);
+    flag(&mut o, A_COALESCE_DENSEST_AS_NEEDED);
+    o.max_tile_size = 20000;
+    check(&store, &o);
+}

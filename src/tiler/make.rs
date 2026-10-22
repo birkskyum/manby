@@ -15,8 +15,8 @@ use tippecanoe::geometry::{
 use tippecanoe::globals::{ORDER_BY_SIZE, OrderField};
 use tippecanoe::mbtiles::{LayermapEntry, add_to_tilestats};
 use tippecanoe::mvt::{
-    MVT_BOOL, MVT_DOUBLE, MVT_FLOAT, MVT_INT, MVT_NULL, MVT_SINT, MVT_STRING, MVT_UINT, MvtValue,
-    stringified_to_mvt_value,
+    MVT_BOOL, MVT_DOUBLE, MVT_FLOAT, MVT_INT, MVT_NULL, MVT_SINT, MVT_STRING, MVT_UINT, MvtFeature,
+    MvtGeometry, MvtLayer, MvtTile, MvtValue, stringified_to_mvt_value,
 };
 use tippecanoe::options::*;
 use tippecanoe::serial::{
@@ -28,10 +28,12 @@ use tippecanoe::tile::{Strategy, manage_gap};
 
 use super::encode::LayerEnc;
 use super::engine::Ctx;
+use super::filter::prefilter_tile;
 use super::geom::{get_mp_area, line_is_too_small, reduce_tiny_poly};
 use super::read::{Cand, NO_LIST, ReadTile};
 use super::util::*;
 use crate::store::Attr;
+use tippecanoe::plugin::filter_layers;
 
 /// The thresholds for dropping features that a zoom level is using.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -187,6 +189,24 @@ fn preserve_attributes(ax: &Attrs<'_>, c: &Cand, p: &mut TF, key_pool: &mut KeyP
             promote_attribute(ax, key, p, key_pool);
             preserve_attribute(op, key, sv, &mut p.full_keys, &mut p.full_values, key_pool);
         }
+    }
+    if c.full != NO_LIST {
+        let (keys, values) = &ax.rt.full[c.full as usize];
+        for (key, sv) in keys.iter().zip(values.iter()) {
+            if let Some(op) = accum.get(key.as_str()) {
+                promote_attribute(ax, key, p, key_pool);
+                preserve_attribute(op, key, sv, &mut p.full_keys, &mut p.full_values, key_pool);
+            }
+        }
+    }
+}
+
+/// The full keys and values a candidate arrives with, from the prefilter.
+fn cand_full(rt: &ReadTile, c: &Cand) -> (Vec<Arc<String>>, Vec<SerialVal>) {
+    if c.full == NO_LIST {
+        (Vec::new(), Vec::new())
+    } else {
+        rt.full[c.full as usize].clone()
     }
 }
 
@@ -565,9 +585,85 @@ fn simplify_and_scale(
     feature.geometry = geom;
 }
 
+/// Where the features of a layer go while the tile is built: the encoder, or
+/// for a postfilter, tippecanoe's tile layers.
+trait Tagger {
+    fn feature(&mut self, t: i32, has_id: bool, id: u64, geom: usize, geometry: &DrawVec);
+    fn tag_store(&mut self, key: &str, slot: u32, value: u32, v: &MvtValue);
+    fn tag_extra(&mut self, key: &str, v: &MvtValue);
+    fn end_feature(&mut self);
+}
+
+impl Tagger for LayerEnc<'_> {
+    fn feature(&mut self, t: i32, has_id: bool, id: u64, geom: usize, _geometry: &DrawVec) {
+        LayerEnc::feature(self, t, has_id, id, geom);
+    }
+
+    fn tag_store(&mut self, key: &str, slot: u32, value: u32, _v: &MvtValue) {
+        LayerEnc::tag_store(self, key, slot, value);
+    }
+
+    fn tag_extra(&mut self, key: &str, v: &MvtValue) {
+        LayerEnc::tag_extra(self, key, v);
+    }
+
+    fn end_feature(&mut self) {}
+}
+
+struct MvtBuilder {
+    layer: MvtLayer,
+    current: Option<MvtFeature>,
+}
+
+impl MvtBuilder {
+    fn new(name: &str, extent: i64) -> MvtBuilder {
+        MvtBuilder {
+            layer: MvtLayer {
+                name: name.to_string(),
+                version: 2,
+                extent,
+                ..Default::default()
+            },
+            current: None,
+        }
+    }
+}
+
+impl Tagger for MvtBuilder {
+    fn feature(&mut self, t: i32, has_id: bool, id: u64, _geom: usize, geometry: &DrawVec) {
+        self.current = Some(MvtFeature {
+            type_: t,
+            geometry: geometry
+                .iter()
+                .map(|g| MvtGeometry::new(g.op as i32, g.x, g.y))
+                .collect(),
+            id,
+            has_id,
+            ..Default::default()
+        });
+    }
+
+    fn tag_store(&mut self, key: &str, _slot: u32, _value: u32, v: &MvtValue) {
+        let feature = self.current.as_mut().unwrap();
+        self.layer.tag(feature, key, v);
+    }
+
+    fn tag_extra(&mut self, key: &str, v: &MvtValue) {
+        let feature = self.current.as_mut().unwrap();
+        self.layer.tag(feature, key, v);
+    }
+
+    fn end_feature(&mut self) {
+        if let Some(f) = self.current.take() {
+            self.layer.features.push(f);
+        }
+    }
+}
+
 /// `add_tilestats`, into the tile's own layer map.
 fn add_tilestats(
     tilestats: &mut BTreeMap<String, LayermapEntry>,
+    unmap: &mut Vec<String>,
     layername: &str,
     z: i32,
     key: &str,
@@ -578,7 +674,12 @@ fn add_tilestats(
         lme.minzoom = z;
         lme.maxzoom = z;
         lme.retain = 1;
+        let id = lme.id;
         tilestats.insert(layername.to_string(), lme);
+        if id >= unmap.len() {
+            unmap.resize(id + 1, String::new());
+            unmap[id] = layername.to_string();
+        }
     }
     let ts = tilestats.get_mut(layername).unwrap();
     add_to_tilestats(&mut ts.tilestats, key, val);
@@ -609,12 +710,11 @@ fn gzip_(data: &[u8], fast: bool) -> Vec<u8> {
 }
 
 /// Makes the tile that `rt` was read for, as tippecanoe's `write_tile` does.
-pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
-    let o = ctx.o;
-    let store = ctx.store;
-    let z = rt.z;
-    let tx = rt.x;
-    let ty = rt.y;
+pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult {
+    let o = octx.o;
+    let z = ort.z;
+    let tx = ort.x;
+    let ty = ort.y;
     let maxzoom = mp.maxzoom;
     let simplification = mp.simplification;
     let detail = if z == maxzoom {
@@ -624,7 +724,15 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
     };
     let min_detail = o.min_detail;
     let quiet = o.quiet;
-    let ax = Attrs { ctx, rt };
+
+    let mut prefilter = o.prefilter.as_deref();
+    let mut postfilter = o.postfilter.as_deref();
+    if z < o.minzoom {
+        prefilter = None;
+        postfilter = None;
+    }
+    // the names of the layers in res.tilestats, by id, for the filters
+    let mut unmap: Vec<String> = Vec::new();
 
     let mut gamma = mp.th.gamma;
     let mut mingap = mp.th.mingap;
@@ -698,6 +806,29 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
     while line_detail >= min_detail || line_detail == detail {
         COUNTERS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let trace_start = std::time::Instant::now();
+
+        let mut key_pool = KeyPool::default();
+        let prefiltered;
+        let pctx;
+        let (ctx, rt): (&Ctx<'_>, &ReadTile) = match prefilter {
+            Some(filter) => {
+                prefiltered = prefilter_tile(
+                    octx,
+                    ort,
+                    filter,
+                    &mut res.tilestats,
+                    &mut unmap,
+                    postfilter.is_some(),
+                    &mut key_pool,
+                );
+                pctx = Ctx::new(&prefiltered.store, o, octx.threads);
+                (&pctx, &prefiltered.rt)
+            }
+            None => (octx, ort),
+        };
+        let store = ctx.store;
+        let ax = Attrs { ctx, rt };
+
         let mut count: i64 = 0;
         let mut accum_area: f64 = 0.0;
 
@@ -737,8 +868,6 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
 
         let mut too_many_features = false;
         let mut too_many_bytes = false;
-
-        let mut key_pool = KeyPool::default();
 
         let mut drop_rest = false;
 
@@ -990,14 +1119,15 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
                         continue;
                     }
                 } else if o.a(A_DROP_BY_ATTRIBUTE_AS_NEEDED) {
+                    let full = cand_full(rt, c);
                     let probe = TF {
                         cand: seq as u32,
                         fi: c.fi,
                         t,
                         geometry: DrawVec::new(),
                         attrs: None,
-                        full_keys: Vec::new(),
-                        full_values: Vec::new(),
+                        full_keys: full.0,
+                        full_values: full.1,
                         extent,
                         index: f.index,
                         reduced: false,
@@ -1139,6 +1269,7 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
                         dropped = FEATURE_KEPT;
                     }
 
+                    let full = cand_full(rt, c);
                     let mut tf = TF {
                         cand: seq as u32,
                         fi: c.fi,
@@ -1148,8 +1279,8 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
                             None => rt.cand_geom(c).to_vec(),
                         },
                         attrs: None,
-                        full_keys: Vec::new(),
-                        full_values: Vec::new(),
+                        full_keys: full.0,
+                        full_values: full.1,
                         extent,
                         index: f.index,
                         reduced: !still_need_simplification_after_reduction,
@@ -1300,6 +1431,7 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
                     }
                     add_tilestats(
                         &mut res.tilestats,
+                        &mut unmap,
                         layername,
                         z,
                         &p.full_keys[j],
@@ -1467,6 +1599,7 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
 
         let trace_select = trace_start.elapsed().as_secs_f64();
         let mut tile: Vec<LayerEnc<'_>> = Vec::new();
+        let mut mvt_tile = MvtTile::default();
         let mut tile_geoms: Vec<&DrawVec> = Vec::new();
         let mut feature_count: usize = 0;
 
@@ -1481,7 +1614,14 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
             }
 
             let name = &store.layers[*li as usize].name;
-            let mut layer = LayerEnc::new(&ctx.codes, name, 1i64 << tile_detail);
+            let extent = 1i64 << tile_detail;
+            let mut enc = LayerEnc::new(&ctx.codes, name, extent);
+            let mut mvt = MvtBuilder::new(name, extent);
+            let layer: &mut dyn Tagger = if postfilter.is_some() {
+                &mut mvt
+            } else {
+                &mut enc
+            };
 
             for f in layer_features.iter() {
                 let t = f.t as i32;
@@ -1491,13 +1631,18 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
                 }
 
                 let sfe = &store.features[f.fi as usize];
-                layer.feature(t, sfe.has_id, sfe.id, tile_geoms.len());
+                layer.feature(t, sfe.has_id, sfe.id, tile_geoms.len(), &f.geometry);
                 tile_geoms.push(&f.geometry);
                 count += f.geometry.len() as i64;
 
                 for a in ax.of(f) {
                     if ax.live(a) {
-                        layer.tag_store(ax.key(a), ctx.key_slots[a.key as usize], a.value);
+                        layer.tag_store(
+                            ax.key(a),
+                            ctx.key_slots[a.key as usize],
+                            a.value,
+                            &ctx.values[a.value as usize],
+                        );
                     }
                 }
                 for a in 0..f.full_keys.len() {
@@ -1525,18 +1670,43 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
                     let sv = SerialVal::new(MVT_DOUBLE, &glow.to_string());
                     add_tilestats(
                         &mut res.tilestats,
+                        &mut unmap,
                         name,
                         z,
                         "tippecanoe_feature_density",
                         &sv,
                     );
                 }
+                layer.end_feature();
             }
 
-            if !layer.is_empty() {
-                tile.push(layer);
+            if postfilter.is_some() {
+                if !mvt.layer.features.is_empty() {
+                    mvt_tile.layers.push(mvt.layer);
+                }
+            } else if !enc.is_empty() {
+                tile.push(enc);
             }
         }
+
+        if let Some(filter) = postfilter {
+            mvt_tile.layers = filter_layers(
+                filter,
+                &mvt_tile.layers,
+                z as u32,
+                tx,
+                ty,
+                &mut res.tilestats,
+                0,
+                &mut unmap,
+                1 << tile_detail,
+            );
+        }
+        let tile_is_empty = if postfilter.is_some() {
+            mvt_tile.layers.is_empty()
+        } else {
+            tile.is_empty()
+        };
 
         if z == 0 && rt.unclipped_features < rt.original_features / 2 && !o.clipbboxes {
             eprintln!("\n\nMore than half the features were clipped away at zoom level 0.");
@@ -1548,7 +1718,7 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
             adjusted_feature_count = adjusted_feature_count.wrapping_mul(skipped + kept) / kept;
         }
 
-        if adjusted_feature_count > 0 && !tile.is_empty() {
+        if adjusted_feature_count > 0 && !tile_is_empty {
             if too_many_features
                 || (adjusted_feature_count > adjusted_max_tile_features && !o.p(P_FEATURE_LIMIT))
             {
@@ -1612,6 +1782,9 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
 
             let trace_build = trace_start.elapsed().as_secs_f64();
             let mut pbf: Vec<u8> = Vec::new();
+            if postfilter.is_some() {
+                pbf = mvt_tile.encode();
+            }
             for layer in std::mem::take(&mut tile) {
                 if let Err(message) = layer.finish(&tile_geoms, ctx.threads, &mut pbf) {
                     res.len = -1;
@@ -1992,6 +2165,10 @@ pub fn reuse(
     prev: MakeResult,
     th: &Thresholds,
 ) -> Option<MakeResult> {
+    // the filters add to the layer statistics on every attempt
+    if ctx.o.prefilter.is_some() || ctx.o.postfilter.is_some() {
+        return None;
+    }
     let old = prev.reusable?;
     if old.gamma != th.gamma || old.minextent != th.minextent || old.minattribute != th.minattribute
     {

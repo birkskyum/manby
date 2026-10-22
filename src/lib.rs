@@ -4,6 +4,7 @@
 //! [`run`] takes [`Options`] and writes the tileset. Nothing in manby exits the
 //! process or keeps global state; errors come back as [`Error`].
 
+pub mod buf;
 pub mod compress;
 pub mod error;
 pub mod ingest;

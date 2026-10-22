@@ -6,6 +6,8 @@
 
 use std::collections::BTreeMap;
 
+use crate::buf::Buf;
+
 use tippecanoe::geometry::{Draw, DrawVec, VT_LINETO, VT_MOVETO};
 use tippecanoe::mbtiles::LayermapEntry;
 use tippecanoe::serial::SerialVal;
@@ -76,7 +78,7 @@ pub struct PoolOffsets {
 /// pieces that parallel jobs made does not copy them.
 #[derive(Clone)]
 pub struct Chunked<T> {
-    parts: Vec<Vec<T>>,
+    parts: Vec<Buf<T>>,
     /// The end of each part in the whole sequence.
     ends: Vec<usize>,
 }
@@ -100,7 +102,8 @@ impl<T> Chunked<T> {
     }
 
     /// Appends a part.
-    pub fn append(&mut self, part: Vec<T>) {
+    pub fn append(&mut self, part: impl Into<Buf<T>>) {
+        let part = part.into();
         if part.is_empty() {
             return;
         }
@@ -110,7 +113,7 @@ impl<T> Chunked<T> {
 
     pub fn push(&mut self, v: T) {
         if self.parts.is_empty() {
-            self.parts.push(Vec::new());
+            self.parts.push(Buf::new());
             self.ends.push(0);
         }
         self.parts.last_mut().unwrap().push(v);
@@ -164,7 +167,7 @@ impl<T: Clone> Chunked<T> {
 
 impl<'a, T> IntoIterator for &'a Chunked<T> {
     type Item = &'a T;
-    type IntoIter = std::iter::Flatten<std::slice::Iter<'a, Vec<T>>>;
+    type IntoIter = std::iter::Flatten<std::slice::Iter<'a, Buf<T>>>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.parts.iter().flatten()
@@ -245,7 +248,7 @@ impl Geometry {
     }
 
     /// Appends the geometry that one reader wrote, with `vertices` vertices.
-    pub fn append(&mut self, part: Vec<u8>, vertices: u64) {
+    pub fn append(&mut self, part: impl Into<Buf<u8>>, vertices: u64) {
         self.bytes.append(part);
         self.vertices += vertices;
     }
@@ -332,9 +335,9 @@ impl Value<'_> {
 /// The interned values, packed: a type and the end of its string per value.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Values {
-    types: Vec<i8>,
-    ends: Vec<u64>,
-    bytes: Vec<u8>,
+    types: Buf<i8>,
+    ends: Buf<u64>,
+    bytes: Buf<u8>,
 }
 
 impl Values {
@@ -369,7 +372,12 @@ impl Values {
 
     /// Values from their types, the ends of their strings, and the strings,
     /// which must be UTF-8.
-    pub fn from_parts(types: Vec<i8>, ends: Vec<u64>, bytes: Vec<u8>) -> Values {
+    pub fn from_parts(
+        types: impl Into<Buf<i8>>,
+        ends: impl Into<Buf<u64>>,
+        bytes: impl Into<Buf<u8>>,
+    ) -> Values {
+        let (types, ends, bytes) = (types.into(), ends.into(), bytes.into());
         assert_eq!(types.len(), ends.len());
         assert!(std::str::from_utf8(&bytes).is_ok());
         Values { types, ends, bytes }
@@ -391,7 +399,7 @@ pub struct Layer {
 
 #[derive(Default)]
 pub struct FeatureStore {
-    pub features: Vec<Feature>,
+    pub features: Buf<Feature>,
     /// World coordinates (2^32 per side at zoom 0), with tippecanoe's move and
     /// line ops, as `decode_geometry` returns them at zoom 0.
     pub geometry: Geometry,

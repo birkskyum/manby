@@ -14,9 +14,8 @@
 //!   data in parts of at least 5 MiB uploaded in parallel, with no local copy.
 //!   Uploading could even start before `finish` for tiles whose place is
 //!   already fixed, once the tiler reports that a zoom level is done.
-//! - **MapLibre Tiles (MLT) in PMTiles.** The same writer, with MLT-encoded
-//!   tiles and the tile type the PMTiles spec assigns to MLT. MLT's columnar
-//!   layout makes smaller tiles that decode faster, and needs no gzip.
+//! - **MapLibre Tiles (MLT).** `--tile-format=mlt` now writes MLT tiles to
+//!   any of these outputs (see DESIGN.md).
 //! - **Brotli or zstd inside PMTiles.** The header has codes for both, and
 //!   both make smaller archives than gzip at similar or better decoding speed.
 //!   Clients need a decoder for them, so this would be opt-in and checked

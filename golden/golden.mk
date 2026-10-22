@@ -140,6 +140,13 @@ nogeobuf = tests/overflow/out/-z0.json $(wildcard tests/stringid/out/*.json)
 nogeobuf += tests/coalesce-id/out/-z1_--coalesce_--reorder.json
 nogeobuf += tests/pointlm/out/-z15_-Z15_--drop-smallest-as-needed_-M300.json
 nogeobuf += tests/single-polygons/out/-Z21_-zg_-D10_-d10.json
+# The -at size estimate counts the bytes of the temporary files, which are
+# not the same when the attributes come from Geobuf; here too tippecanoe-rs
+# makes the same tiles as manby
+nogeobuf += tests/tl_2022_11_tract/out/-z14_-Z12_--coalesce-densest-as-needed_--generate-variable-depth-tile-pyramid_-M25000.json
+nogeobuf += tests/tl_2022_11_tract/out/-z17_-Z10_--generate-variable-depth-tile-pyramid_--drop-by-attribute-as-needed%3dALAND_-M15000.json
+nogeobuf += tests/tl_2022_11_tract/out/-z17_-Z10_--coalesce-densest-as-needed_--generate-variable-depth-tile-pyramid_-M15000.json
+nogeobuf += tests/tl_2022_11_tract/out/-z17_-Z12_--coalesce-densest-as-needed_--generate-variable-depth-tile-pyramid_-M10000.json
 geobuf-test: tippecanoe-json-tool $(addsuffix .checkbuf,$(filter-out $(nogeobuf),$(TESTS)))
 
 # Run one at a time: the recipes rewrite the .geobuf files of their directory.

@@ -7,8 +7,10 @@
 
 use std::collections::{BTreeSet, HashMap};
 
+use flate2::{Compress, Compression, FlushCompress};
 use tippecanoe::clip::{clip_lines, clip_point, remove_noop, simple_clip_poly};
 use tippecanoe::evaluator::evaluate;
+use tippecanoe::geometry::VT_END;
 use tippecanoe::geometry::{
     Draw, DrawVec, VT_LINE, VT_LINETO, VT_MOVETO, VT_POINT, VT_POLYGON, point_within_tile,
     quick_check,
@@ -16,7 +18,10 @@ use tippecanoe::geometry::{
 use tippecanoe::mvt::{MVT_LINESTRING, MVT_POINT, MVT_POLYGON, MVT_STRING, MVT_UINT, MvtValue};
 use tippecanoe::options::*;
 use tippecanoe::projection::decode_index;
-use tippecanoe::serial::{FEATURE_ADDED_FOR_MULTIPLIER_DENSITY, FEATURE_DROPPED, FEATURE_KEPT};
+use tippecanoe::serial::{
+    FEATURE_ADDED_FOR_MULTIPLIER_DENSITY, FEATURE_DROPPED, FEATURE_KEPT, serialize_byte,
+    serialize_int, serialize_long_long, serialize_uint, serialize_ulong_long,
+};
 use tippecanoe::text::bit_reverse;
 
 use super::engine::Ctx;
@@ -53,6 +58,12 @@ pub struct TileInput {
     pub geom: Vec<Draw>,
     /// The first tile reads its geometry from the store.
     pub root: bool,
+    /// With `-at`: the parent stopped early, so the tile is made only once
+    /// its zoom level drops features.
+    pub skip_unless_dropping: bool,
+    /// With `-at`: tippecanoe's `estimated_complexity` of the tile, if it is
+    /// known without counting the bytes of its temporary file.
+    pub complexity: Option<i64>,
 }
 
 /// A feature that survived reading: a candidate for the tile.
@@ -90,6 +101,9 @@ pub struct ReadTile {
     pub minzoom_feature_pending: bool,
     /// The inputs of the tiles at the next zoom written, in tile order.
     pub children: Vec<TileInput>,
+    pub skip_unless_dropping: bool,
+    /// With `-at`: tippecanoe's `estimated_complexity`, as far as it matters.
+    pub complexity: i64,
 }
 
 impl ReadTile {
@@ -129,6 +143,11 @@ struct ChunkOut {
 
 /// Reads one tile.
 pub fn read_tile(ctx: &Ctx<'_>, input: TileInput, rp: &ReadParams) -> ReadTile {
+    let complexity = match input.complexity {
+        Some(c) => c,
+        None if ctx.o.a(A_VARIABLE_DEPTH_PYRAMID) => stream_complexity(ctx, &input),
+        None => 0,
+    };
     let n = input.feats.len();
     let chunks: Vec<ChunkOut> = par_ranges(n, CHUNK, ctx.threads, |r| {
         read_chunk(ctx, &input, r.start, r.end, rp)
@@ -147,6 +166,8 @@ pub fn read_tile(ctx: &Ctx<'_>, input: TileInput, rp: &ReadParams) -> ReadTile {
         unclipped_features: 0,
         minzoom_feature_pending: false,
         children: Vec::new(),
+        skip_unless_dropping: input.skip_unless_dropping,
+        complexity,
     };
 
     if chunks.len() == 1 {
@@ -168,6 +189,8 @@ pub fn read_tile(ctx: &Ctx<'_>, input: TileInput, rp: &ReadParams) -> ReadTile {
                 feats: p.feats,
                 geom: p.geom,
                 root: false,
+                skip_unless_dropping: false,
+                complexity: None,
             })
             .collect();
     } else {
@@ -208,6 +231,8 @@ pub fn read_tile(ctx: &Ctx<'_>, input: TileInput, rp: &ReadParams) -> ReadTile {
                                 feats: Vec::new(),
                                 geom: Vec::new(),
                                 root: false,
+                                skip_unless_dropping: false,
+                                complexity: None,
                             },
                         );
                         i
@@ -227,6 +252,122 @@ pub fn read_tile(ctx: &Ctx<'_>, input: TileInput, rp: &ReadParams) -> ReadTile {
 
     assign_dropped(ctx, &mut out);
     out
+}
+
+/// tippecanoe's `estimated_complexity` of a tile that is not the first: the
+/// bytes its parent wrote for it into the temporary file before the end
+/// marker, the features compressed. Counting stops once the size is too big
+/// for the tile to try to stop early, since then the exact size does not matter.
+fn stream_complexity(ctx: &Ctx<'_>, input: &TileInput) -> i64 {
+    let o = ctx.o;
+    let store = ctx.store;
+    let gs = o.geometry_scale;
+
+    let mut header = Vec::new();
+    serialize_int(&mut header, input.z);
+    serialize_uint(&mut header, input.x);
+    serialize_uint(&mut header, input.y);
+    let base = 8 + header.len() as i64;
+    let limit = (0.9 * o.max_tile_size as f64) as i64;
+    let enough = |c: i64| (c as f64).mul_add(0.6693, -3.36e+04) as i64 >= limit;
+
+    let (ox, oy) = if input.z != 0 {
+        (
+            (input.x << (32 - input.z)) as i64,
+            (input.y << (32 - input.z)) as i64,
+        )
+    } else {
+        (0, 0)
+    };
+
+    let mut zs = Compress::new(Compression::default(), true);
+    let mut out = vec![0u8; 1 << 17];
+    let mut pending: Vec<u8> = Vec::with_capacity(1 << 16);
+    let mut s: Vec<u8> = Vec::new();
+    let mut deflate = |zs: &mut Compress, data: &[u8]| {
+        let mut used = 0;
+        while used < data.len() {
+            let before = zs.total_in();
+            zs.compress(&data[used..], &mut out, FlushCompress::None)
+                .expect("deflate cannot fail with these settings");
+            used += (zs.total_in() - before) as usize;
+        }
+    };
+
+    for c in &input.feats {
+        let f = &store.features[c.fi as usize];
+        let geom = &input.geom[c.geom_start as usize..c.geom_start as usize + c.geom_len as usize];
+        let segment = f.segment as usize;
+
+        s.clear();
+        serialize_byte(&mut s, f.t);
+        let mut layer: i64 = store.segment_layers[segment][f.layer as usize].wrapping_shl(7);
+        layer |= ((f.label_point != 0) as i64) << 6;
+        layer |= ((f.index != 0) as i64) << 4;
+        layer |= ((f.extent != 0) as i64) << 3;
+        layer |= (f.has_id as i64) << 2;
+        layer |= ((f.tippecanoe_minzoom != -1) as i64) << 1;
+        layer |= (f.tippecanoe_maxzoom != -1) as i64;
+        serialize_long_long(&mut s, layer);
+        serialize_long_long(&mut s, f.seq as i64);
+        if f.tippecanoe_minzoom != -1 {
+            serialize_int(&mut s, f.tippecanoe_minzoom as i32);
+        }
+        if f.tippecanoe_maxzoom != -1 {
+            serialize_int(&mut s, f.tippecanoe_maxzoom as i32);
+        }
+        if f.has_id {
+            serialize_ulong_long(&mut s, f.id);
+        }
+        serialize_int(&mut s, f.segment as i32);
+
+        let mut wx = shift_right(store.initial_x[segment] as i64, gs);
+        let mut wy = shift_right(store.initial_y[segment] as i64, gs);
+        for d in geom {
+            serialize_byte(&mut s, d.op);
+            if d.op == VT_MOVETO || d.op == VT_LINETO {
+                // the parent wrote whole multiples of the geometry scale
+                let x = (d.x + ox) >> gs;
+                let y = (d.y + oy) >> gs;
+                serialize_long_long(&mut s, x - wx);
+                serialize_long_long(&mut s, y - wy);
+                wx = x;
+                wy = y;
+            }
+        }
+        serialize_byte(&mut s, VT_END);
+
+        if f.index != 0 {
+            serialize_ulong_long(&mut s, f.index);
+            serialize_ulong_long(&mut s, c.gap);
+        }
+        if f.label_point != 0 {
+            serialize_ulong_long(&mut s, f.label_point);
+        }
+        if f.extent != 0 {
+            serialize_long_long(&mut s, f.extent);
+        }
+        let pool = &store.pool_offsets[f.attr_start as usize..][..f.attr_len as usize];
+        serialize_long_long(&mut s, pool.len() as i64);
+        for p in pool {
+            serialize_long_long(&mut s, p.key);
+            serialize_long_long(&mut s, p.value);
+        }
+        serialize_byte(&mut s, f.feature_minzoom);
+
+        serialize_long_long(&mut pending, s.len() as i64);
+        pending.extend_from_slice(&s);
+        if pending.len() >= 1 << 16 {
+            deflate(&mut zs, &pending);
+            pending.clear();
+            let c = base + zs.total_out() as i64;
+            if enough(c) {
+                return c;
+            }
+        }
+    }
+    deflate(&mut zs, &pending);
+    base + zs.total_out() as i64
 }
 
 /// The multiplier and drop-rate decisions of `next_feature`, which depend on

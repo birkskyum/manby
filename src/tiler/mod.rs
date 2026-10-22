@@ -64,6 +64,9 @@ pub struct TileOptions {
     pub iz: i32,
     pub ix: u32,
     pub iy: u32,
+    /// With `-at`: the first tile's `estimated_complexity`, the size of
+    /// tippecanoe's zoom 0 temporary file.
+    pub estimated_complexity: i64,
     pub geometry_scale: i32,
     pub buffer: i32,
     pub full_detail: i32,
@@ -125,6 +128,7 @@ impl Default for TileOptions {
             iz: 0,
             ix: 0,
             iy: 0,
+            estimated_complexity: 0,
             geometry_scale: 32 - (12 + 14),
             buffer: 5,
             full_detail: 12,
@@ -180,6 +184,7 @@ impl TileOptions {
             iz: plan.iz as i32,
             ix: plan.ix,
             iy: plan.iy,
+            estimated_complexity: plan.estimated_complexity,
             geometry_scale: plan.geometry_scale,
             buffer: o.buffer,
             full_detail: o.full_detail,

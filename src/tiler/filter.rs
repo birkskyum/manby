@@ -103,8 +103,11 @@ pub fn prefilter_tile(
             full: Vec::new(),
             original_features: rt.original_features,
             unclipped_features: rt.unclipped_features,
-            minzoom_feature_pending: rt.minzoom_feature_pending,
+            // tippecanoe's prefilter writer reads with a state of its own
+            minzoom_feature_pending: false,
             children: Vec::new(),
+            skip_unless_dropping: rt.skip_unless_dropping,
+            complexity: rt.complexity,
         },
     };
 

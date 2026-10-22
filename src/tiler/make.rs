@@ -73,6 +73,25 @@ pub struct MakeResult {
     /// detail with no detail reduced before it, which is when the same
     /// attempt would come first in another pass.
     pub reusable: Option<Thresholds>,
+    /// With `-at`: the tile fit at the detail meant for overzooming, so its
+    /// children are left out (tippecanoe's `skip_children_out`).
+    pub truncated: bool,
+    /// Whether the children may not try to stop early: the first attempt met
+    /// a feature that first appears beyond the next zoom, or a feature waits
+    /// for a deeper zoom.
+    pub children_must_go_on: bool,
+    /// With `-at`: the tile was skipped, not made.
+    pub skipped: bool,
+}
+
+/// Whether a zoom level's thresholds drop features.
+pub fn dropping_features(th: &Thresholds, drop_by_attribute_descending: bool) -> bool {
+    let dropping_by_attribute = if drop_by_attribute_descending {
+        th.minattribute != f64::INFINITY
+    } else {
+        th.minattribute != f64::NEG_INFINITY
+    };
+    th.mingap != 0 || th.minextent != 0 || th.mindrop_sequence != 0 || dropping_by_attribute
 }
 
 /// A feature that went into the tile: tippecanoe's `serial_feature` during tiling.
@@ -741,6 +760,9 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
         tilestats: BTreeMap::new(),
         error: None,
         reusable: None,
+        truncated: false,
+        children_must_go_on: false,
+        skipped: false,
     };
 
     let retain_points_multiplier = o.retain_points_multiplier;
@@ -762,8 +784,20 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
         .wrapping_mul((1i64 << (32 - z)) / 256 * cluster_distance as i64))
         as u64;
 
-    let first_detail = detail;
-    let second_detail = detail - 1;
+    let mut first_detail = detail;
+    let mut second_detail = detail - 1;
+    let mut trying_to_stop_early = false;
+    let mut can_stop_early = true;
+    let variable_depth = o.a(A_VARIABLE_DEPTH_PYRAMID);
+    if variable_depth && !dropping_features(&mp.th, drop_by_attribute_descending) {
+        // tippecanoe's estimate, with the multiply and add fused as clang does
+        let estimated_output_tile_size = (ort.complexity as f64).mul_add(0.6693, -3.36e+04) as i64;
+        if estimated_output_tile_size < (0.9 * max_tile_size as f64) as i64 && 30 - z > detail {
+            first_detail = 30 - z;
+            second_detail = detail;
+            trying_to_stop_early = true;
+        }
+    }
 
     let mut detail_reduced: usize = 0;
     let next_detail = |line_detail: i32| {
@@ -778,7 +812,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
 
     macro_rules! reusable_at {
         ($line_detail:expr, $detail_reduced:expr) => {
-            if $line_detail == first_detail && $detail_reduced == 0 {
+            if $line_detail == first_detail && $detail_reduced == 0 && !variable_depth {
                 Some(Thresholds {
                     gamma,
                     mingap,
@@ -793,6 +827,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
     }
 
     let mut line_detail = first_detail;
+    let mut first_time = true;
     while line_detail >= min_detail || line_detail == detail {
         octx.counters[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let trace_start = std::time::Instant::now();
@@ -860,6 +895,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
         let mut too_many_bytes = false;
 
         let mut drop_rest = false;
+        let mut dropping_by_rate = false;
 
         let mut strategy = Strategy {
             detail_reduced,
@@ -933,13 +969,20 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                 drop_sequence = calculate_drop_sequence(f.feature_minzoom, f.index);
             }
 
+            if f.feature_minzoom as i32 > z + 1 {
+                dropping_by_rate = true;
+            }
+
             if dropped == FEATURE_KEPT {
                 drop_rest = false;
-            } else if dropped != FEATURE_DROPPED
-                && dropped != FEATURE_ADDED_FOR_MULTIPLIER_DENSITY
-                && layer.multiplier_cluster_size >= retain_points_multiplier as usize
-            {
-                dropped = FEATURE_DROPPED;
+            } else {
+                can_stop_early = false;
+                if dropped != FEATURE_DROPPED
+                    && dropped != FEATURE_ADDED_FOR_MULTIPLIER_DENSITY
+                    && layer.multiplier_cluster_size >= retain_points_multiplier as usize
+                {
+                    dropped = FEATURE_DROPPED;
+                }
             }
 
             macro_rules! sf_geom {
@@ -956,12 +999,14 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
             {
                 preserve_attributes(&ax, c, &mut layer.features[w], &mut key_pool);
                 strategy.dropped_by_rate += 1;
+                can_stop_early = false;
                 continue;
             }
 
             // drop_feature_unless_it_can_be_added_to_a_multiplier_cluster
             macro_rules! drop_unless_multiplier {
                 () => {{
+                    can_stop_early = false;
                     if let Some(w) = find_feature_to_accumulate_onto(&layer.features, t, i64::MAX) {
                         strategy.dropped_as_needed += 1;
                         if layer.multiplier_cluster_size < retain_points_multiplier as usize {
@@ -1000,6 +1045,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                     preserve_attributes(&ax, c, target, &mut key_pool);
                     strategy.coalesced_as_needed += 1;
                     drop_rest = true;
+                    can_stop_early = false;
                 }};
             }
 
@@ -1017,6 +1063,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                     preserve_attributes(&ax, c, target, &mut key_pool);
                     strategy.coalesced_as_needed += 1;
                     drop_rest = true;
+                    can_stop_early = false;
                 }};
             }
 
@@ -1028,6 +1075,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                     preserve_attributes(&ax, c, &mut layer.features[w], &mut key_pool);
                     strategy.dropped_by_gamma += 1;
                     drop_rest = true;
+                    can_stop_early = false;
                     continue;
                 }
 
@@ -1282,6 +1330,11 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                         simplification,
                     };
 
+                    if trying_to_stop_early && line_detail == first_detail {
+                        // only collinear points go, the rest are kept for overzooming
+                        tf.simplification = 0.0;
+                    }
+
                     if dropped == FEATURE_KEPT && retain_points_multiplier > 1 {
                         tf.full_keys.push(key_pool.pool(MULTIPLIER_FIRST));
                         tf.full_values.push(SerialVal::new(MVT_BOOL, "true"));
@@ -1340,6 +1393,10 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
         }
 
         let trace_loop = trace_start.elapsed().as_secs_f64();
+        if first_time {
+            res.children_must_go_on = dropping_by_rate || rt.minzoom_feature_pending;
+            first_time = false;
+        }
         let mut adjusted_max_tile_size = max_tile_size;
         if lead_features_count > 0 {
             adjusted_max_tile_size = adjusted_max_tile_size
@@ -1586,6 +1643,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                     skipped = 0;
                 }
             } else if limit != 0 && layer_features.len() > limit {
+                can_stop_early = false;
                 layer_features.truncate(limit);
                 too_many_features = false;
                 too_many_bytes = false;
@@ -1708,6 +1766,14 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
             eprintln!("Is your data in the wrong projection? It should be in WGS84/EPSG:4326.");
         }
 
+        if trying_to_stop_early
+            && line_detail == first_detail
+            && (!can_stop_early || rt.minzoom_feature_pending)
+        {
+            line_detail = next_detail(line_detail);
+            continue;
+        }
+
         let mut adjusted_feature_count = feature_count;
         if kept > 0 {
             adjusted_feature_count = adjusted_feature_count.wrapping_mul(skipped + kept) / kept;
@@ -1731,6 +1797,11 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                         adjusted_feature_count,
                         adjusted_max_tile_features
                     );
+                }
+
+                if trying_to_stop_early && line_detail == first_detail {
+                    line_detail = next_detail(line_detail);
+                    continue;
                 }
 
                 match retry_threshold(
@@ -1855,6 +1926,11 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                     }
                 }
 
+                if trying_to_stop_early && line_detail == first_detail {
+                    line_detail = next_detail(line_detail);
+                    continue;
+                }
+
                 match retry_threshold(
                     ctx,
                     &mut res,
@@ -1898,6 +1974,13 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                     }
                 }
             } else {
+                if trying_to_stop_early
+                    && line_detail == first_detail
+                    && !rt.minzoom_feature_pending
+                {
+                    strategy.truncated_zooms += 1;
+                    res.truncated = true;
+                }
                 res.len = count;
                 res.tile = Some(compressed);
                 res.strategy = Some(strategy);
@@ -2204,5 +2287,8 @@ pub fn reuse(
         tilestats: BTreeMap::new(),
         error: None,
         reusable: Some(*th),
+        truncated: false,
+        children_must_go_on: prev.children_must_go_on,
+        skipped: false,
     })
 }

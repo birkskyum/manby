@@ -9,8 +9,11 @@ use tippecanoe::mbtiles::LayermapEntry;
 use tippecanoe::mvt::{MVT_DOUBLE, MVT_NULL, MVT_STRING};
 use tippecanoe::options::*;
 use tippecanoe::serial::SerialVal;
+use tippecanoe::tile::Strategy;
 
-use super::oracle::{GLOBALS, MemorySink, input_layermap, reference, set_globals};
+use super::oracle::{
+    GLOBALS, MemorySink, input_layermap, reference, serialized_layout, set_globals,
+};
 use super::util::shift_right;
 use super::{TileOptions, tile_with};
 use crate::store::{Attr, Feature, FeatureStore, Layer};
@@ -294,6 +297,10 @@ fn normalize(m: &BTreeMap<String, LayermapEntry>) -> String {
 /// Tiles `store` with tippecanoe-rs and with manby on 1, 2 and 18 threads, and
 /// checks that everything matches. Returns the number of tiles.
 fn check(store: &FeatureStore, o: &TileOptions) -> usize {
+    check_stats(store, o).0
+}
+
+fn check_stats(store: &FeatureStore, o: &TileOptions) -> (usize, Vec<Strategy>) {
     let _g = GLOBALS.lock().unwrap_or_else(|e| e.into_inner());
     set_globals(o);
     let r = reference(store, o);
@@ -335,7 +342,7 @@ fn check(store: &FeatureStore, o: &TileOptions) -> usize {
             "tilestats differ"
         );
     }
-    r.tiles.len()
+    (r.tiles.len(), r.strategies)
 }
 
 fn flag(o: &mut TileOptions, c: usize) {
@@ -568,4 +575,99 @@ fn filters() {
     flag(&mut o, A_COALESCE_DENSEST_AS_NEEDED);
     o.max_tile_size = 20000;
     check(&store, &o);
+}
+
+/// `-at`, with the store laid out as the reference's temporary files are.
+/// Returns how many tiles stopped early.
+fn check_variable_depth(store: &mut FeatureStore, o: &TileOptions) -> usize {
+    let mut o = o.clone();
+    flag(&mut o, A_VARIABLE_DEPTH_PYRAMID);
+    serialized_layout(store, &mut o);
+    let (_, strategies) = check_stats(store, &o);
+    strategies.iter().map(|s| s.truncated_zooms).sum()
+}
+
+fn all_minzoom_zero(mut store: FeatureStore) -> FeatureStore {
+    for f in &mut store.features {
+        f.feature_minzoom = 0;
+    }
+    store
+}
+
+#[test]
+fn variable_depth_points() {
+    let mut store = points(20000, 73, 18, 10);
+    let mut o = options(10);
+    assert!(check_variable_depth(&mut store, &o) > 10);
+
+    // dense tiles make their zooms drop features, which revives the tiles
+    // skipped below those that stopped early
+    let mut store = all_minzoom_zero(points(20000, 73, 18, 10));
+    flag(&mut o, A_DROP_DENSEST_AS_NEEDED);
+    o.max_tile_size = 20000;
+    assert!(check_variable_depth(&mut store, &o) > 0);
+}
+
+#[test]
+fn variable_depth_drop_rate_and_minzoom() {
+    let mut store = points(4000, 79, 18, 9);
+    for (i, f) in store.features.iter_mut().enumerate() {
+        if i % 3 == 0 {
+            f.feature_minzoom = 0;
+        }
+        if i % 97 == 0 {
+            f.tippecanoe_minzoom = 7;
+        }
+    }
+    check_variable_depth(&mut store, &options(9));
+    let mut store = lines(1500, 83, 18, 9);
+    check_variable_depth(&mut store, &options(9));
+}
+
+#[test]
+fn variable_depth_polygons() {
+    let mut store = polygons(6000, 89, 18, 10);
+    let mut o = options(10);
+    o.max_tile_size = 50000;
+    assert!(check_variable_depth(&mut store, &o) > 10);
+    flag(&mut o, A_COALESCE_DENSEST_AS_NEEDED);
+    o.max_tile_size = 20000;
+    check_variable_depth(&mut store, &o);
+}
+
+/// Sparse points next to a dense block that only appears at zoom 4: the
+/// sparse tiles stop early at zoom 3, and the dense block makes zoom 4 drop
+/// features, so their skipped children are made after all.
+#[test]
+fn variable_depth_revived() {
+    let mut rng = Rng(101);
+    let mut b = Builder::new(18);
+    for i in 0..20300 {
+        let (lon, lat) = if i < 300 {
+            (-80.0 + rng.f() * 30.0, 10.0 + rng.f() * 25.0)
+        } else {
+            (-101.0 + rng.f() * 2.0, 29.0 + rng.f() * 2.0)
+        };
+        let (x, y) = world(lon, lat);
+        let v = i.to_string();
+        b.add(
+            "p",
+            VT_POINT,
+            &[Draw::new(VT_MOVETO, x, y)],
+            &[("i", MVT_DOUBLE, &v)],
+            0,
+            None,
+            0,
+        );
+    }
+    let mut store = b.finish();
+    for f in &mut store.features {
+        if f.seq >= 300 {
+            f.tippecanoe_minzoom = 4;
+        }
+    }
+    let mut o = options(8);
+    flag(&mut o, A_DROP_DENSEST_AS_NEEDED);
+    o.max_tile_size = 20000;
+    assert!(check_variable_depth(&mut store, &o) > 0);
 }

@@ -685,28 +685,18 @@ fn add_tilestats(
     add_to_tilestats(&mut ts.tilestats, key, val);
 }
 
-/// Counters for `MANBY_TIMING`: attempts, compressions, bytes compressed, nanoseconds compressing.
-pub static COUNTERS: [std::sync::atomic::AtomicU64; 4] =
-    [const { std::sync::atomic::AtomicU64::new(0) }; 4];
-
-fn gzip(data: &[u8], fast: bool) -> Vec<u8> {
+fn gzip(ctx: &Ctx<'_>, data: &[u8]) -> Vec<u8> {
+    if !ctx.o.timing {
+        return crate::compress::gzip(data, ctx.o.fast);
+    }
     use std::sync::atomic::Ordering::Relaxed;
     let t = std::time::Instant::now();
-    let out = gzip_(data, fast);
-    COUNTERS[1].fetch_add(1, Relaxed);
-    COUNTERS[2].fetch_add(data.len() as u64, Relaxed);
-    COUNTERS[3].fetch_add(t.elapsed().as_nanos() as u64, Relaxed);
+    let out = crate::compress::gzip(data, ctx.o.fast);
+    let c = &ctx.counters;
+    c[1].fetch_add(1, Relaxed);
+    c[2].fetch_add(data.len() as u64, Relaxed);
+    c[3].fetch_add(t.elapsed().as_nanos() as u64, Relaxed);
     out
-}
-
-fn gzip_(data: &[u8], fast: bool) -> Vec<u8> {
-    if fast {
-        crate::compress::gzip(data, true)
-    } else {
-        let mut out = Vec::new();
-        tippecanoe::mvt::compress(data, &mut out, true);
-        out
-    }
 }
 
 /// Makes the tile that `rt` was read for, as tippecanoe's `write_tile` does.
@@ -804,7 +794,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
 
     let mut line_detail = first_detail;
     while line_detail >= min_detail || line_detail == detail {
-        COUNTERS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        octx.counters[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let trace_start = std::time::Instant::now();
 
         let mut key_pool = KeyPool::default();
@@ -1796,13 +1786,12 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
             let pbf_len = pbf.len();
 
             let compressed = if !o.p(P_TILE_COMPRESSION) {
-                gzip(&pbf, o.fast)
+                gzip(ctx, &pbf)
             } else {
                 pbf
             };
-            if std::env::var_os("MANBY_TRACE").is_some() {
-                static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-                let t0 = *T0.get_or_init(std::time::Instant::now);
+            if o.trace {
+                let t0 = octx.started;
                 eprintln!(
                     "trace {:.3} {}/{}/{} mingap {} cands {} kept {} skipped {} features {}: loop {:.3} layers {:.3} build {:.3} encode {:.3} gzip {:.3}; {} -> {} bytes",
                     t0.elapsed().as_secs_f64(),

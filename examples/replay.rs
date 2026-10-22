@@ -206,6 +206,8 @@ fn main() {
         cpus: gi("cpus") as usize,
         temp_files: gi("temp_files") as usize,
         quiet: std::env::var_os("MANBY_VERBOSE").is_none(),
+        timing: std::env::var_os("MANBY_TIMING").is_some(),
+        trace: std::env::var_os("MANBY_TRACE").is_some(),
         threads,
         ..TileOptions::default()
     };

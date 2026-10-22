@@ -104,6 +104,7 @@ pub fn perror_io(s: &str, e: &std::io::Error) {
     }
 }
 
+#[allow(dead_code)]
 struct WriterArg<'a> {
     write_to: i32,
     layers: &'a [MvtLayer],

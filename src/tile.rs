@@ -103,9 +103,11 @@ impl Strategy {
     }
 }
 
+#[allow(dead_code)]
 const CMD_BITS: i32 = 3;
 
 /// Offset coordinates to keep them positive
+#[allow(dead_code)]
 const COORD_OFFSET: i64 = 4i64 << 32;
 
 /// `SHIFT_RIGHT(a)`.
@@ -1154,6 +1156,7 @@ fn calculate_drop_sequence(sf: &SerialFeature) -> u64 {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
+#[allow(dead_code)]
 struct Task {
     fileno: usize,
     todo: usize,
@@ -1166,6 +1169,7 @@ struct Task {
 // The _out parameters are thresholds calculated during tiling; they are collected
 // by the caller to determine whether the zoom level needs to be done over with
 // new thresholds.
+#[allow(dead_code)]
 struct WriteTileArgs<'a> {
     threadno: usize,
     /// The task list, behind what the C++ calls `task_lock`.
@@ -1913,6 +1917,7 @@ fn promote_attribute(key: &str, p: &mut SerialFeature, key_pool: &mut KeyPool) {
     }
 }
 
+#[allow(dead_code)]
 fn promote_attribute_prefix(
     key: &str,
     prefixed_key: &str,
@@ -2251,9 +2256,8 @@ fn write_tile(
         .wrapping_mul((1i64 << (32 - z)) / 256 * cluster_distance as i64))
         as u64;
 
-    let first_detail = detail;
+    let mut first_detail = detail;
     let mut second_detail = detail - 1;
-    let mut first_detail = first_detail;
     let mut trying_to_stop_early = false;
     let mut can_stop_early = true;
     if additional(A_VARIABLE_DEPTH_PYRAMID) != 0

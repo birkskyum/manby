@@ -4,7 +4,6 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use tippecanoe::geometry::Draw;
 use tippecanoe::mbtiles::{LayermapEntry, Tilestat};
 use tippecanoe::mvt::{MVT_DOUBLE, MVT_NULL};
 use tippecanoe::serial::SerialVal;
@@ -242,7 +241,9 @@ pub struct Chunk {
     /// `seq` is the feature's rank within the chunk, `layer` an index into
     /// `layers`, and the attributes point into `keys` and `values`.
     pub features: Vec<Feature>,
-    pub geometry: Vec<Draw>,
+    /// The features' geometry, packed as `store::Geometry` keeps it.
+    pub geometry: Vec<u8>,
+    pub geometry_vertices: u64,
     pub attrs: Vec<Attr>,
     pub keys: Interner,
     pub values: Interner,

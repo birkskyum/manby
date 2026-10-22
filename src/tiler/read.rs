@@ -25,9 +25,10 @@ use tippecanoe::serial::{
 use tippecanoe::text::bit_reverse;
 
 use super::engine::Ctx;
-use super::util::{Chunked, par_ranges, shift_right};
+use super::util::{par_ranges, shift_right};
 use crate::mem::{Spool, Stored};
 use crate::store::Attr;
+use crate::store::Chunked;
 use std::sync::Arc;
 use tippecanoe::serial::SerialVal;
 
@@ -130,7 +131,7 @@ impl TileInput {
     /// About how much memory reading and making the tile takes.
     pub fn working_set(&self, store: &crate::store::FeatureStore) -> u64 {
         let vertices = if self.root {
-            store.geometry.len() as u64
+            store.geometry.vertices()
         } else {
             self.vertices
         };
@@ -961,24 +962,17 @@ fn read_chunk(ctx: &Ctx<'_>, input: &TileInput, source: Source<'_>, rp: &ReadPar
         let f = &store.features[fi as usize];
 
         if input.root {
-            bbox = store.feature_bbox(f);
-            if bbox[0] <= bbox[2] {
-                bbox[0] -= ox_root;
-                bbox[1] -= oy_root;
-                bbox[2] -= ox_root;
-                bbox[3] -= oy_root;
-            }
-            let src = store.feature_geometry(f);
-            if ox_root == 0 && oy_root == 0 {
-                geometry.extend(src.iter().map(|d| Draw::new(d.op, d.x, d.y)));
-            } else {
-                geometry.extend(src.iter().map(|d| {
-                    if d.op == VT_MOVETO || d.op == VT_LINETO {
-                        Draw::new(d.op, d.x - ox_root, d.y - oy_root)
-                    } else {
-                        Draw::new(d.op, 0, 0)
-                    }
-                }));
+            store.geometry_into(f, &mut geometry);
+            bbox = [i64::MAX, i64::MAX, i64::MIN, i64::MIN];
+            for d in geometry.iter_mut() {
+                if d.op == VT_MOVETO || d.op == VT_LINETO {
+                    d.x -= ox_root;
+                    d.y -= oy_root;
+                    bbox[0] = bbox[0].min(d.x);
+                    bbox[1] = bbox[1].min(d.y);
+                    bbox[2] = bbox[2].max(d.x);
+                    bbox[3] = bbox[3].max(d.y);
+                }
             }
         }
 

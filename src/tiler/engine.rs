@@ -15,7 +15,7 @@ use tippecanoe::options::*;
 use tippecanoe::tile::Strategy;
 
 use super::encode::{ValueCodes, key_slot};
-use super::make::{MakeParams, MakeResult, Thresholds, dropping_features, make_tile, reuse};
+use super::make::{MakeParams, MakeResult, Thresholds, dropping_features, make_tile};
 use super::read::{ReadParams, TileInput, read_tile, store_inputs};
 use super::util::Helpers;
 use super::{TileOptions, TileStats};
@@ -211,8 +211,8 @@ struct Slot {
     read: bool,
     /// With `-at`: the estimated complexity, once counted.
     complexity: Option<i64>,
-    /// The tile as the current pass made it.
-    result: Option<MakeResult>,
+    /// What the current pass made of the tile.
+    made: Option<Made>,
     /// Its bytes, until the level is done.
     tile: Option<Stored>,
     /// With `-at`: whether the tile's children must not try to stop early,
@@ -221,6 +221,51 @@ struct Slot {
     /// With `-at`: the tile's children, until it is known whether the tile
     /// writes them.
     held: Vec<TileInput>,
+}
+
+/// What a tile keeps of how a pass made it.
+struct Made {
+    len: i64,
+    skipped: bool,
+    truncated: bool,
+    /// The thresholds and counts under which the tile stands for the next
+    /// pass too, if a higher threshold cannot change it.
+    reuse: Option<Box<Reuse>>,
+}
+
+struct Reuse {
+    th: Thresholds,
+    gap: u64,
+    drop_sequence: u64,
+    strategy: Option<Strategy>,
+}
+
+/// The totals of a pass over a level, which its tiles add to as they are
+/// made. They do not depend on the order the tiles come in.
+struct Totals {
+    /// tippecanoe's zoom counter.
+    z: i32,
+    /// The thresholds for another pass.
+    next: Thresholds,
+    strategy: Strategy,
+    extend_zooms: bool,
+    /// The message of the first tile in tile order that failed with one.
+    error: Option<((u32, u32), String)>,
+    /// Each tile's z, x, y and vertex count.
+    history: Vec<(i32, u32, u32, i64)>,
+}
+
+impl Totals {
+    fn new(z: i32, th: Thresholds) -> Totals {
+        Totals {
+            z,
+            next: th,
+            strategy: Strategy::default(),
+            extend_zooms: false,
+            error: None,
+            history: Vec::new(),
+        }
+    }
 }
 
 /// The maximum zoom during a pass, and each tile's z, x, y and vertex count.
@@ -253,6 +298,7 @@ struct Level {
     started: bool,
     pass: usize,
     th: Thresholds,
+    totals: Totals,
     outstanding: usize,
     /// Per pass: the maximum zoom then and each tile's z, x, y and vertex count.
     history: Vec<PassTiles>,
@@ -270,6 +316,17 @@ struct Level {
 
 impl Level {
     fn new(z: i32, loop_z: i32, o: &TileOptions, spool: Arc<Spool>, rest: &Arc<Rest>) -> Level {
+        let th = Thresholds {
+            gamma: o.gamma,
+            mingap: 0,
+            minextent: 0,
+            mindrop_sequence: 0,
+            minattribute: if o.drop_by_attribute_descending {
+                f64::INFINITY
+            } else {
+                f64::NEG_INFINITY
+            },
+        };
         Level {
             z,
             loop_z,
@@ -287,17 +344,8 @@ impl Level {
             inputs_complete: false,
             started: false,
             pass: 0,
-            th: Thresholds {
-                gamma: o.gamma,
-                mingap: 0,
-                minextent: 0,
-                mindrop_sequence: 0,
-                minattribute: if o.drop_by_attribute_descending {
-                    f64::INFINITY
-                } else {
-                    f64::NEG_INFINITY
-                },
-            },
+            th,
+            totals: Totals::new(loop_z, th),
             outstanding: 0,
             history: Vec::new(),
             tilestats: Vec::new(),
@@ -308,6 +356,72 @@ impl Level {
             err: false,
             done: false,
             wrote: false,
+        }
+    }
+
+    /// Adds what a pass made of tile `idx` to the pass's totals.
+    fn fold(&mut self, idx: usize, mut r: MakeResult, descending: bool) {
+        let slot = &mut self.slots[idx];
+        let (z, x, y) = (slot.input.z, slot.input.x, slot.input.y);
+        let t = &mut self.totals;
+        t.history.push((z, x, y, r.len));
+        slot.made = Some(Made {
+            len: r.len,
+            skipped: r.skipped,
+            truncated: r.truncated,
+            reuse: r.reusable.map(|th| {
+                Box::new(Reuse {
+                    th,
+                    gap: r.reuse_gap,
+                    drop_sequence: r.reuse_drop_sequence,
+                    strategy: r.strategy,
+                })
+            }),
+        });
+        if r.skipped {
+            return;
+        }
+        self.wrote = true;
+        t.z = t.z.max(z);
+
+        if r.len < 0 {
+            self.err = true;
+            if let Some(m) = r.error.take()
+                && t.error.as_ref().is_none_or(|(at, _)| (x, y) < *at)
+            {
+                t.error = Some(((x, y), m));
+            }
+        }
+
+        if let Some(s) = &r.strategy {
+            let a = &mut t.strategy;
+            a.dropped_by_rate += s.dropped_by_rate;
+            a.dropped_by_gamma += s.dropped_by_gamma;
+            a.dropped_as_needed += s.dropped_as_needed;
+            a.coalesced_as_needed += s.coalesced_as_needed;
+            a.detail_reduced += s.detail_reduced;
+            a.tiny_polygons += s.tiny_polygons;
+            a.truncated_zooms += s.truncated_zooms;
+        }
+
+        if !r.tilestats.is_empty() {
+            self.tilestats.push(std::mem::take(&mut r.tilestats));
+        }
+
+        let (n, out) = (&mut t.next, r.th_out);
+        n.gamma = n.gamma.max(out.gamma);
+        n.mingap = n.mingap.max(out.mingap);
+        n.minextent = n.minextent.max(out.minextent);
+        n.mindrop_sequence = n.mindrop_sequence.max(out.mindrop_sequence);
+        if descending {
+            n.minattribute = n.minattribute.min(out.minattribute);
+        } else {
+            n.minattribute = n.minattribute.max(out.minattribute);
+        }
+        self.zoom_tile_size = self.zoom_tile_size.max(r.tile_size_out);
+        self.zoom_feature_count = self.zoom_feature_count.max(r.feature_count_out);
+        if r.still_dropping {
+            t.extend_zooms = true;
         }
     }
 
@@ -506,7 +620,7 @@ impl<'d, 's> Driver<'d, 's> {
             input: Arc::new(input),
             read: false,
             complexity: None,
-            result: None,
+            made: None,
             tile: None,
             children_must_go_on: None,
             held: Vec::new(),
@@ -548,7 +662,8 @@ impl<'d, 's> Driver<'d, 's> {
         if slot.input.skip_unless_dropping
             && !dropping_features(&level.th, o.drop_by_attribute_descending)
         {
-            slot.result = Some(skipped(level.th));
+            let th = level.th;
+            level.fold(idx, skipped(th), o.drop_by_attribute_descending);
             level.missing -= 1;
             return;
         }
@@ -713,7 +828,7 @@ impl<'d, 's> Driver<'d, 's> {
         if slot.children_must_go_on.is_none() {
             slot.children_must_go_on = Some(result.children_must_go_on);
         }
-        slot.result = Some(result);
+        level.fold(idx, result, self.ctx.o.drop_by_attribute_descending);
         self.check_pass(k);
     }
 
@@ -736,88 +851,22 @@ impl<'d, 's> Driver<'d, 's> {
         let o = self.ctx.o;
         let maxzoom = self.maxzoom;
         let level = &mut self.levels[k];
-        let order = level.order();
-
-        let mut z = if level.pass == 0 {
-            level.loop_z
-        } else {
-            level.z
-        };
-        let mut again = false;
-        let mut extend_zooms = false;
-        let mut strategy = Strategy::default();
-        let mut history = Vec::with_capacity(order.len());
-        let mut error: Option<String> = None;
-
-        for &i in &order {
-            let slot = &mut level.slots[i];
-            let input = &slot.input;
-            let r = slot.result.as_mut().unwrap();
-            history.push((input.z, input.x, input.y, r.len));
-            if r.skipped {
-                continue;
-            }
-            level.wrote = true;
-            if input.z > z {
-                z = input.z;
-            }
-
-            if r.len < 0 {
-                level.err = true;
-                if error.is_none() {
-                    error = r.error.take();
-                }
-            }
-
-            if let Some(s) = &r.strategy {
-                strategy.dropped_by_rate += s.dropped_by_rate;
-                strategy.dropped_by_gamma += s.dropped_by_gamma;
-                strategy.dropped_as_needed += s.dropped_as_needed;
-                strategy.coalesced_as_needed += s.coalesced_as_needed;
-                strategy.detail_reduced += s.detail_reduced;
-                strategy.tiny_polygons += s.tiny_polygons;
-                strategy.truncated_zooms += s.truncated_zooms;
-            }
-
-            if !r.tilestats.is_empty() {
-                level.tilestats.push(std::mem::take(&mut r.tilestats));
-            }
-
-            let th = &mut level.th;
-            let out = r.th_out;
-            if out.gamma > th.gamma {
-                th.gamma = out.gamma;
-                again = true;
-            }
-            if out.mingap > th.mingap {
-                th.mingap = out.mingap;
-                again = true;
-            }
-            if out.minextent > th.minextent {
-                th.minextent = out.minextent;
-                again = true;
-            }
-            if out.mindrop_sequence > th.mindrop_sequence {
-                th.mindrop_sequence = out.mindrop_sequence;
-                again = true;
-            }
-            let attr_propagate = if o.drop_by_attribute_descending {
-                out.minattribute < th.minattribute
-            } else {
-                out.minattribute > th.minattribute
-            };
-            if attr_propagate {
-                th.minattribute = out.minattribute;
-                again = true;
-            }
-            level.zoom_tile_size = level.zoom_tile_size.max(r.tile_size_out);
-            level.zoom_feature_count = level.zoom_feature_count.max(r.feature_count_out);
-
-            if r.still_dropping {
-                extend_zooms = true;
-            }
-        }
-        level.history.push((maxzoom, history));
+        let fresh = Totals::new(level.z, level.th);
+        let totals = std::mem::replace(&mut level.totals, fresh);
+        let z = totals.z;
+        let next = totals.next;
+        let th = level.th;
+        let again = next.gamma > th.gamma
+            || next.mingap > th.mingap
+            || next.minextent > th.minextent
+            || next.mindrop_sequence > th.mindrop_sequence
+            || next.minattribute != th.minattribute;
+        level.th = next;
+        level.totals.next = next;
+        let extend_zooms = totals.extend_zooms;
+        let mut strategy = totals.strategy;
+        level.history.push((maxzoom, totals.history));
+        let error = totals.error.map(|(_, m)| m);
 
         if let Some(message) = error {
             self.error = Some(Error::new(EXIT_INCOMPLETE, message));
@@ -866,19 +915,38 @@ impl<'d, 's> Driver<'d, 's> {
         if again {
             level.pass += 1;
             let th = level.th;
-            let variable_depth = self.variable_depth;
+            let filters = o.prefilter.is_some() || o.postfilter.is_some();
+            let reusable = !self.variable_depth && !filters;
             for idx in 0..self.levels[k].slots.len() {
                 let level = &mut self.levels[k];
-                let prev = level.slots[idx].result.take();
+                let made = level.slots[idx].made.take();
                 level.missing += 1;
-                let reused = if variable_depth {
-                    None
-                } else {
-                    prev.and_then(|prev| reuse(self.ctx, prev, &th))
-                };
-                match reused {
-                    Some(r) => {
-                        level.slots[idx].result = Some(r);
+                let reuse = made
+                    .and_then(|m| m.reuse.map(|r| (m.len, r)))
+                    .filter(|(_, r)| {
+                        reusable
+                            && r.th.gamma == th.gamma
+                            && r.th.minextent == th.minextent
+                            && r.th.minattribute == th.minattribute
+                            && r.gap >= th.mingap
+                            && r.drop_sequence > th.mindrop_sequence
+                    });
+                match reuse {
+                    // a higher threshold leaves the tile as it is
+                    Some((len, r)) => {
+                        let result = MakeResult {
+                            len,
+                            strategy: r.strategy,
+                            reusable: Some(th),
+                            reuse_gap: r.gap,
+                            reuse_drop_sequence: r.drop_sequence,
+                            ..skipped(th)
+                        };
+                        let result = MakeResult {
+                            skipped: false,
+                            ..result
+                        };
+                        level.fold(idx, result, o.drop_by_attribute_descending);
                         level.missing -= 1;
                     }
                     None => self.spawn_tile(k, idx),
@@ -917,7 +985,7 @@ impl<'d, 's> Driver<'d, 's> {
         let mut next: Vec<((u32, u32), TileInput)> = Vec::new();
         for &i in &order {
             let slot = &mut level.slots[i];
-            let r = slot.result.as_ref().unwrap();
+            let r = slot.made.as_ref().unwrap();
             if r.skipped {
                 continue;
             }

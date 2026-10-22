@@ -37,7 +37,7 @@ use serialize::Config;
 
 use crate::Error;
 use crate::options::{Options, Source, os_message};
-use crate::store::{Attr, Feature, FeatureStore, Layer, Values};
+use crate::store::{Attr, Chunked, Feature, FeatureStore, Geometry, Layer, Values};
 
 /// The bytes of one input, mapped or read into memory.
 enum Data {
@@ -1005,12 +1005,22 @@ fn merge_tables(tables: &[&Interner]) -> Merged {
 }
 
 fn merge(
-    parts: Parts,
+    mut parts: Parts,
     sources: &[Source],
     layer_names: &[String],
     layer_source: &BTreeMap<String, usize>,
     options: &Options,
 ) -> FeatureStore {
+    // the geometry and attributes go into the store as they are, not copied
+    let mut geometries: Vec<(Vec<u8>, u64)> = Vec::with_capacity(parts.chunks.len());
+    let mut chunk_attrs: Vec<Vec<Attr>> = Vec::with_capacity(parts.chunks.len());
+    for a in parts.chunks.iter_mut() {
+        geometries.push((
+            std::mem::take(&mut a.chunk.geometry),
+            a.chunk.geometry_vertices,
+        ));
+        chunk_attrs.push(std::mem::take(&mut a.chunk.attrs));
+    }
     let chunks: Vec<&Chunk> = parts.chunks.iter().map(|a| &a.chunk).collect();
 
     // Layers, by name, in the order they first appear.
@@ -1091,11 +1101,11 @@ fn merge(
     let mut geom_off = Vec::with_capacity(chunks.len());
     let mut attr_off = Vec::with_capacity(chunks.len());
     let (mut g, mut a) = (0u64, 0u64);
-    for c in &chunks {
+    for (geom, attrs) in geometries.iter().zip(&chunk_attrs) {
         geom_off.push(g);
         attr_off.push(a);
-        g += c.geometry.len() as u64;
-        a += c.attrs.len() as u64;
+        g += geom.0.len() as u64;
+        a += attrs.len() as u64;
     }
 
     let features: Vec<Feature> = chunks
@@ -1125,22 +1135,26 @@ fn merge(
         })
         .collect();
 
-    let geometry = chunks
-        .par_iter()
-        .flat_map_iter(|c| c.geometry.iter().copied())
-        .collect();
+    let mut geometry = Geometry::default();
+    for (part, vertices) in geometries {
+        geometry.append(part, vertices);
+    }
 
-    let attrs = chunks
-        .par_iter()
+    chunk_attrs
+        .par_iter_mut()
         .enumerate()
-        .flat_map_iter(|(ci, c)| {
+        .for_each(|(ci, attrs)| {
             let (kr, vr) = (&key_remap[ci], &value_remap[ci]);
-            c.attrs.iter().map(move |a| Attr {
-                key: kr[a.key as usize],
-                value: vr[a.value as usize],
-            })
-        })
-        .collect();
+            for a in attrs.iter_mut() {
+                a.key = kr[a.key as usize];
+                a.value = vr[a.value as usize];
+            }
+        });
+    let attr_lens: Vec<usize> = chunk_attrs.iter().map(|a| a.len()).collect();
+    let mut attrs = Chunked::default();
+    for part in chunk_attrs {
+        attrs.append(part);
+    }
 
     let mut bbox = [u32::MAX as i64, u32::MAX as i64, 0, 0];
     let mut bbox1: [i64; 4] = [0xFFFFFFFF, 0xFFFFFFFF, 0, 0];
@@ -1182,6 +1196,7 @@ fn merge(
     let mut store = FeatureStore {
         features,
         geometry,
+        geometry_scale: options.geometry_scale,
         attrs,
         keys: keys.iter().map(|k| k.s.to_string()).collect(),
         values,
@@ -1210,10 +1225,10 @@ fn merge(
             spans.push(serialized::Span {
                 segment: parts.segment[ci] as usize,
                 features: f..f + c.features.len(),
-                attrs: a..a + c.attrs.len(),
+                attrs: a..a + attr_lens[ci],
             });
             f += c.features.len();
-            a += c.attrs.len();
+            a += attr_lens[ci];
         }
         serialized::layout(
             &mut store,

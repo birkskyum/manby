@@ -678,8 +678,10 @@ fn store_dump(s: &FeatureStore) -> String {
     for f in &s.features {
         out += &format!("{:?}\n", f);
     }
-    for g in &s.geometry {
-        out += &format!("{} {} {}\n", g.op, g.x, g.y);
+    for f in &s.features {
+        for g in &s.feature_geometry(f) {
+            out += &format!("{} {} {}\n", g.op, g.x, g.y);
+        }
     }
     for a in &s.attrs {
         out += &format!("{} {}\n", a.key, a.value);

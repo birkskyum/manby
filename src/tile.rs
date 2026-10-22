@@ -53,8 +53,8 @@ use crate::plugin::{
 use crate::projection::decode_index;
 use crate::serial::{
     FEATURE_ADDED_FOR_MULTIPLIER_DENSITY, FEATURE_DROPPED, FEATURE_KEPT, KeyPool, Node,
-    SerialFeature, SerialFeaturePtr, SerialVal, StringPoolRef, deserialize_feature,
-    serialize_feature,
+    SerialFeature, SerialFeaturePtr, SerialVal, StringPoolRef, deserialize_feature, fserialize_int,
+    fserialize_uint, fwrite_check, serialize_feature,
 };
 use crate::shared_borders::find_common_edges;
 use crate::text::bit_reverse;
@@ -150,88 +150,6 @@ fn by_less<T>(less: impl Fn(&T, &T) -> bool) -> impl FnMut(&T, &T) -> std::cmp::
         } else {
             std::cmp::Ordering::Equal
         }
-    }
-}
-
-/// One of the temporary files that the next zoom level is written into: the
-/// C++ `compressor` with its `FILE *fp`.
-///
-/// The C++ writes the uncompressed header of each child tile to `fp` and then
-/// the compressed features through the same `FILE *`. Here the header goes to
-/// `fp` directly, and the compressed stream of each child tile gets a
-/// `Compressor` of its own over a duplicate of the descriptor, which is closed
-/// at the end of the stream, so that all of the stream is in the file before
-/// anything is written after it.
-struct Shard {
-    fp: File,
-    comp: Option<Compressor>,
-}
-
-impl Shard {
-    fn new(fp: File) -> Shard {
-        Shard { fp, comp: None }
-    }
-
-    /// `geomfile[j]->begin()`.
-    fn begin(&mut self) {
-        let f = match self.fp.try_clone() {
-            Ok(f) => f,
-            Err(_) => {
-                perror("dup geometry");
-                std::process::exit(EXIT_OPEN);
-            }
-        };
-        let mut comp = Compressor::new(f);
-        comp.begin();
-        self.comp = Some(comp);
-    }
-
-    fn comp(&mut self) -> &mut Compressor {
-        match self.comp.as_mut() {
-            Some(c) => c,
-            None => {
-                eprintln!("Internal error: compressed write outside a stream");
-                std::process::exit(EXIT_IMPOSSIBLE);
-            }
-        }
-    }
-
-    /// `geomfile[j]->end(fpos, fname)`, which also closes the stream's descriptor.
-    fn end(&mut self, fpos: &AtomicI64, fname: &str) {
-        let mut comp = match self.comp.take() {
-            Some(c) => c,
-            None => {
-                eprintln!("Internal error: end of a stream that was not begun");
-                std::process::exit(EXIT_IMPOSSIBLE);
-            }
-        };
-        comp.end(fpos, fname);
-        if comp.fclose() != 0 {
-            perror("close subfile");
-            std::process::exit(EXIT_CLOSE);
-        }
-    }
-
-    /// `fwrite_check(p, sizeof(char), p.size(), geomfile[j]->fp, fpos, fname)`, uncompressed.
-    fn fwrite_check(&mut self, p: &[u8], fpos: &AtomicI64, fname: &str) {
-        if let Err(e) = self.fp.write_all(p) {
-            eprintln!(
-                "{}: Write to temporary file failed: {}",
-                fname,
-                strerror(e.raw_os_error().unwrap_or(0))
-            );
-            std::process::exit(EXIT_WRITE);
-        }
-        fpos.fetch_add(p.len() as i64, Ordering::Relaxed);
-    }
-
-    /// `geomfile[j]->fclose()`.
-    fn fclose(self) -> i32 {
-        if let Some(mut comp) = self.comp {
-            comp.fclose();
-        }
-        // SAFETY: the descriptor came from into_raw_fd and is closed exactly once.
-        unsafe { libc::close(self.fp.into_raw_fd()) }
     }
 }
 
@@ -635,7 +553,7 @@ fn rewrite(
     within: &mut [bool],
     geompos: &[AtomicI64],
     start_geompos: &mut [i64],
-    geomfile: &mut [Shard],
+    geomfile: &mut [Compressor],
     fname: &str,
     child_shards: i32,
     max_zoom_increment: i32,
@@ -726,17 +644,27 @@ fn rewrite(
                         start_geompos[j] = geompos[j].load(Ordering::Relaxed); // no competition between threads
 
                         let estimated_complexity: i64 = 0; // placeholder, to be filled in later
-                        let mut header = estimated_complexity.to_ne_bytes().to_vec();
-                        crate::serial::serialize_int(&mut header, nextzoom);
-                        crate::serial::serialize_uint(
-                            &mut header,
+                        fwrite_check(
+                            &estimated_complexity.to_ne_bytes(),
+                            std::mem::size_of::<i64>(),
+                            1,
+                            geomfile[j].fp(),
+                            &geompos[j],
+                            fname,
+                        );
+                        fserialize_int(geomfile[j].fp(), nextzoom, &geompos[j], fname);
+                        fserialize_uint(
+                            geomfile[j].fp(),
                             tx.wrapping_mul(span as u32).wrapping_add(xo as u32),
+                            &geompos[j],
+                            fname,
                         );
-                        crate::serial::serialize_uint(
-                            &mut header,
+                        fserialize_uint(
+                            geomfile[j].fp(),
                             ty.wrapping_mul(span as u32).wrapping_add(yo as u32),
+                            &geompos[j],
+                            fname,
                         );
-                        geomfile[j].fwrite_check(&header, &geompos[j], fname);
                         geomfile[j].begin();
                     }
 
@@ -751,9 +679,8 @@ fn rewrite(
                     }
                     let feature = feature.as_ref().unwrap();
 
-                    let comp = geomfile[j].comp();
-                    comp.serialize_long_long(feature.len() as i64, &geompos[j], fname);
-                    comp.fwrite_check(feature, 1, feature.len(), &geompos[j], fname);
+                    geomfile[j].serialize_long_long(feature.len() as i64, &geompos[j], fname);
+                    geomfile[j].fwrite_check(feature, 1, feature.len(), &geompos[j], fname);
                 }
 
                 yo += 1;
@@ -1181,7 +1108,7 @@ struct WriteTileArgs<'a> {
     buffer: i32,
     fname: &'a str,
     /// This thread's shards of the next zoom's temporary files.
-    geomfile: &'a mut [Shard],
+    geomfile: &'a mut [Compressor],
     geompos: &'a [AtomicI64],
     todo: f64,
     along: &'a AtomicI64,
@@ -1755,7 +1682,7 @@ struct RunPrefilterArgs<'a> {
     alongminus: i64,
     buffer: i32,
     within: &'a mut [bool],
-    geomfile: &'a mut [Shard],
+    geomfile: &'a mut [Compressor],
     geompos: &'a [AtomicI64],
     start_geompos: &'a mut [i64],
     oprogress: &'a AtomicF64,
@@ -2133,32 +2060,9 @@ fn average_cluster_point(target: &mut SerialFeature, sf: &SerialFeature) {
     target.geometry[0].y = (y / (target.clustered + 1) as f64) as i64;
 }
 
-/// `fseek` of the input back to the start of the tile, for another try at it.
-/// The C++ ends and restarts the decompression and empties its buffers; here
-/// the decompressor is replaced with a new one reading from that position.
-fn rewind_geoms(geoms: &mut Decompressor, geoms_fp: &File, og: i64, compressed_input: bool) {
-    let mut f = match geoms_fp.try_clone() {
-        Ok(f) => f,
-        Err(_) => {
-            perror("fseek geom");
-            std::process::exit(EXIT_SEEK);
-        }
-    };
-    if f.seek(SeekFrom::Start(og as u64)).is_err() {
-        perror("fseek geom");
-        std::process::exit(EXIT_SEEK);
-    }
-
-    *geoms = Decompressor::new(f);
-    if compressed_input {
-        geoms.begin();
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn write_tile(
     geoms: &mut Decompressor,
-    geoms_fp: &File,
     geompos_in: &AtomicI64,
     z: i32,
     tx: u32,
@@ -2175,7 +2079,7 @@ fn write_tile(
     let outdir = arg.outdir;
     let buffer = arg.buffer;
     let fname = arg.fname;
-    let geomfile: &mut [Shard] = &mut *arg.geomfile;
+    let geomfile: &mut [Compressor] = &mut *arg.geomfile;
     let geompos = arg.geompos;
     let minzoom = arg.minzoom;
     let maxzoom = arg.maxzoom;
@@ -2348,8 +2252,21 @@ fn write_tile(
         let mut start_geompos: Vec<i64> = vec![-1; child_shards as usize];
 
         if geompos_in.load(Ordering::Relaxed) != og {
-            rewind_geoms(geoms, geoms_fp, og, compressed_input);
+            if compressed_input {
+                if geoms.within {
+                    geoms.end(geompos_in);
+                }
+
+                geoms.begin();
+            }
+
+            if geoms.fseek(og) != 0 {
+                perror("fseek geom");
+                std::process::exit(EXIT_SEEK);
+            }
+
             geompos_in.store(og, Ordering::Relaxed);
+            geoms.clear_avail();
         }
 
         let mut prefilter_write: i32 = -1;
@@ -3115,14 +3032,13 @@ fn write_tile(
                     estimated_complexity_out = 1i64 << 32;
                 }
 
-                geomfile[j]
-                    .comp()
-                    .serialize_long_long(0, &geompos[j], fname); // EOF
+                geomfile[j].serialize_long_long(0, &geompos[j], fname); // EOF
                 geomfile[j].end(&geompos[j], fname);
                 within[j] = false;
 
                 if additional(A_VARIABLE_DEPTH_PYRAMID) != 0 {
-                    match geomfile[j].fp.write_at(
+                    let _ = geomfile[j].fp().flush();
+                    match geomfile[j].fp().get_ref().write_at(
                         &estimated_complexity_out.to_ne_bytes(),
                         start_geompos[j] as u64,
                     ) {
@@ -4110,13 +4026,7 @@ fn run_thread(arg: &mut WriteTileArgs<'_>) -> Option<i32> {
         // SAFETY: geomfd[j] is an open descriptor that only this thread uses in this pass.
         let geom = unsafe { File::from_raw_fd(arg.geomfd[j].load(Ordering::Relaxed)) };
 
-        let mut dc = match geom.try_clone() {
-            Ok(f) => Decompressor::new(f),
-            Err(_) => {
-                perror("open geom");
-                std::process::exit(EXIT_OPEN);
-            }
-        };
+        let mut dc = Decompressor::new(geom);
 
         let geompos = AtomicI64::new(0);
         let mut prevgeom: i64 = 0;
@@ -4195,7 +4105,6 @@ fn run_thread(arg: &mut WriteTileArgs<'_>) -> Option<i32> {
                 let alongminus = geompos.load(Ordering::Relaxed);
                 len = write_tile(
                     &mut dc,
-                    &geom,
                     &geompos,
                     z,
                     x,
@@ -4260,11 +4169,10 @@ fn run_thread(arg: &mut WriteTileArgs<'_>) -> Option<i32> {
             arg.geomfd[j].store(newfd, Ordering::Relaxed);
         }
 
-        // SAFETY: the descriptor came from into_raw_fd and is closed exactly once.
-        if unsafe { libc::close(geom.into_raw_fd()) } != 0 {
-            perror("close geom");
-            std::process::exit(EXIT_CLOSE);
-        }
+        // PORT: the C++ checks the result of fclose(geom) here. Dropping the
+        // decompressor closes the descriptor without a way to see the result,
+        // which for a file that was only read cannot fail anyway.
+        drop(dc);
     }
 
     // PORT: the C++ says `arg->running--`, which decrements the pointer rather
@@ -4349,7 +4257,7 @@ pub fn traverse_zooms(
     while z <= *maxzoom {
         let most = AtomicI64::new(0);
 
-        let mut sub: Vec<Shard> = Vec::with_capacity(temp_files);
+        let mut sub: Vec<Compressor> = Vec::with_capacity(temp_files);
         let subpos: Vec<AtomicI64> = (0..temp_files).map(|_| AtomicI64::new(0)).collect();
         let mut subfd: Vec<i32> = vec![0; temp_files];
         for (j, subfd_j) in subfd.iter_mut().enumerate() {
@@ -4367,7 +4275,7 @@ pub fn traverse_zooms(
                     std::process::exit(EXIT_OPEN);
                 }
             };
-            sub.push(Shard::new(fp));
+            sub.push(Compressor::new(fp));
             let _ = std::fs::remove_file(&geomname);
         }
 
@@ -4663,14 +4571,14 @@ pub fn traverse_zooms(
 
         skip_children = std::mem::take(&mut skip_children_out);
 
-        for (j, shard) in sub.into_iter().enumerate() {
+        for (j, sub_j) in sub.iter_mut().enumerate() {
             // Can be < 0 if there is only one source file, at z0
             // SAFETY: closing a descriptor this function owns.
             if geomfd[j] >= 0 && unsafe { libc::close(geomfd[j]) } != 0 {
                 perror("close geom");
                 std::process::exit(EXIT_CLOSE);
             }
-            if shard.fclose() != 0 {
+            if sub_j.fclose() != 0 {
                 perror("close subfile");
                 std::process::exit(EXIT_CLOSE);
             }

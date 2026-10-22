@@ -1,0 +1,54 @@
+[workspace]
+members = [".", "crates/wagyu", "crates/clipper2"]
+
+[workspace.package]
+edition = "2024"
+license = "BSD-2-Clause"
+
+[package]
+name = "tippecanoe"
+version = "2.82.0"
+description = "A Rust port of tippecanoe, which builds vector tilesets from GeoJSON, FlatGeobuf, or CSV features"
+edition.workspace = true
+license.workspace = true
+autobins = false
+
+[lib]
+name = "tippecanoe"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tippecanoe"
+path = "src/bin/tippecanoe.rs"
+
+[[bin]]
+name = "tile-join"
+path = "src/bin/tile-join.rs"
+
+[[bin]]
+name = "tippecanoe-decode"
+path = "src/bin/tippecanoe-decode.rs"
+
+[[bin]]
+name = "tippecanoe-enumerate"
+path = "src/bin/tippecanoe-enumerate.rs"
+
+[[bin]]
+name = "tippecanoe-overzoom"
+path = "src/bin/tippecanoe-overzoom.rs"
+
+[[bin]]
+name = "tippecanoe-json-tool"
+path = "src/bin/tippecanoe-json-tool.rs"
+
+[dependencies]
+wagyu = { path = "crates/wagyu" }
+clipper2 = { path = "crates/clipper2" }
+flate2 = { version = "1.1", default-features = false, features = ["zlib"] }
+libc = "0.2"
+memmap2 = "0.9"
+rusqlite = { version = "0.40", features = ["bundled"] }
+flatbuffers = "25"
+
+[profile.release]
+debug = 1

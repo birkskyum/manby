@@ -1,0 +1,13 @@
+/target
+/tippecanoe
+/tile-join
+/tippecanoe-decode
+/tippecanoe-enumerate
+/tippecanoe-overzoom
+/tippecanoe-json-tool
+/unit
+tests/**/*.mbtiles
+tests/**/*.check
+tests/**/*.out
+tests/**/*.geobuf
+.DS_Store

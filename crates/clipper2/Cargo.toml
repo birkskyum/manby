@@ -1,0 +1,8 @@
+[package]
+name = "clipper2"
+version = "1.4.0"
+description = "A Rust port of the parts of Clipper2 that tippecanoe uses"
+edition.workspace = true
+license = "BSL-1.0"
+
+[dependencies]

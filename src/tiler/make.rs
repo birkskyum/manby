@@ -20,8 +20,10 @@ use tippecanoe::mvt::{
 };
 use tippecanoe::options::*;
 use tippecanoe::serial::{
-    FEATURE_ADDED_FOR_MULTIPLIER_DENSITY, FEATURE_DROPPED, FEATURE_KEPT, KeyPool, SerialVal,
+    FEATURE_ADDED_FOR_MULTIPLIER_DENSITY, FEATURE_DROPPED, FEATURE_KEPT, KeyPool, SerialFeature,
+    SerialVal,
 };
+use tippecanoe::shared_borders::find_common_edges;
 use tippecanoe::tile::{Strategy, manage_gap};
 
 use super::encode::LayerEnc;
@@ -656,7 +658,6 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
     let mut minextent_fraction = 1.0;
     let mut mindrop_sequence_fraction = 1.0;
     let mut minattribute_fraction = 1.0;
-    let _ = merge_fraction;
 
     // only for -K
     let cluster_mingap: u64 = (((1i64 << (32 - z)) / 256 * cluster_distance as i64)
@@ -1304,6 +1305,33 @@ pub fn make_tile(ctx: &Ctx<'_>, rt: &ReadTile, mp: &MakeParams) -> MakeResult {
                         &p.full_keys[j],
                         &p.full_values[j],
                     );
+                }
+            }
+
+            if o.a(A_DETECT_SHARED_BORDERS) {
+                // find_common_edges reads only the type, index and geometry
+                let mut sfs: Vec<Box<SerialFeature>> = features
+                    .iter_mut()
+                    .map(|f| {
+                        Box::new(SerialFeature {
+                            t: f.t,
+                            index: f.index,
+                            geometry: std::mem::take(&mut f.geometry),
+                            renamed: -1,
+                            ..Default::default()
+                        })
+                    })
+                    .collect();
+                find_common_edges(
+                    &mut sfs,
+                    z,
+                    line_detail,
+                    simplification,
+                    maxzoom,
+                    merge_fraction,
+                );
+                for (f, sf) in features.iter_mut().zip(sfs) {
+                    f.geometry = sf.geometry;
                 }
             }
 

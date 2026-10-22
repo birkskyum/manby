@@ -498,3 +498,51 @@ fn first_tile_below_zoom_zero() {
     o.iy = (y >> 24) as u32;
     check(&store, &o);
 }
+
+/// Squares in a grid, so that neighbors share edges.
+fn grid(n: usize, seed: u64, gs: i32, maxzoom: i32) -> FeatureStore {
+    let mut rng = Rng(seed);
+    let mut b = Builder::new(gs);
+    let side = 0.05;
+    for i in 0..n {
+        let col = (i % 60) as f64;
+        let row = (i / 60) as f64;
+        let lon = -100.0 + col * side;
+        let lat = 40.0 - row * side;
+        let corners = [
+            world(lon, lat),
+            world(lon + side, lat),
+            world(lon + side, lat - side),
+            world(lon, lat - side),
+            world(lon, lat),
+        ];
+        let geom: Vec<Draw> = corners
+            .iter()
+            .enumerate()
+            .map(|(k, &(x, y))| Draw::new(if k == 0 { VT_MOVETO } else { VT_LINETO }, x, y))
+            .collect();
+        let v = (rng.next() % 1000).to_string();
+        let mz = minzoom(&mut rng, maxzoom);
+        b.add(
+            "grid",
+            VT_POLYGON,
+            &geom,
+            &[("v", MVT_DOUBLE, &v)],
+            mz,
+            None,
+            1000,
+        );
+    }
+    b.finish()
+}
+
+#[test]
+fn polygons_shared_borders() {
+    let store = grid(1800, 61, 18, 9);
+    let mut o = options(9);
+    flag(&mut o, A_DETECT_SHARED_BORDERS);
+    assert!(check(&store, &o) > 10);
+    flag(&mut o, A_COALESCE_DENSEST_AS_NEEDED);
+    o.max_tile_size = 20000;
+    check(&store, &o);
+}

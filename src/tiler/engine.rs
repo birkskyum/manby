@@ -79,9 +79,6 @@ fn unsupported(o: &TileOptions) -> Option<&'static str> {
     if o.a(A_VARIABLE_DEPTH_PYRAMID) {
         return Some("variable depth pyramids (-at)");
     }
-    if o.a(A_DETECT_SHARED_BORDERS) {
-        return Some("--detect-shared-borders");
-    }
     if o.prefilter.is_some() {
         return Some("--prefilter");
     }

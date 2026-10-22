@@ -187,7 +187,7 @@ impl Default for TileOptions {
             trace: false,
             tmpdir: std::path::PathBuf::from("/tmp"),
             rest_memory: 16 << 20,
-            big_memory: 1 << 30,
+            big_memory: 768 << 20,
             memory_budget: u64::MAX,
             mlt: None,
         }
@@ -250,7 +250,7 @@ impl TileOptions {
             trace: false,
             tmpdir: std::path::PathBuf::from(&o.tmpdir),
             rest_memory: (o.memory_budget() / 64).min(16 << 20) as usize,
-            big_memory: (o.memory_budget() / 4).min(1 << 30) as usize,
+            big_memory: (o.memory_budget() / 4).min(768 << 20) as usize,
             memory_budget: o.memory_budget(),
             mlt: (o.tile_format == crate::mlt::TileFormat::Mlt).then_some(
                 crate::mlt::MltSettings {

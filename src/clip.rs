@@ -19,8 +19,8 @@ use crate::attribute::{AttributeOp, preserve_attribute_mvt};
 use crate::errors::{EXIT_FAILURE, EXIT_IMPOSSIBLE, EXIT_MVT, EXIT_PROTOBUF};
 use crate::evaluator::evaluate_feature;
 use crate::geometry::{
-    ClipBbox, bitfield40, Draw, DrawVec, InputTile, SourceTile, VT_CLOSEPATH, VT_LINE, VT_LINETO, VT_MOVETO,
-    VT_POINT, VT_POLYGON,
+    ClipBbox, Draw, DrawVec, InputTile, SourceTile, VT_CLOSEPATH, VT_LINE, VT_LINETO, VT_MOVETO,
+    VT_POINT, VT_POLYGON, bitfield40,
 };
 use crate::jsonpull::JsonRef;
 use crate::mvt::{
@@ -1590,12 +1590,8 @@ pub fn overzoom(
     for t in tiles {
         let mut tile = MvtTile::default();
 
-        // The C++ catches the exception protozero throws on malformed input
-        let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut was_compressed = false;
-            tile.decode(&t.tile, &mut was_compressed)
-        }));
-        match parsed {
+        let mut was_compressed = false;
+        match tile.try_decode(&t.tile, &mut was_compressed) {
             Ok(true) => {}
             Ok(false) => {
                 eprintln!("Couldn't parse tile {}/{}/{}", t.z, t.x as u32, t.y as u32);
@@ -2518,4 +2514,289 @@ pub fn coalesce_polygon(geom: &mut DrawVec, scale_up: bool) {
 
     // Can't find a breakpoint; take what we can get.
     *geom = clean_or_clip_poly(geom, 0, 0, false, scale_up);
+}
+
+// The expected values in these tests come from the C++ functions, built with
+// -ffp-contract=off and run on the same input.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::test_util::{dv, show};
+
+    // unit.cpp: TEST_CASE("line_is_too_small")
+    #[test]
+    #[allow(clippy::vec_init_then_push)]
+    fn line_is_too_small_across_the_antimeridian() {
+        let mut dv = DrawVec::new();
+        dv.push(Draw::new(VT_MOVETO, 4243099709, 2683872952));
+        dv.push(Draw::new(VT_LINETO, 4243102487, 2683873977));
+        dv.push(Draw::new(VT_MOVETO, -51867587, 2683872952));
+        dv.push(Draw::new(VT_LINETO, -51864809, 2683873977));
+        assert!(line_is_too_small(&dv, 0, 10));
+    }
+
+    // unit.cpp: TEST_CASE("Polygon cleaning drops a hole that no ring can parent", "[wagyu]")
+    #[test]
+    fn polygon_cleaning_drops_a_hole_that_no_ring_can_parent() {
+        // Two mutually reversed self-intersecting rings whose union leaves a hole
+        // that wagyu's topology correction cannot assign to any surviving parent
+        // ring (found by fuzzing; same failure as mapbox/tippecanoe#761). Without
+        // the fix in mapbox/geometry/wagyu/topology_correction.hpp, this exits
+        // through the "Could not properly place hole to a parent." handler in
+        // clean_or_clip_poly instead of returning.
+        let rings: [&[(i64, i64)]; 2] = [
+            &[(0, 5), (5, 4), (5, 1), (4, 4), (4, 2), (7, 1), (0, 5)],
+            &[
+                (0, 5),
+                (7, 1),
+                (4, 2),
+                (4, 4),
+                (5, 1),
+                (5, 4),
+                (0, 0),
+                (0, 5),
+            ],
+        ];
+
+        let mut geom = DrawVec::new();
+        for ring in rings {
+            for (i, p) in ring.iter().enumerate() {
+                geom.push(Draw::new(
+                    if i == 0 { VT_MOVETO } else { VT_LINETO },
+                    p.0,
+                    p.1,
+                ));
+            }
+        }
+
+        let out = clean_or_clip_poly(&mut geom, 0, 0, false, false);
+
+        // The regression signal is getting here at all: without the fix,
+        // clean_or_clip_poly exits the process from its wagyu error handler.
+
+        // Anything that survives must be sanely wound: first ring positive.
+        if !out.is_empty() {
+            let mut j = 1;
+            while j < out.len() && out[j].op == VT_LINETO {
+                j += 1;
+            }
+            assert!(get_area(&out, 0, j) > 0.0);
+        }
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn clean_or_clip_poly_unions_and_clips() {
+        let mut g = dv(
+            "1 0 0 2 1000 1000 2 1000 0 2 0 1000 2 0 0 1 -100000 2000 2 20000 2000 2 20000 30000 2 -100000 30000 2 -100000 2000",
+        );
+        let out = clean_or_clip_poly(&mut g, 10, 5, true, true);
+        assert_eq!(
+            show(&out),
+            "1 20000 2000 0 2 20000 30000 0 2 -81920 30000 0 2 -100000 30000 0 2 -100000 2000 0 2 -81920 2000 0 2 20000 2000 0 1 0 0 0 2 500 500 0 2 0 1000 0 2 0 0 0"
+        );
+    }
+
+    #[test]
+    fn fix_polygon_rewinds_and_rotates() {
+        let g = dv("1 0 0 2 0 100 2 100 100 2 100 0 2 0 0 1 20 20 2 80 20 2 80 80 2 20 80 2 20 20");
+        assert_eq!(
+            show(&fix_polygon(&g, false, false)),
+            "1 100 100 0 2 0 100 0 2 0 0 0 2 100 0 0 2 100 100 0 1 80 80 0 2 80 20 0 2 20 20 0 2 20 80 0 2 80 80 0"
+        );
+    }
+
+    #[test]
+    fn reduce_tiny_poly_accumulates_small_rings() {
+        let g = dv(
+            "1 0 0 2 1000 0 2 1000 1000 2 0 1000 2 0 0 1 5000 0 2 9000 0 2 9000 4000 2 5000 4000 2 5000 0 1 10000 0 2 13000 0 2 13000 1500 2 10000 1500 2 10000 0",
+        );
+        let mut still = false;
+        let mut reduced = false;
+        let mut accum = 0.0;
+        let out = reduce_tiny_poly(&g, 10, 12, &mut still, &mut reduced, &mut accum, 2.0);
+        assert_eq!(
+            show(&out),
+            "1 5000 0 0 2 9000 0 0 2 9000 4000 0 2 5000 4000 0 2 5000 0 0 1 10000 0 0 2 13000 0 0 2 13000 1500 0 2 10000 1500 0 2 10000 0 0"
+        );
+        assert!(still);
+        assert!(reduced);
+        assert_eq!(accum.to_bits(), 0x412e848000000000);
+    }
+
+    #[test]
+    fn simple_clip_poly_records_edge_nodes() {
+        let mut g =
+            dv("1 -100000 1000 2 2000000 1000 2 2000000 5000000 2 -100000 5000000 2 -100000 1000");
+        let mut edge = DrawVec::new();
+        let out = simple_clip_poly(&mut g, 10, 5, &mut edge, true);
+        assert_eq!(
+            show(&out),
+            "1 -81920 1000 0 2 0 1000 0 2 2000000 1000 0 2 2000000 4194304 0 2 2000000 4276224 0 2 0 4276224 0 2 -81920 4276224 0 2 -81920 1000 0"
+        );
+        assert_eq!(
+            show(&edge),
+            "1 2000000 4194304 0 1 -100000 4194304 0 1 0 1000 0 1 0 4276224 0"
+        );
+    }
+
+    #[test]
+    fn clip_lines_to_the_buffer() {
+        let mut g = dv("1 -100000 1000 2 2000000 1000 2 2000000 5000000 2 3000 5000");
+        assert_eq!(
+            show(&clip_lines(&mut g, 10, 5)),
+            "1 -100000 1000 0 1 -81920 1000 0 2 2000000 1000 0 1 2000000 1000 0 1 2000000 1000 0 2 2000000 4276224 0 1 2000000 5000000 0 1 1710635 4276224 0 2 3000 5000 0 1 3000 5000 0"
+        );
+    }
+
+    #[test]
+    fn clip_to_a_polygon() {
+        let square = dv("1 0 0 2 100 0 2 100 100 2 0 100 2 0 0");
+        let triangle = dv("1 50 50 2 150 50 2 50 150 2 50 50");
+        assert_eq!(
+            show(&clip_poly_poly(&square, &triangle)),
+            "1 100 100 0 2 50 100 0 2 50 50 0 2 100 50 0 2 100 100 0"
+        );
+        let line = dv("1 -50 50 2 150 50 2 150 80");
+        assert_eq!(
+            show(&clip_lines_poly(&line, &square)),
+            "1 0 50 0 2 100 50 0"
+        );
+        let points = dv("1 50 50 1 150 50 1 100 20");
+        assert_eq!(show(&clip_point_poly(&points, &square)), "1 50 50 0");
+    }
+
+    #[test]
+    fn pnpoly_mp_respects_holes() {
+        let g = dv("1 0 0 2 100 0 2 100 100 2 0 100 2 0 0 1 20 20 2 20 80 2 80 80 2 80 20 2 20 20");
+        assert!(!pnpoly_mp(&g, 50, 50));
+        assert!(pnpoly_mp(&g, 10, 50));
+    }
+
+    fn fixture(name: &str) -> Vec<u8> {
+        std::fs::read(format!("{}/tests/pbf/{}", env!("CARGO_MANIFEST_DIR"), name)).unwrap()
+    }
+
+    fn fnv1a(b: &[u8]) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for &c in b {
+            h ^= c as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+
+    /// Runs overzoom the way tippecanoe-overzoom does, without compression.
+    #[allow(clippy::too_many_arguments)]
+    fn overzoom_like_the_tool(
+        input: &str,
+        z: i32,
+        x: i32,
+        y: i32,
+        nz: i32,
+        nx: i32,
+        ny: i32,
+        buffer: i32,
+        keep: &[&str],
+        demultiply: bool,
+        attribute_accum: &HashMap<String, AttributeOp>,
+        simplification: f64,
+        tiny_polygon_size: f64,
+    ) -> Vec<u8> {
+        let tiles = vec![InputTile {
+            tile: fixture(input),
+            z,
+            x,
+            y,
+        }];
+        let keep: BTreeSet<String> = keep.iter().map(|s| s.to_string()).collect();
+        overzoom(
+            &tiles,
+            nz,
+            nx,
+            ny,
+            12,
+            buffer,
+            &keep,
+            &BTreeSet::new(),
+            &[],
+            false,
+            None,
+            demultiply,
+            None,
+            false,
+            attribute_accum,
+            &[],
+            simplification,
+            tiny_polygon_size,
+            &[],
+            "",
+            "",
+            usize::MAX,
+            &[],
+            false,
+        )
+    }
+
+    #[test]
+    fn overzoom_to_a_child_tile() {
+        let out = overzoom_like_the_tool(
+            "11-327-791.pbf",
+            11,
+            327,
+            791,
+            13,
+            1310,
+            3166,
+            5,
+            &[],
+            false,
+            &HashMap::new(),
+            0.0,
+            0.0,
+        );
+        assert_eq!((out.len(), fnv1a(&out)), (2813, 0xc28c80346ddf0882));
+    }
+
+    #[test]
+    fn overzoom_with_multiplier_and_accumulation() {
+        let mut accum = HashMap::new();
+        accum.insert("NAME".to_string(), AttributeOp::Comma);
+        let out = overzoom_like_the_tool(
+            "0-0-0-pop.pbf",
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            5,
+            &["NAME"],
+            true,
+            &accum,
+            0.0,
+            0.0,
+        );
+        assert_eq!((out.len(), fnv1a(&out)), (2332, 0x0fd527e1fe51bf25));
+    }
+
+    #[test]
+    fn overzoom_with_simplification_and_tiny_polygons() {
+        let out = overzoom_like_the_tool(
+            "countries-0-0-0.pbf",
+            0,
+            0,
+            0,
+            1,
+            1,
+            0,
+            5,
+            &[],
+            false,
+            &HashMap::new(),
+            5.0,
+            50.0,
+        );
+        assert_eq!((out.len(), fnv1a(&out)), (7543, 0x9fa4b611ae5af88c));
+    }
 }

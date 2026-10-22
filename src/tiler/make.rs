@@ -910,8 +910,10 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
             ..Default::default()
         };
 
+        let mut scratch = DrawVec::new();
         for (seq, c) in rt.cands.iter().enumerate() {
             let f = &store.features[c.fi as usize];
+            let cg: &[tippecanoe::geometry::Draw] = rt.cand_geom(c, &mut scratch);
             let mut t = f.t;
             let mut extent = f.extent;
             let mut dropped = c.dropped;
@@ -936,14 +938,14 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
             }
 
             if t as i32 == VT_POLYGON && o.a(A_GENERATE_POLYGON_LABEL_POINTS) {
-                if line_is_too_small(rt.cand_geom(c), z, line_detail) {
+                if line_is_too_small(cg, z, line_detail) {
                     continue;
                 }
-                if get_mp_area(rt.cand_geom(c)) <= 0.0 {
+                if get_mp_area(cg) <= 0.0 {
                     continue;
                 }
 
-                let mut g: DrawVec = rt.cand_geom(c).to_vec();
+                let mut g: DrawVec = cg.to_vec();
                 let ngeom = simplify_lines(
                     &mut g,
                     z,
@@ -997,7 +999,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                 () => {
                     match &geom {
                         Some(g) => g.as_slice(),
-                        None => rt.cand_geom(c),
+                        None => cg,
                     }
                 };
             }
@@ -1322,7 +1324,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                         t,
                         geometry: match geom.take() {
                             Some(g) => g,
-                            None => rt.cand_geom(c).to_vec(),
+                            None => cg.to_vec(),
                         },
                         attrs: None,
                         full_keys: full.0,

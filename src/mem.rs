@@ -35,6 +35,27 @@ pub fn resident() -> Option<u64> {
     }
 }
 
+/// Lets the pages of part of a file mapping go: they are read from the file
+/// again if they are needed, but no longer count as the process's memory.
+pub fn release_mapped(part: &[u8]) {
+    // SAFETY: sysconf has no preconditions.
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+    let start = (part.as_ptr() as usize).next_multiple_of(page);
+    let end = (part.as_ptr() as usize + part.len()) / page * page;
+    if end <= start {
+        return;
+    }
+    let (addr, len) = (start as *mut libc::c_void, end - start);
+    // SAFETY: the range lies inside a read-only mapping of a file, whose
+    // contents these calls leave as they are.
+    unsafe {
+        #[cfg(target_os = "macos")]
+        libc::msync(addr, len, libc::MS_INVALIDATE);
+        #[cfg(not(target_os = "macos"))]
+        libc::madvise(addr, len, libc::MADV_DONTNEED);
+    }
+}
+
 /// The peak resident set size of the process in bytes.
 pub fn peak_resident() -> Option<u64> {
     // SAFETY: rusage is plain data that getrusage fills in.

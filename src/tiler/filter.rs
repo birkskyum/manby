@@ -16,7 +16,7 @@ use tippecanoe::serial::KeyPool;
 use tippecanoe::write_json::{JsonWriter, layer_to_geojson};
 
 use super::engine::Ctx;
-use super::read::{Cand, NO_LIST, ReadTile};
+use super::read::{Cand, Geoms, NO_LIST, ReadTile};
 use super::util::Chunked;
 use crate::store::{Feature, FeatureStore, Layer};
 
@@ -98,7 +98,7 @@ pub fn prefilter_tile(
             x: tx,
             y: ty,
             cands: Chunked::default(),
-            geom: Chunked::default(),
+            geom: Geoms::default(),
             edges: Chunked::default(),
             attr_lists: Chunked::default(),
             full: Vec::new(),
@@ -149,7 +149,7 @@ pub fn prefilter_tile(
 
         let geom_start = out.rt.geom.len() as u32;
         let geom_len = sf.geometry.len() as u32;
-        out.rt.geom.append(sf.geometry);
+        out.rt.geom.push(sf.geometry);
         out.rt.cands.push(Cand {
             fi,
             dropped: sf.dropped,
@@ -173,6 +173,7 @@ fn write_candidates(ctx: &Ctx<'_>, rt: &ReadTile, write_to: i32) {
     let mut fp = PipeWriter::fdopen(write_to);
     {
         let mut state = JsonWriter::new_file(&mut fp);
+        let mut scratch = DrawVec::new();
         for c in rt.cands.iter() {
             let f = &store.features[c.fi as usize];
             let mut tmp_layer = MvtLayer {
@@ -181,7 +182,7 @@ fn write_candidates(ctx: &Ctx<'_>, rt: &ReadTile, write_to: i32) {
                 ..Default::default()
             };
 
-            let mut geometry: DrawVec = rt.cand_geom(c).to_vec();
+            let mut geometry: DrawVec = rt.cand_geom(c, &mut scratch).to_vec();
             if f.t as i32 == VT_POLYGON {
                 geometry = close_poly(&mut geometry);
             }

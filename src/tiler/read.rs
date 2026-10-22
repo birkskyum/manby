@@ -396,7 +396,7 @@ pub struct ReadTile {
     pub x: u32,
     pub y: u32,
     pub cands: Chunked<Cand>,
-    pub geom: Chunked<Draw>,
+    pub geom: Geoms,
     pub edges: Chunked<Draw>,
     pub attr_lists: Chunked<Vec<Attr>>,
     pub full: Vec<(Vec<Arc<String>>, Vec<SerialVal>)>,
@@ -411,12 +411,135 @@ pub struct ReadTile {
 }
 
 impl ReadTile {
-    pub fn cand_geom(&self, c: &Cand) -> &[Draw] {
-        self.geom.slice(c.geom_start as usize, c.geom_len as usize)
+    /// The candidate's geometry, which may be decoded into `scratch`.
+    pub fn cand_geom<'a>(&'a self, c: &Cand, scratch: &'a mut DrawVec) -> &'a [Draw] {
+        self.geom
+            .get(c.geom_start as usize, c.geom_len as usize, scratch)
     }
 
     pub fn cand_edges(&self, c: &Cand) -> &[Draw] {
         self.edges.slice(c.edge_start as usize, c.edge_len as usize)
+    }
+}
+
+/// A coordinate pair and op in 12 bytes, the coordinates divided by
+/// `2^shift` of their part.
+#[derive(Clone, Copy, Debug)]
+pub struct Vtx {
+    x: i32,
+    y: i32,
+    op: i8,
+}
+
+/// Geometry that one read chunk wrote, kept in 12 bytes a vertex while the
+/// coordinates allow it, which they do except at the lowest zooms for
+/// geometry that the clipping cut at the edges.
+pub enum GeomPart {
+    Compact { shift: u32, v: Vec<Vtx> },
+    Wide(Vec<Draw>),
+}
+
+impl GeomPart {
+    fn new(z: i32, geometry_scale: i32) -> GeomPart {
+        // tile coordinates from zoom 2 on fit in 32 bits as they are
+        let shift = if z < 2 {
+            geometry_scale.max(0) as u32
+        } else {
+            0
+        };
+        GeomPart::Compact {
+            shift,
+            v: Vec::new(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            GeomPart::Compact { v, .. } => v.len(),
+            GeomPart::Wide(v) => v.len(),
+        }
+    }
+
+    fn reserve(&mut self, n: usize) {
+        match self {
+            GeomPart::Compact { v, .. } => v.reserve(n),
+            GeomPart::Wide(v) => v.reserve(n),
+        }
+    }
+
+    fn extend(&mut self, g: &[Draw]) {
+        if let GeomPart::Compact { shift, v } = self {
+            let shift = *shift;
+            let mask = (1i64 << shift) - 1;
+            let fits = |c: i64| c & mask == 0 && i32::try_from(c >> shift).is_ok();
+            if g.iter().all(|d| fits(d.x) && fits(d.y)) {
+                v.extend(g.iter().map(|d| Vtx {
+                    x: (d.x >> shift) as i32,
+                    y: (d.y >> shift) as i32,
+                    op: d.op,
+                }));
+                return;
+            }
+            let wide: Vec<Draw> = v
+                .iter()
+                .map(|p| Draw::new(p.op, (p.x as i64) << shift, (p.y as i64) << shift))
+                .collect();
+            *self = GeomPart::Wide(wide);
+        }
+        if let GeomPart::Wide(v) = self {
+            v.extend_from_slice(g);
+        }
+    }
+}
+
+/// The geometry of a read tile's candidates, as the read chunks wrote it.
+#[derive(Default)]
+pub struct Geoms {
+    parts: Vec<GeomPart>,
+    ends: Vec<usize>,
+}
+
+impl Geoms {
+    pub fn len(&self) -> usize {
+        self.ends.last().copied().unwrap_or(0)
+    }
+
+    pub fn append(&mut self, part: GeomPart) {
+        if part.len() == 0 {
+            return;
+        }
+        self.ends.push(self.len() + part.len());
+        self.parts.push(part);
+    }
+
+    /// Appends one candidate's geometry, as the prefilter's are.
+    pub fn push(&mut self, g: Vec<Draw>) {
+        self.append(GeomPart::Wide(g));
+    }
+
+    /// `len` vertices from `start`, which lie in one part.
+    pub fn get<'a>(&'a self, start: usize, len: usize, scratch: &'a mut DrawVec) -> &'a [Draw] {
+        if len == 0 {
+            return &[];
+        }
+        let p = if self.parts.len() == 1 {
+            0
+        } else {
+            self.ends.partition_point(|&e| e <= start)
+        };
+        let off = start - if p == 0 { 0 } else { self.ends[p - 1] };
+        match &self.parts[p] {
+            GeomPart::Wide(v) => &v[off..off + len],
+            GeomPart::Compact { shift, v } => {
+                scratch.clear();
+                scratch.extend(
+                    v[off..off + len]
+                        .iter()
+                        .map(|p| Draw::new(p.op, (p.x as i64) << shift, (p.y as i64) << shift)),
+                );
+                scratch
+            }
+        }
     }
 }
 
@@ -446,7 +569,7 @@ struct ChildPart {
 
 struct ChunkOut {
     cands: Vec<Cand>,
-    geom: Vec<Draw>,
+    geom: GeomPart,
     edges: Vec<Draw>,
     attr_lists: Vec<Vec<Attr>>,
     children: Vec<ChildPart>,
@@ -494,7 +617,7 @@ pub fn read_tile(
         x: input.x,
         y: input.y,
         cands: Chunked::default(),
-        geom: Chunked::default(),
+        geom: Geoms::default(),
         edges: Chunked::default(),
         attr_lists: Chunked::default(),
         full: Vec::new(),
@@ -772,7 +895,7 @@ fn read_chunk(ctx: &Ctx<'_>, input: &TileInput, source: Source<'_>, rp: &ReadPar
 
     let mut out = ChunkOut {
         cands: Vec::new(),
-        geom: Vec::new(),
+        geom: GeomPart::new(z, ctx.o.geometry_scale),
         edges: Vec::new(),
         attr_lists: Vec::new(),
         children: Vec::new(),
@@ -939,7 +1062,7 @@ fn read_chunk(ctx: &Ctx<'_>, input: &TileInput, source: Source<'_>, rp: &ReadPar
         }
 
         let geom_start = out.geom.len() as u32;
-        out.geom.extend_from_slice(&geometry);
+        out.geom.extend(&geometry);
         let edge_start = out.edges.len() as u32;
         out.edges.extend_from_slice(&edge_nodes);
 

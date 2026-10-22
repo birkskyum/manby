@@ -362,14 +362,24 @@ impl Cursor<'_> {
     }
 }
 
-/// A feature that survived reading: a candidate for the tile, in 24 bytes.
+/// A feature that survived reading: a candidate for the tile, in 16 bytes.
 #[derive(Clone, Copy, Debug)]
 pub struct Cand {
     pub fi: u32,
     pub dropped: i32,
-    pub gap: u64,
     pub geom_start: u32,
     pub geom_len: u32,
+}
+
+/// Whether making a tile at zoom `z` looks at the candidates' gaps: only
+/// the densest-as-needed options do, and clustering only where it does not
+/// cluster by distance.
+pub fn needs_gaps(o: &super::TileOptions, z: i32) -> bool {
+    let by_distance = z <= o.cluster_maxzoom && o.cluster_distance != 0;
+    !by_distance
+        && (o.a(A_DROP_DENSEST_AS_NEEDED)
+            || o.a(A_COALESCE_DENSEST_AS_NEEDED)
+            || o.a(A_CLUSTER_DENSEST_AS_NEEDED))
 }
 
 /// What some options add to a candidate.
@@ -402,6 +412,8 @@ pub struct ReadTile {
     pub x: u32,
     pub y: u32,
     pub cands: Chunked<Cand>,
+    /// For each candidate, its gap, if `needs_gaps`.
+    pub gaps: Chunked<u64>,
     /// For each candidate, if an option needs them: its shared edge nodes,
     /// filtered attributes, or prefilter keys and values.
     pub extras: Chunked<CandExtra>,
@@ -420,6 +432,11 @@ pub struct ReadTile {
 }
 
 impl ReadTile {
+    /// Candidate `i`'s gap, when `needs_gaps` for the tile.
+    pub fn gap(&self, i: usize) -> u64 {
+        self.gaps[i]
+    }
+
     /// The candidate's geometry, which may be decoded into `scratch`.
     pub fn cand_geom<'a>(&'a self, c: &Cand, scratch: &'a mut DrawVec) -> &'a [Draw] {
         self.geom
@@ -622,6 +639,7 @@ struct ChildPart {
 
 struct ChunkOut {
     cands: Buf<Cand>,
+    gaps: Buf<u64>,
     extras: Buf<CandExtra>,
     geom: GeomPart,
     edges: Buf<Draw>,
@@ -679,6 +697,7 @@ pub fn read_tile(
         x: input.x,
         y: input.y,
         cands: Chunked::default(),
+        gaps: Chunked::default(),
         extras: Chunked::default(),
         geom: Geoms::default(),
         edges: Chunked::default(),
@@ -696,6 +715,7 @@ pub fn read_tile(
     if chunks.len() == 1 {
         let c = chunks.into_iter().next().unwrap();
         out.cands.append(c.cands);
+        out.gaps.append(c.gaps);
         out.extras.append(c.extras);
         out.geom.append(c.geom);
         out.edges.append(c.edges);
@@ -728,6 +748,7 @@ pub fn read_tile(
                 }
             }
             out.cands.append(c.cands);
+            out.gaps.append(c.gaps);
             out.extras.append(c.extras);
             out.geom.append(c.geom);
             out.edges.append(c.edges);
@@ -963,8 +984,10 @@ fn read_chunk(ctx: &Ctx<'_>, input: &TileInput, source: Source<'_>, rp: &ReadPar
 
     // shared nodes and attribute filters need more about each candidate
     let extras = o.p(P_SIMPLIFY_SHARED_NODES) || ctx.filter.is_some();
+    let gaps = needs_gaps(o, z);
     let mut out = ChunkOut {
         cands: Buf::new(),
+        gaps: Buf::new(),
         extras: Buf::new(),
         geom: GeomPart::new(),
         edges: Buf::new(),
@@ -983,6 +1006,9 @@ fn read_chunk(ctx: &Ctx<'_>, input: &TileInput, source: Source<'_>, rp: &ReadPar
         }),
     };
     out.cands.reserve(features);
+    if gaps {
+        out.gaps.reserve(features);
+    }
     out.geom.reserve(vertices);
 
     let (mut root, mut cursor) = match source {
@@ -1132,10 +1158,12 @@ fn read_chunk(ctx: &Ctx<'_>, input: &TileInput, source: Source<'_>, rp: &ReadPar
         out.cands.push(Cand {
             fi,
             dropped: FEATURE_DROPPED,
-            gap,
             geom_start,
             geom_len: geometry.len() as u32,
         });
+        if gaps {
+            out.gaps.push(gap);
+        }
         if extras {
             out.extras.push(CandExtra {
                 edge_start,

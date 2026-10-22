@@ -16,7 +16,7 @@ use tippecanoe::serial::KeyPool;
 use tippecanoe::write_json::{JsonWriter, layer_to_geojson};
 
 use super::engine::Ctx;
-use super::read::{Cand, CandExtra, Geoms, NO_LIST, ReadTile};
+use super::read::{Cand, CandExtra, Geoms, NO_LIST, ReadTile, needs_gaps};
 use crate::store::Chunked;
 use crate::store::{Feature, FeatureStore, Layer};
 
@@ -98,6 +98,7 @@ pub fn prefilter_tile(
             x: tx,
             y: ty,
             cands: Chunked::default(),
+            gaps: Chunked::default(),
             extras: Chunked::default(),
             geom: Geoms::default(),
             edges: Chunked::default(),
@@ -154,10 +155,12 @@ pub fn prefilter_tile(
         out.rt.cands.push(Cand {
             fi,
             dropped: sf.dropped,
-            gap: sf.gap,
             geom_start,
             geom_len,
         });
+        if needs_gaps(ctx.o, z) {
+            out.rt.gaps.push(sf.gap);
+        }
         out.rt.extras.push(CandExtra {
             edge_start: 0,
             edge_len: 0,

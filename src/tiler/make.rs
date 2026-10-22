@@ -1168,13 +1168,15 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                         continue;
                     }
                 } else if o.a(A_DROP_DENSEST_AS_NEEDED) {
-                    add_sample_to(&mut gaps, c.gap, &mut gaps_increment, seq);
-                    if c.gap < mingap && drop_unless_multiplier!() {
+                    let gap = rt.gap(seq);
+                    add_sample_to(&mut gaps, gap, &mut gaps_increment, seq);
+                    if gap < mingap && drop_unless_multiplier!() {
                         continue;
                     }
                 } else if z <= cluster_maxzoom && o.a(A_CLUSTER_DENSEST_AS_NEEDED) {
-                    add_sample_to(&mut gaps, c.gap, &mut gaps_increment, seq);
-                    if c.gap < mingap
+                    let gap = rt.gap(seq);
+                    add_sample_to(&mut gaps, gap, &mut gaps_increment, seq);
+                    if gap < mingap
                         && let Some(w) =
                             find_feature_to_accumulate_onto(&layer.features, t, i64::MAX)
                     {
@@ -1182,8 +1184,9 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                         continue;
                     }
                 } else if o.a(A_COALESCE_DENSEST_AS_NEEDED) {
-                    add_sample_to(&mut gaps, c.gap, &mut gaps_increment, seq);
-                    if c.gap < mingap
+                    let gap = rt.gap(seq);
+                    add_sample_to(&mut gaps, gap, &mut gaps_increment, seq);
+                    if gap < mingap
                         && let Some(w) =
                             find_feature_to_accumulate_onto(&layer.features, t, i64::MAX)
                     {
@@ -2354,12 +2357,12 @@ fn reuse_bounds(ctx: &Ctx<'_>, rt: &ReadTile, res: &mut MakeResult) {
     let sequences =
         o.a(A_COALESCE_FRACTION_AS_NEEDED) || o.a(A_DROP_FRACTION_AS_NEEDED) || o.p(P_DYNAMIC_DROP);
     let store = ctx.store;
-    for c in rt.cands.iter() {
+    for (i, c) in rt.cands.iter().enumerate() {
         if c.dropped != FEATURE_KEPT {
             continue;
         }
-        if c.gap >= old.mingap {
-            res.reuse_gap = res.reuse_gap.min(c.gap);
+        if !rt.gaps.is_empty() && rt.gap(i) >= old.mingap {
+            res.reuse_gap = res.reuse_gap.min(rt.gap(i));
         }
         if sequences {
             let f = &store.features[c.fi as usize];

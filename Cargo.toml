@@ -17,6 +17,9 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 tippecanoe = { version = "2.82.0", path = "../tippecanoe-rs" }
 xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
 
+[dev-dependencies]
+libz-sys = "1.1"
+
 [features]
 # MapLibre Tile output (`--tile-format=mlt`). mlt-core needs Rust 1.98:
 # cargo +1.98.1 build --release --features mlt

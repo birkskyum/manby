@@ -1,6 +1,7 @@
-//! Tile compression. The default mode uses the system zlib with tippecanoe's
-//! settings, because the tile size limit is checked on the compressed size.
-//! Fast mode uses libdeflate.
+//! Tile compression: the system zlib with tippecanoe's settings, where the
+//! tile size limit needs the size zlib makes, and libdeflate at its default
+//! level 6 otherwise, which is smaller than zlib -6 on tiles and 2 to 4 times
+//! faster.
 //!
 //! The default output is byte for byte what tippecanoe-rs's `mvt::compress`
 //! makes: gzip framing, level 6, a 15-bit window, memLevel 8 and the default
@@ -27,10 +28,11 @@ impl Gzip {
         Gzip::default()
     }
 
-    /// Compresses `data` into `out`, replacing what `out` held.
-    pub fn compress_into(&mut self, data: &[u8], fast: bool, out: &mut Vec<u8>) {
+    /// Compresses `data` into `out` with libdeflate or zlib, replacing what
+    /// `out` held.
+    pub fn compress_into(&mut self, data: &[u8], libdeflate: bool, out: &mut Vec<u8>) {
         out.clear();
-        if fast {
+        if libdeflate {
             let c = self
                 .libdeflate
                 .get_or_insert_with(|| libdeflater::Compressor::new(CompressionLvl::default()));
@@ -61,9 +63,9 @@ impl Gzip {
     }
 
     /// Returns `data` compressed.
-    pub fn compress(&mut self, data: &[u8], fast: bool) -> Vec<u8> {
+    pub fn compress(&mut self, data: &[u8], libdeflate: bool) -> Vec<u8> {
         let mut out = Vec::new();
-        self.compress_into(data, fast, &mut out);
+        self.compress_into(data, libdeflate, &mut out);
         out
     }
 }
@@ -74,8 +76,16 @@ thread_local! {
 }
 
 /// Gzip-compresses a tile, reusing a compressor kept per thread.
-pub fn gzip(data: &[u8], fast: bool) -> Vec<u8> {
-    GZIP.with(|g| g.borrow_mut().compress(data, fast))
+pub fn gzip(data: &[u8], libdeflate: bool) -> Vec<u8> {
+    GZIP.with(|g| g.borrow_mut().compress(data, libdeflate))
+}
+
+/// The most bytes zlib makes from `n` bytes at tippecanoe's settings:
+/// zlib's `deflateBound()` for a gzip stream with the default window and
+/// memLevel, which is the same in zlib 1.2.12 and 1.3. Whatever the content,
+/// a tile of `n` bytes compresses to at most this many.
+pub fn zlib_bound(n: usize) -> usize {
+    n + (n >> 12) + (n >> 14) + (n >> 25) + 13 - 6 + 18
 }
 
 #[cfg(test)]
@@ -121,7 +131,7 @@ mod tests {
     }
 
     #[test]
-    fn fast_mode_round_trips() {
+    fn libdeflate_round_trips() {
         let mut g = Gzip::new();
         for data in samples() {
             let z = g.compress(&data, true);
@@ -130,6 +140,77 @@ mod tests {
                 .read_to_end(&mut back)
                 .unwrap();
             assert_eq!(back, data);
+        }
+    }
+
+    unsafe extern "C" fn zalloc(
+        _: *mut std::ffi::c_void,
+        items: u32,
+        size: u32,
+    ) -> *mut std::ffi::c_void {
+        // SAFETY: calloc has no preconditions.
+        unsafe { libc::calloc(items as usize, size as usize) }
+    }
+
+    unsafe extern "C" fn zfree(_: *mut std::ffi::c_void, p: *mut std::ffi::c_void) {
+        // SAFETY: zlib frees only what zalloc returned.
+        unsafe { libc::free(p) }
+    }
+
+    #[test]
+    fn bound_is_zlibs_own() {
+        // SAFETY: the stream is set up by deflateInit2_ before deflateBound
+        // reads it, and ended once.
+        unsafe {
+            let mut strm = libz_sys::z_stream {
+                next_in: std::ptr::null_mut(),
+                avail_in: 0,
+                total_in: 0,
+                next_out: std::ptr::null_mut(),
+                avail_out: 0,
+                total_out: 0,
+                msg: std::ptr::null_mut(),
+                state: std::ptr::null_mut(),
+                zalloc,
+                zfree,
+                opaque: std::ptr::null_mut(),
+                data_type: 0,
+                adler: 0,
+                reserved: 0,
+            };
+            let version = libz_sys::zlibVersion();
+            assert_eq!(
+                libz_sys::deflateInit2_(
+                    &mut strm,
+                    6,
+                    libz_sys::Z_DEFLATED,
+                    31,
+                    8,
+                    libz_sys::Z_DEFAULT_STRATEGY,
+                    version,
+                    std::mem::size_of::<libz_sys::z_stream>() as i32,
+                ),
+                libz_sys::Z_OK
+            );
+            let mut n = 0usize;
+            while n < 100_000_000 {
+                assert_eq!(
+                    libz_sys::deflateBound(&mut strm, n as libz_sys::uLong) as usize,
+                    zlib_bound(n),
+                    "{} bytes",
+                    n
+                );
+                n = n * 3 / 2 + 1;
+            }
+            libz_sys::deflateEnd(&mut strm);
+        }
+    }
+
+    #[test]
+    fn compresses_within_the_bound() {
+        let mut g = Gzip::new();
+        for data in samples() {
+            assert!(g.compress(&data, false).len() <= zlib_bound(data.len()));
         }
     }
 }

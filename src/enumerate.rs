@@ -10,13 +10,10 @@ use crate::getopt::{Getopt, LongOption};
 use crate::usage::{getopt_string, print_usage};
 
 fn enumerate(fname: &str, out: &mut dyn Write) {
-    let db = match Connection::open_with_flags(
-        fname,
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
-    ) {
+    let db = match sqlite3_open(fname) {
         Ok(db) => db,
-        Err(e) => {
-            eprintln!("{}: {}", fname, e);
+        Err(msg) => {
+            eprintln!("{}: {}", fname, msg);
             std::process::exit(EXIT_OPEN);
         }
     };
@@ -105,6 +102,29 @@ fn restore_sigpipe() {
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
+}
+
+/// `sqlite3_open(fname, &db)`. On failure, returns `sqlite3_errmsg(db)`, without
+/// the file name that rusqlite adds to the message when the file can't be opened.
+fn sqlite3_open(fname: &str) -> Result<Connection, String> {
+    Connection::open_with_flags(
+        fname,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
+    )
+    .map_err(|e| {
+        let msg = e.to_string();
+        match e {
+            rusqlite::Error::SqliteFailure(err, Some(_))
+                if err.code == rusqlite::ErrorCode::CannotOpen =>
+            {
+                match msg.strip_suffix(&format!(": {}", fname)) {
+                    Some(m) => m.to_string(),
+                    None => msg,
+                }
+            }
+            _ => msg,
+        }
+    })
 }
 
 /// A prepared statement used through the SQLite C API, as the C++ does, so that

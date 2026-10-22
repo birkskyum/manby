@@ -1,19 +1,17 @@
 //! Port of decode.cpp, the `tippecanoe-decode` program.
 
-use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::ffi::{CStr, c_char};
 use std::fs::File;
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
-use std::panic::AssertUnwindSafe;
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-use std::sync::{Once, RwLock};
 
 use memmap2::Mmap;
 use rusqlite::{Connection, OpenFlags, ffi};
 
-use crate::cstd::{atoi, strerror};
+use crate::cstd::{atoi, perror_io, strerror};
 use crate::dirtiles::{dirmeta2tmp, enumerate_dirtiles};
 use crate::errors::{
     EXIT_ARGS, EXIT_CLOSE, EXIT_IMPOSSIBLE, EXIT_MEMORY, EXIT_MVT, EXIT_OPEN, EXIT_PROTOBUF,
@@ -116,13 +114,13 @@ fn handle(
     let mut tile = MvtTile::default();
     let mut was_compressed = false;
 
-    match try_decode(&mut tile, message, &mut was_compressed) {
-        Some(true) => {}
-        Some(false) => {
+    match tile.try_decode(message, &mut was_compressed) {
+        Ok(true) => {}
+        Ok(false) => {
             eprintln!("Couldn't parse tile {}/{}/{}", z, x, y);
             std::process::exit(EXIT_MVT);
         }
-        None => {
+        Err(_) => {
             eprintln!("PBF decoding error in tile {}/{}/{}", z, x, y);
             std::process::exit(EXIT_PROTOBUF);
         }
@@ -332,12 +330,12 @@ fn decode(
                         }
                     }
                 }
-                Err(e) => perror_err("fstat", &e),
+                Err(e) => perror_io("fstat", &e),
             }
             // PORT: the C++ checks the result of close(), which can't fail for a
             // descriptor opened read-only; Rust closes the file when it is dropped.
         }
-        Err(e) => perror_err(fname, &e),
+        Err(e) => perror_io(fname, &e),
     }
 
     let mut tiles = Vec::new();
@@ -372,13 +370,10 @@ fn decode(
         pmtiles_map = Some(map);
         is_pmtiles = true;
     } else {
-        db = match Connection::open_with_flags(
-            fname,
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
-        ) {
+        db = match sqlite3_open(fname) {
             Ok(db) => db,
-            Err(e) => {
-                eprintln!("{}: {}", fname, e);
+            Err(msg) => {
+                eprintln!("{}: {}", fname, msg);
                 std::process::exit(EXIT_OPEN);
             }
         };
@@ -471,7 +466,7 @@ fn decode(
                 let mut f = match File::open(&fn_) {
                     Ok(f) => f,
                     Err(e) => {
-                        perror_err(&fn_, &e);
+                        perror_io(&fn_, &e);
                         std::process::exit(EXIT_OPEN);
                     }
                 };
@@ -830,11 +825,6 @@ pub fn main() {
 
 // Helpers for C library and SQLite C API behaviour that the C++ relies on
 
-/// `perror(s)` for an error that Rust reported as an `io::Error` rather than through `errno`.
-fn perror_err(s: &str, e: &std::io::Error) {
-    eprintln!("{}: {}", s, strerror(e.raw_os_error().unwrap_or(0)));
-}
-
 /// `mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0)`. Returns the errno on failure.
 fn mmap_file(f: &File, size: u64) -> Result<Mmap, i32> {
     if size == 0 {
@@ -869,28 +859,27 @@ fn restore_sigpipe() {
     }
 }
 
-thread_local! {
-    /// Set while a call that the C++ wraps in `try` is running, to keep the panic hook quiet.
-    static IN_TRY: Cell<bool> = const { Cell::new(false) };
-}
-
-/// `tile.decode(message, was_compressed)` inside the C++ `try`/`catch (std::exception)`:
-/// `None` if decoding threw (panicked).
-fn try_decode(tile: &mut MvtTile, message: &[u8], was_compressed: &mut bool) -> Option<bool> {
-    static HOOK: Once = Once::new();
-    HOOK.call_once(|| {
-        let prev = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            if !IN_TRY.get() {
-                prev(info)
+/// `sqlite3_open(fname, &db)`. On failure, returns `sqlite3_errmsg(db)`, without
+/// the file name that rusqlite adds to the message when the file can't be opened.
+fn sqlite3_open(fname: &str) -> Result<Connection, String> {
+    Connection::open_with_flags(
+        fname,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
+    )
+    .map_err(|e| {
+        let msg = e.to_string();
+        match e {
+            rusqlite::Error::SqliteFailure(err, Some(_))
+                if err.code == rusqlite::ErrorCode::CannotOpen =>
+            {
+                match msg.strip_suffix(&format!(": {}", fname)) {
+                    Some(m) => m.to_string(),
+                    None => msg,
+                }
             }
-        }));
-    });
-
-    IN_TRY.set(true);
-    let ret = std::panic::catch_unwind(AssertUnwindSafe(|| tile.decode(message, was_compressed)));
-    IN_TRY.set(false);
-    ret.ok()
+            _ => msg,
+        }
+    })
 }
 
 /// A prepared statement used through the SQLite C API, as the C++ does, so that

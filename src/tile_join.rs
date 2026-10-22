@@ -1,14 +1,12 @@
 //! Port of tile-join.cpp, the `tile-join` program.
 
-use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::ffi::{CStr, c_char};
 use std::fs::File;
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
-use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-use std::sync::{Mutex, Once, RwLock};
+use std::sync::{Mutex, RwLock};
 
 use memmap2::Mmap;
 use rusqlite::{Connection, OpenFlags, ffi};
@@ -145,13 +143,13 @@ fn append_tile(
     let mut tile = MvtTile::default();
     let mut was_compressed = false;
 
-    match try_decode(&mut tile, message, &mut was_compressed) {
-        Some(true) => {}
-        Some(false) => {
+    match tile.try_decode(message, &mut was_compressed) {
+        Ok(true) => {}
+        Ok(false) => {
             eprintln!("Couldn't decompress tile {}/{}/{}", z, x, y);
             std::process::exit(EXIT_MVT);
         }
-        None => {
+        Err(_) => {
             eprintln!("PBF decoding error in tile {}/{}/{}", z, x, y);
             std::process::exit(EXIT_MVT);
         }
@@ -617,13 +615,10 @@ impl TilesetReader {
             r.pmtiles_entries.reverse();
             r.pmtiles_map = Some(map);
         } else {
-            let db = match Connection::open_with_flags(
-                fname,
-                OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
-            ) {
+            let db = match sqlite3_open(fname) {
                 Ok(db) => db,
-                Err(e) => {
-                    eprintln!("{}: {}", fname, e);
+                Err(msg) => {
+                    eprintln!("{}: {}", fname, msg);
                     std::process::exit(EXIT_SQLITE);
                 }
             };
@@ -868,13 +863,13 @@ impl TilesetReader {
         }
 
         let mut was_compressed = false;
-        match try_decode(&mut content, &source, &mut was_compressed) {
-            Some(true) => {}
-            Some(false) => {
+        match content.try_decode(&source, &mut was_compressed) {
+            Ok(true) => {}
+            Ok(false) => {
                 eprintln!("Couldn't parse tile {}/{}/{}", tile.z, tile.x, tile.y);
                 std::process::exit(EXIT_MVT);
             }
-            None => {
+            Err(_) => {
                 eprintln!(
                     "PBF decoding error in tile {}/{}/{}",
                     tile.z, tile.x, tile.y
@@ -2062,28 +2057,27 @@ fn mmap_file(f: &File, size: u64) -> Result<Mmap, i32> {
     unsafe { Mmap::map(f) }.map_err(|e| e.raw_os_error().unwrap_or(libc::EINVAL))
 }
 
-thread_local! {
-    /// Set while a call that the C++ wraps in `try` is running, to keep the panic hook quiet.
-    static IN_TRY: Cell<bool> = const { Cell::new(false) };
-}
-
-/// `tile.decode(message, was_compressed)` inside the C++ `try`/`catch (std::exception)`:
-/// `None` if decoding threw (panicked).
-fn try_decode(tile: &mut MvtTile, message: &[u8], was_compressed: &mut bool) -> Option<bool> {
-    static HOOK: Once = Once::new();
-    HOOK.call_once(|| {
-        let prev = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            if !IN_TRY.get() {
-                prev(info)
+/// `sqlite3_open(fname, &db)`. On failure, returns `sqlite3_errmsg(db)`, without
+/// the file name that rusqlite adds to the message when the file can't be opened.
+fn sqlite3_open(fname: &str) -> Result<Connection, String> {
+    Connection::open_with_flags(
+        fname,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
+    )
+    .map_err(|e| {
+        let msg = e.to_string();
+        match e {
+            rusqlite::Error::SqliteFailure(err, Some(_))
+                if err.code == rusqlite::ErrorCode::CannotOpen =>
+            {
+                match msg.strip_suffix(&format!(": {}", fname)) {
+                    Some(m) => m.to_string(),
+                    None => msg,
+                }
             }
-        }));
-    });
-
-    IN_TRY.set(true);
-    let ret = std::panic::catch_unwind(AssertUnwindSafe(|| tile.decode(message, was_compressed)));
-    IN_TRY.set(false);
-    ret.ok()
+            _ => msg,
+        }
+    })
 }
 
 /// A prepared statement used through the SQLite C API, as the C++ does, so that

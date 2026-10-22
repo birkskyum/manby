@@ -10,7 +10,7 @@ use std::sync::atomic::AtomicI32;
 
 use crate::attribute::{AttributeOp, set_attribute_accum_arg};
 use crate::clip::overzoom;
-use crate::cstd::{atof, atoi, strerror, strtoll};
+use crate::cstd::{atof, atoi, perror_io, strtoll};
 use crate::errors::{EXIT_FAILURE, EXIT_OPEN};
 use crate::evaluator::parse_filter;
 use crate::geometry::InputTile;
@@ -97,7 +97,7 @@ fn read_json_file(fname: &str, optarg: &str) -> String {
     let mut f = match File::open(fname) {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("{}: {}", optarg, strerror(e.raw_os_error().unwrap_or(0)));
+            perror_io(optarg, &e);
             std::process::exit(EXIT_OPEN);
         }
     };
@@ -336,7 +336,7 @@ pub fn main() {
             let mut f = match File::open(&name) {
                 Ok(f) => f,
                 Err(e) => {
-                    eprintln!("{}: {}", name, strerror(e.raw_os_error().unwrap_or(0)));
+                    perror_io(&name, &e);
                     std::process::exit(EXIT_FAILURE);
                 }
             };
@@ -385,7 +385,7 @@ pub fn main() {
     let mut f = match File::create(&outfile) {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("{}: {}", outfile, strerror(e.raw_os_error().unwrap_or(0)));
+            perror_io(&outfile, &e);
             std::process::exit(EXIT_FAILURE);
         }
     };

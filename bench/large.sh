@@ -13,14 +13,14 @@
 # again, for its time and memory.
 #
 # BUDGET: manby's --memory-budget (default 1G)
-# TIPPECANOE, DECODE, MANBY: as in run.sh
+# TIPPECANOE, DECODE, MANBY, OUT: as in run.sh
 cd "$(dirname "$0")/.."
 TIPPECANOE=${TIPPECANOE:-../tippecanoe-rs/target/release/tippecanoe}
 DECODE=${DECODE:-../tippecanoe-rs/target/release/tippecanoe-decode}
 MANBY=${MANBY:-target/release/manby}
 BUDGET=${BUDGET:-1G}
 D=bench/data
-O=bench/out
+O=${OUT:-bench/out}
 mkdir -p $D $O
 
 make_input() {
@@ -46,8 +46,8 @@ measured() {
 		/usr/bin/time -l "$@" > /dev/null 2> $O/time.err || { tail -5 $O/time.err >&2; echo "nan nan"; return; }
 		awk '/ real/{w=$1} /maximum resident/{m=$1/1048576} END{printf "%s %.0f\n", w, m}' $O/time.err
 	else
-		/usr/bin/time -v "$@" > /dev/null 2> $O/time.err || { tail -5 $O/time.err >&2; echo "nan nan"; return; }
-		awk -F': ' '/Elapsed/{w=$2} /Maximum resident/{m=$2/1024} END{printf "%s %.0f\n", w, m}' $O/time.err
+		/usr/bin/time -f "%e %M" "$@" > /dev/null 2> $O/time.err || { tail -5 $O/time.err >&2; echo "nan nan"; return; }
+		tail -1 $O/time.err | awk '{printf "%s %.0f\n", $1, $2/1024}'
 	fi
 }
 

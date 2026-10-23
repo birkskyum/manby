@@ -129,8 +129,18 @@ fn usage(argv0: &str) -> String {
             alternation: 1,
         },
     ];
+    // Under tile-join's name, the usage is tile-join's, without manby's own options.
+    let mut options = long_options_orig();
+    if argv0.rsplit('/').next() == Some("tile-join") {
+        let from = options.iter().position(|o| o.name == "manby").unwrap_or(0);
+        let to = options
+            .iter()
+            .position(|o| o.name.is_empty())
+            .unwrap_or(from);
+        options.drain(from..to);
+    }
     let mut out: Vec<u8> = Vec::new();
-    print_usage(&mut out, argv0, &forms, &long_options_orig(), &required);
+    print_usage(&mut out, argv0, &forms, &options, &required);
     let mut msg = String::from_utf8_lossy(&out).into_owned();
     if msg.ends_with('\n') {
         msg.pop();

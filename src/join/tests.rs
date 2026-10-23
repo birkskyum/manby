@@ -915,3 +915,86 @@ fn batches_never_split_a_tile() {
     assert_eq!(run(7), whole);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// An unchanged tile keeps its compression only if zlib or libdeflate made
+/// it; any other gzip stream is compressed again.
+#[test]
+fn only_zlib_and_libdeflate_streams_pass_through() {
+    let _g = crate::tiler::oracle::GLOBALS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let dir = std::env::temp_dir().join(format!("manby-join-through-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let input = dir.join("in");
+
+    // tiles as a join writes them, so that joining them again changes nothing
+    let mut rng = Rng(11);
+    let mut tiles = Vec::new();
+    while tiles.len() < 4 {
+        let raw = random_tile(&mut rng, false);
+        let decoded = vec![Decoded::decode(&raw).unwrap()];
+        let mut pbf = Vec::new();
+        let rules = rules_for(&plain_rules());
+        let mut acc = Accum::new(1000);
+        if tile::join_tile(
+            &decoded,
+            3,
+            1,
+            2,
+            &rules,
+            &mut acc,
+            &mut Scratch::default(),
+            &mut pbf,
+        )
+        .unwrap()
+        {
+            tiles.push(pbf);
+        }
+    }
+    let zlib = crate::compress::gzip(&tiles[0], false);
+    let libdeflate = crate::compress::gzip(&tiles[1], true);
+    // zlib's stream under another system's header, as Java's GZIPOutputStream
+    // writes it, and with a modification time
+    let mut other_os = crate::compress::gzip(&tiles[2], false);
+    other_os[9] = 0;
+    let mut mtime = crate::compress::gzip(&tiles[3], false);
+    mtime[4] = 1;
+    let stored = [zlib, libdeflate, other_os, mtime];
+    for (i, data) in stored.iter().enumerate() {
+        let d = input.join(format!("3/{}", i));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("2.pbf"), data).unwrap();
+    }
+    std::fs::write(
+        input.join("metadata.json"),
+        r#"{"name": "in", "generator": "tippecanoe v2.82.0"}"#,
+    )
+    .unwrap();
+
+    let output = dir.join("out");
+    let o = super::JoinOptions {
+        inputs: vec![input.to_string_lossy().into_owned()],
+        output: crate::options::Output::Directory(output.to_string_lossy().into_owned()),
+        quiet: true,
+        ..Default::default()
+    };
+    super::join(&o).unwrap();
+
+    for (i, data) in stored.iter().enumerate() {
+        let out = std::fs::read(output.join(format!("3/{}/2.pbf", i))).unwrap();
+        let mut back = Vec::new();
+        assert!(tile::decompress(
+            &mut libdeflater::Decompressor::new(),
+            &out,
+            &mut back
+        ));
+        assert_eq!(back, tiles[i], "tile {}", i);
+        assert_eq!(out == *data, i < 2, "tile {}", i);
+        assert!(
+            out[..10] == *super::key::zlib_header() || out[..10] == super::key::LIBDEFLATE_HEADER,
+            "tile {}",
+            i
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

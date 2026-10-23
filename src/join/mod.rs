@@ -541,15 +541,16 @@ fn make_tile(
     result
 }
 
-/// Whether `data` is a gzip stream of exactly `content`, with a plain
-/// header and nothing after it.
-fn is_gzip_of(data: &[u8], content: &[u8]) -> bool {
+/// Whether `data` is a gzip stream of exactly `content`, with nothing after
+/// it, that zlib or libdeflate made, as their headers say. Only those are
+/// stored as they are: the tileset will say tile-join made it, and a later
+/// join orders tiles at the same z/x/y by their bytes, which must then be
+/// zlib's own, or libdeflate's, which compare as zlib's (see `key.rs`).
+/// A stream from any other compressor is compressed again.
+pub(crate) fn is_gzip_of(data: &[u8], content: &[u8]) -> bool {
     let n = data.len();
     n >= 18
-        && data[0] == 0x1F
-        && data[1] == 0x8B
-        && data[2] == 8
-        && data[3] == 0
+        && (data[..10] == *key::zlib_header() || data[..10] == key::LIBDEFLATE_HEADER)
         && data[n - 4..] == (content.len() as u32).to_le_bytes()
         && data[n - 8..n - 4] == libdeflater::crc32(content).to_le_bytes()
 }

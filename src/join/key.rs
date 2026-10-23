@@ -43,7 +43,7 @@ pub enum Key {
 
 /// The gzip header zlib writes with tippecanoe's settings, which starts
 /// every tile tippecanoe compresses.
-fn zlib_header() -> &'static [u8] {
+pub fn zlib_header() -> &'static [u8] {
     static HEADER: OnceLock<Vec<u8>> = OnceLock::new();
     HEADER.get_or_init(|| {
         let mut z = crate::compress::gzip(b"", false);
@@ -51,6 +51,9 @@ fn zlib_header() -> &'static [u8] {
         z
     })
 }
+
+/// The gzip header libdeflate writes at level 6.
+pub const LIBDEFLATE_HEADER: [u8; 10] = [0x1F, 0x8B, 8, 0, 0, 0, 0, 0, 0, 0xFF];
 
 /// Whether `data` starts with the gzip header libdeflate writes at level 6.
 pub fn is_libdeflate_gzip(data: &[u8]) -> bool {

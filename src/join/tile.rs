@@ -1092,7 +1092,8 @@ fn encode_layer(
         spans.push(start..values.len());
     }
     order.extend((0..layer.values.len() as u32).map(|i| (i, 0)));
-    order.sort_by(|a, b| {
+    // the index decides between equal encodings, so this is the stable order
+    order.sort_unstable_by(|a, b| {
         values[spans[a.0 as usize].clone()]
             .cmp(&values[spans[b.0 as usize].clone()])
             .then(a.0.cmp(&b.0))

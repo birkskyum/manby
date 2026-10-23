@@ -62,7 +62,19 @@ impl LayerStats {
             }
         }
 
-        // serial_val's order: by text, then by type
+        tsa.type_ |= 1 << type_;
+
+        // serial_val's order: by text, then by type. A full list keeps the
+        // smallest values, so a value past its last is left out, and most
+        // values are once the list is full.
+        if tsa.sample_values.len() >= max_samples
+            && tsa
+                .sample_values
+                .last()
+                .is_some_and(|last| (last.s.as_str(), last.type_) <= (s, type_))
+        {
+            return;
+        }
         let less = |v: &SerialVal| v.s.as_str() < s || (v.s == s && v.type_ < type_);
         let pt = tsa.sample_values.partition_point(less);
         let found = pt < tsa.sample_values.len()
@@ -91,8 +103,6 @@ impl LayerStats {
                 );
             }
         }
-
-        tsa.type_ |= 1 << type_;
     }
 }
 

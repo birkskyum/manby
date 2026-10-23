@@ -1079,3 +1079,56 @@ fn overzooming_matches_tippecanoe() {
     }
     assert!(cases > 100);
 }
+
+/// The text tile-stats keep for a number reads back, with `atof`, as the
+/// number `Val::number` gives, bit for bit.
+#[test]
+fn numbers_read_back_from_their_text() {
+    let mut rng = Rng(9);
+    let mut vals = vec![
+        Val::Double(0.0),
+        Val::Double(-0.0),
+        Val::Double(f64::MAX),
+        Val::Double(f64::MIN_POSITIVE),
+        Val::Double(5e-324),
+        Val::Double(0.1),
+        Val::Double(1e21),
+        Val::Double(123456789012345680.0),
+        Val::Float(0.1),
+        Val::Float(-0.0),
+        Val::Float(f32::MAX),
+        Val::Float(f32::MIN_POSITIVE),
+        Val::Int(i64::MIN),
+        Val::Int(i64::MAX),
+        Val::Sint(-9007199254740993),
+        Val::Uint(u64::MAX),
+        Val::Uint(9007199254740993),
+    ];
+    for _ in 0..200_000 {
+        let bits = (rng.next() << 33) ^ (rng.next() << 2) ^ rng.next();
+        let d = f64::from_bits(bits);
+        if d.is_finite() {
+            vals.push(Val::Double(d));
+        }
+        let f = f32::from_bits(bits as u32);
+        if f.is_finite() {
+            vals.push(Val::Float(f));
+        }
+        vals.push(Val::Int(bits as i64));
+        vals.push(Val::Uint(bits.rotate_left(17)));
+        vals.push(Val::Double((bits % 1_000_000) as f64 / 1000.0));
+    }
+    for v in &vals {
+        let (_, s) = v.serial();
+        let n = v.number().unwrap();
+        assert_eq!(
+            tippecanoe::cstd::atof(&s).to_bits(),
+            n.to_bits(),
+            "{:?} as {}",
+            v,
+            s
+        );
+    }
+    assert_eq!(Val::Double(f64::NAN).number(), None);
+    assert_eq!(Val::Float(f32::INFINITY).number(), None);
+}

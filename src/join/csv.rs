@@ -24,8 +24,9 @@ pub struct Field {
     pub value: Val<'static>,
     /// The type tile-stats record for it.
     pub sv_type: i32,
-    /// The text tile-stats record for it.
+    /// The text tile-stats record for it, and what `atof` reads from it.
     pub text: String,
+    pub number: f64,
     /// Whether `stringified_to_mvt_value` warns that the number cannot be
     /// represented, which tile-join does each time it joins it.
     warns: bool,
@@ -196,6 +197,7 @@ impl RawCsv {
                     attr_type,
                     value,
                     sv_type,
+                    number: tippecanoe::cstd::atof(&joinval),
                     text: joinval,
                     warns,
                 });

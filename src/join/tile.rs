@@ -24,7 +24,7 @@ use tippecanoe::mvt::{
 use tippecanoe::protozero::{self, PbfReader};
 use tippecanoe::text::{fnv1a, fnv1a_cstr, fnv1a_mem};
 
-use super::csv::Row;
+use super::csv::{Field, Row};
 use super::stats::Accum;
 use crate::{Error, Result};
 
@@ -138,6 +138,20 @@ impl Val<'_> {
             Val::Uint(u) => (MVT_DOUBLE, Cow::Owned(u.to_string())),
             Val::Bool(b) => (MVT_BOOL, Cow::Borrowed(if *b { "true" } else { "false" })),
             Val::Null => (MVT_NULL, Cow::Borrowed("null")),
+        }
+    }
+
+    /// The number `atof` reads from the text of [`Val::serial`], where that
+    /// is known without parsing it: the text of a finite float or double
+    /// reads back as it (but for -0, written as 0), and an integer's as the
+    /// double nearest to it.
+    pub fn number(&self) -> Option<f64> {
+        match self {
+            Val::Float(f) if f.is_finite() => Some(*f as f64 + 0.0),
+            Val::Double(d) if d.is_finite() => Some(*d + 0.0),
+            Val::Int(i) | Val::Sint(i) => Some(*i as f64),
+            Val::Uint(u) => Some(*u as f64),
+            _ => None,
         }
     }
 
@@ -522,7 +536,7 @@ impl Rules {
 #[derive(Clone, Copy)]
 enum Attr<'t> {
     Tile(&'t Val<'t>),
-    Csv(&'t Val<'t>, i32, &'t str),
+    Csv(&'t Field),
 }
 
 /// The attributes of one output feature: `match`'s `attributes` and
@@ -564,7 +578,7 @@ pub struct Scratch {
     pub decompressor: Option<libdeflater::Decompressor>,
     pub buffers: Vec<Vec<u8>>,
     values: Vec<u8>,
-    order: Vec<(u32, u32)>,
+    order: Vec<(u64, u32)>,
     mapping: Vec<u32>,
     feature: Vec<u8>,
     layer: Vec<u8>,
@@ -784,10 +798,7 @@ pub fn join_tile<'t>(
                                 {
                                     field.warn();
                                     attrs.erase(joinkey);
-                                    attrs.insert(
-                                        joinkey,
-                                        Attr::Csv(&field.value, field.sv_type, &field.text),
-                                    );
+                                    attrs.insert(joinkey, Attr::Csv(field));
                                     attrs.key_order.push(joinkey);
                                 }
                             }
@@ -824,11 +835,11 @@ pub fn join_tile<'t>(
                             Attr::Tile(v) => {
                                 out.layers[ol].tag(k, v, &mut out.tags);
                                 let (t, s) = v.serial();
-                                stats.add(k, t, &s, max_samples);
+                                stats.add(k, t, &s, v.number(), max_samples);
                             }
-                            Attr::Csv(v, t, s) => {
-                                out.layers[ol].tag(k, v, &mut out.tags);
-                                stats.add(k, t, s, max_samples);
+                            Attr::Csv(f) => {
+                                out.layers[ol].tag(k, &f.value, &mut out.tags);
+                                stats.add(k, f.sv_type, &f.text, Some(f.number), max_samples);
                             }
                         }
                     }
@@ -1091,12 +1102,21 @@ fn encode_layer(
         v.encode(values)?;
         spans.push(start..values.len());
     }
-    order.extend((0..layer.values.len() as u32).map(|i| (i, 0)));
+    // The first eight bytes of each encoding, big-endian, compare as the
+    // bytes do, and decide most comparisons without looking at the rest.
+    order.extend(spans.iter().enumerate().map(|(i, r)| {
+        let mut prefix = [0u8; 8];
+        let n = r.len().min(8);
+        prefix[..n].copy_from_slice(&values[r.start..r.start + n]);
+        (u64::from_be_bytes(prefix), i as u32)
+    }));
     // the index decides between equal encodings, so this is the stable order
     order.sort_unstable_by(|a, b| {
-        values[spans[a.0 as usize].clone()]
-            .cmp(&values[spans[b.0 as usize].clone()])
-            .then(a.0.cmp(&b.0))
+        a.0.cmp(&b.0)
+            .then_with(|| {
+                values[spans[a.1 as usize].clone()].cmp(&values[spans[b.1 as usize].clone()])
+            })
+            .then(a.1.cmp(&b.1))
     });
     let mapping = &mut scratch.mapping;
     mapping.clear();
@@ -1104,15 +1124,15 @@ fn encode_layer(
     let mut value_index = 0u32;
     let mut v = 0;
     while v < order.len() {
-        let here = spans[order[v].0 as usize].clone();
-        mapping[order[v].0 as usize] = value_index;
+        let here = spans[order[v].1 as usize].clone();
+        mapping[order[v].1 as usize] = value_index;
         w.push(4 << 3 | 2);
         varint(w, here.len() as u64);
         w.extend_from_slice(&values[here.clone()]);
         while v + 1 < order.len()
-            && values[spans[order[v + 1].0 as usize].clone()] == values[here.clone()]
+            && values[spans[order[v + 1].1 as usize].clone()] == values[here.clone()]
         {
-            mapping[order[v + 1].0 as usize] = value_index;
+            mapping[order[v + 1].1 as usize] = value_index;
             v += 1;
         }
         value_index += 1;

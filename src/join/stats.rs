@@ -42,8 +42,9 @@ impl LayerStats {
     }
 
     /// `add_to_tilestats` with the type and text of the value's `serial_val`,
-    /// keeping the `max_samples` smallest values.
-    pub fn add(&mut self, key: &str, type_: i32, s: &str, max_samples: usize) {
+    /// keeping the `max_samples` smallest values. `number`, if given, is what
+    /// `atof` makes of the text, which then need not be parsed.
+    pub fn add(&mut self, key: &str, type_: i32, s: &str, number: Option<f64>, max_samples: usize) {
         if type_ == MVT_NULL {
             return;
         }
@@ -53,7 +54,7 @@ impl LayerStats {
         };
 
         if type_ == MVT_DOUBLE {
-            let d = tippecanoe::cstd::atof(s);
+            let d = number.unwrap_or_else(|| tippecanoe::cstd::atof(s));
             if d < tsa.min {
                 tsa.min = d;
             }

@@ -13,6 +13,13 @@ ADVSHELL = /bin/bash
 
 # The other recipes of tippecanoe's tests that need only tippecanoe and tippecanoe-decode
 RECIPES = csv-test flatgeobuf-test layer-json-test parallel-test radix-sort-test
+# and those of tile-join, with ./tile-join manby too, and tippecanoe-enumerate.
+# decode-test and decode-pmtiles-test are not here: they compare the output of
+# tippecanoe-decode --stats, which has the compressed size of each tile, and
+# manby's tiles are compressed with libdeflate. allow-existing-test is not
+# either: its expected output is stale, and tippecanoe and tippecanoe-rs fail
+# it the same way (see tippecanoe-rs's README.md).
+RECIPES += raw-tiles-test pmtiles-test enumerate-test join-test join-filter-test
 
 all: $(addsuffix .check,$(TESTS)) $(RECIPES)
 
@@ -127,6 +134,197 @@ layer-json-test: tippecanoe tippecanoe-decode
 	./tippecanoe-decode -x generator -x generator_options tests/layer-json/out.mbtiles > tests/layer-json/out.mbtiles.json.check
 	cmp tests/layer-json/out.mbtiles.json.check tests/layer-json/out.mbtiles.json
 	rm -f tests/layer-json/out.mbtiles.json.check tests/layer-json/out.mbtiles
+
+raw-tiles-test: tippecanoe tippecanoe-decode tile-join
+	./tippecanoe -q -f -e tests/raw-tiles/raw-tiles -r1 -pC tests/raw-tiles/hackspots.geojson
+	./tippecanoe-decode -x generator tests/raw-tiles/raw-tiles > tests/raw-tiles/raw-tiles.json.check
+	cmp tests/raw-tiles/raw-tiles.json.check tests/raw-tiles/raw-tiles.json
+	# Test that -z and -Z work in tippecanoe-decode
+	./tippecanoe-decode -x generator -Z6 -z7 tests/raw-tiles/raw-tiles > tests/raw-tiles/raw-tiles-z67.json.check
+	cmp tests/raw-tiles/raw-tiles-z67.json.check tests/raw-tiles/raw-tiles-z67.json
+	# Test that -z and -Z work in tile-join
+	./tile-join -q -f -Z6 -z7 -e tests/raw-tiles/raw-tiles-z67 tests/raw-tiles/raw-tiles
+	./tippecanoe-decode -x generator tests/raw-tiles/raw-tiles-z67 > tests/raw-tiles/raw-tiles-z67-join.json.check
+	cmp tests/raw-tiles/raw-tiles-z67-join.json.check tests/raw-tiles/raw-tiles-z67-join.json
+	rm -rf tests/raw-tiles/raw-tiles tests/raw-tiles/raw-tiles-z67 tests/raw-tiles/raw-tiles.json.check raw-tiles-z67.json.check tests/raw-tiles/raw-tiles-z67-join.json.check
+	# Test that metadata.json is created even if all features are clipped away
+	./tippecanoe -q -f -e tests/raw-tiles/nothing tests/raw-tiles/nothing.geojson
+	./tippecanoe-decode -x generator tests/raw-tiles/nothing > tests/raw-tiles/nothing.json.check
+	cmp tests/raw-tiles/nothing.json.check tests/raw-tiles/nothing.json
+	rm -r tests/raw-tiles/nothing tests/raw-tiles/nothing.json.check
+	# Test that a non-string value in metadata.json is reported and skipped
+	# instead of being read as a string (which used to crash)
+	./tippecanoe -q -f -e tests/raw-tiles/nonstring tests/raw-tiles/hackspots.geojson
+	sed -i.bak 's/"minzoom": "0"/"minzoom": 0/' tests/raw-tiles/nonstring/metadata.json
+	rm tests/raw-tiles/nonstring/metadata.json.bak
+	grep -q '"minzoom": 0' tests/raw-tiles/nonstring/metadata.json
+	./tippecanoe-decode -x generator tests/raw-tiles/nonstring > /dev/null
+	rm -r tests/raw-tiles/nonstring
+
+pmtiles-test: tippecanoe tippecanoe-decode tile-join
+	./tippecanoe -q -f -o tests/pmtiles/hackspots.pmtiles -r1 -pC tests/raw-tiles/hackspots.geojson
+	./tippecanoe-decode -x generator tests/pmtiles/hackspots.pmtiles > tests/pmtiles/hackspots.json.check
+	cmp tests/pmtiles/hackspots.json.check tests/pmtiles/hackspots.json
+	# Test generating pmtiles first and then converting to mbtiles with tile-join.
+	./tile-join -q -f -pC -o tests/pmtiles/joined.mbtiles tests/pmtiles/hackspots.pmtiles
+	./tippecanoe-decode -x generator tests/pmtiles/joined.mbtiles > tests/pmtiles/joined.json.check
+	cmp tests/pmtiles/joined.json.check tests/pmtiles/joined.json
+	rm -r tests/pmtiles/hackspots.json.check tests/pmtiles/hackspots.pmtiles
+
+enumerate-test: tippecanoe tippecanoe-enumerate
+	./tippecanoe -q -z5 -f -o tests/ne_110m_admin_0_countries/out/enum.mbtiles tests/ne_110m_admin_0_countries/in.json.gz
+	./tippecanoe-enumerate tests/ne_110m_admin_0_countries/out/enum.mbtiles > tests/ne_110m_admin_0_countries/out/enum.check
+	cmp tests/ne_110m_admin_0_countries/out/enum.check tests/ne_110m_admin_0_countries/out/enum
+	rm tests/ne_110m_admin_0_countries/out/enum.mbtiles tests/ne_110m_admin_0_countries/out/enum.check
+
+join-test: tippecanoe tippecanoe-decode tile-join
+	./tippecanoe -q -f -z12 -o tests/join-population/tabblock_06001420.mbtiles -YALAND10:'Land area' -L'{"file": "tests/join-population/tabblock_06001420.json", "description": "population"}'
+	./tippecanoe -q -f -Z5 -z10 -o tests/join-population/macarthur.mbtiles -l macarthur tests/join-population/macarthur.json
+	./tile-join -q -f -Z6 -z9 -o tests/join-population/macarthur-6-9.mbtiles tests/join-population/macarthur.mbtiles
+	./tippecanoe-decode -x generator tests/join-population/macarthur-6-9.mbtiles > tests/join-population/macarthur-6-9.mbtiles.json.check
+	cmp tests/join-population/macarthur-6-9.mbtiles.json.check tests/join-population/macarthur-6-9.mbtiles.json
+	./tile-join -q -f -Z6 -z9 -X -o tests/join-population/macarthur-6-9-exclude.mbtiles tests/join-population/macarthur.mbtiles
+	./tippecanoe-decode -x generator tests/join-population/macarthur-6-9-exclude.mbtiles > tests/join-population/macarthur-6-9-exclude.mbtiles.json.check
+	cmp tests/join-population/macarthur-6-9-exclude.mbtiles.json.check tests/join-population/macarthur-6-9-exclude.mbtiles.json
+	rm -f tests/join-population/macarthur-6-9.mbtiles.json.check tests/join-population/macarthur-6-9.mbtiles tests/join-population/macarthur-6-9-exclude.mbtiles.json.check tests/join-population/macarthur-6-9-exclude.mbtiles
+	./tippecanoe -q -f -d10 -D10 -Z9 -z11 -o tests/join-population/macarthur2.mbtiles -l macarthur tests/join-population/macarthur2.json
+	./tile-join --quiet --force -o tests/join-population/joined.mbtiles -x GEOID10 -c tests/join-population/population.csv tests/join-population/tabblock_06001420.mbtiles
+	./tile-join --quiet --force -o tests/join-population/joined-null.mbtiles --empty-csv-columns-are-null -x GEOID10 -c tests/join-population/population.csv tests/join-population/tabblock_06001420.mbtiles
+	./tile-join --quiet --force --no-tile-stats -o tests/join-population/joined-no-tile-stats.mbtiles -x GEOID10 -c tests/join-population/population.csv tests/join-population/tabblock_06001420.mbtiles
+	./tile-join --quiet --force --tile-stats-attributes-limit=1 -o tests/join-population/joined-tile-stats-attributes-limit.mbtiles -x GEOID10 -c tests/join-population/population.csv tests/join-population/tabblock_06001420.mbtiles
+	./tile-join --quiet --force --tile-stats-sample-values-limit=1 -o tests/join-population/joined-tile-stats-sample-values-limit.mbtiles -x GEOID10 -c tests/join-population/population.csv tests/join-population/tabblock_06001420.mbtiles
+	./tile-join --quiet --force --tile-stats-values-limit=1 -o tests/join-population/joined-tile-stats-values-limit.mbtiles -x GEOID10 -c tests/join-population/population.csv tests/join-population/tabblock_06001420.mbtiles
+	./tile-join -q -f -i -o tests/join-population/joined-i.mbtiles -x GEOID10 -c tests/join-population/population.csv tests/join-population/tabblock_06001420.mbtiles
+	./tile-join -q -f -o tests/join-population/merged.mbtiles tests/join-population/tabblock_06001420.mbtiles tests/join-population/macarthur.mbtiles tests/join-population/macarthur2.mbtiles
+	./tile-join -q -f -c tests/join-population/windows.csv -o tests/join-population/windows.mbtiles tests/join-population/macarthur.mbtiles
+	./tippecanoe-decode -x generator --maximum-zoom=11 --minimum-zoom=4 tests/join-population/joined.mbtiles > tests/join-population/joined.mbtiles.json.check
+	./tippecanoe-decode -x generator --maximum-zoom=11 --minimum-zoom=4 tests/join-population/joined-null.mbtiles > tests/join-population/joined-null.mbtiles.json.check
+	./tippecanoe-decode -x generator --maximum-zoom=11 --minimum-zoom=4 tests/join-population/joined-no-tile-stats.mbtiles > tests/join-population/joined-no-tile-stats.mbtiles.json.check
+	./tippecanoe-decode -x generator --maximum-zoom=11 --minimum-zoom=4 tests/join-population/joined-tile-stats-attributes-limit.mbtiles > tests/join-population/joined-tile-stats-attributes-limit.mbtiles.json.check
+	./tippecanoe-decode -x generator --maximum-zoom=11 --minimum-zoom=4 tests/join-population/joined-tile-stats-values-limit.mbtiles > tests/join-population/joined-tile-stats-values-limit.mbtiles.json.check
+	./tippecanoe-decode -x generator --maximum-zoom=11 --minimum-zoom=4 tests/join-population/joined-tile-stats-sample-values-limit.mbtiles > tests/join-population/joined-tile-stats-sample-values-limit.mbtiles.json.check
+	./tippecanoe-decode -x generator tests/join-population/joined-i.mbtiles > tests/join-population/joined-i.mbtiles.json.check
+	./tippecanoe-decode -x generator tests/join-population/merged.mbtiles > tests/join-population/merged.mbtiles.json.check
+	./tippecanoe-decode -x generator tests/join-population/windows.mbtiles > tests/join-population/windows.mbtiles.json.check
+	cmp tests/join-population/joined.mbtiles.json.check tests/join-population/joined.mbtiles.json
+	cmp tests/join-population/joined-null.mbtiles.json.check tests/join-population/joined-null.mbtiles.json
+	cmp tests/join-population/joined-no-tile-stats.mbtiles.json.check tests/join-population/joined-no-tile-stats.mbtiles.json
+	cmp tests/join-population/joined-tile-stats-attributes-limit.mbtiles.json.check tests/join-population/joined-tile-stats-attributes-limit.mbtiles.json
+	cmp tests/join-population/joined-tile-stats-sample-values-limit.mbtiles.json.check tests/join-population/joined-tile-stats-sample-values-limit.mbtiles.json
+	cmp tests/join-population/joined-tile-stats-values-limit.mbtiles.json.check tests/join-population/joined-tile-stats-values-limit.mbtiles.json
+	cmp tests/join-population/joined-i.mbtiles.json.check tests/join-population/joined-i.mbtiles.json
+	cmp tests/join-population/merged.mbtiles.json.check tests/join-population/merged.mbtiles.json
+	cmp tests/join-population/windows.mbtiles.json.check tests/join-population/windows.mbtiles.json
+	rm -f tests/join-population/joined-null.mbtiles tests/join-population/joined-null.mbtiles.json.check
+	./tile-join -q -f -l macarthur -n "macarthur name" -N "macarthur description" -A "macarthur's attribution" -o tests/join-population/just-macarthur.mbtiles tests/join-population/merged.mbtiles
+	./tile-join -q -f -L macarthur -o tests/join-population/no-macarthur.mbtiles tests/join-population/merged.mbtiles
+	./tippecanoe-decode -x generator tests/join-population/just-macarthur.mbtiles > tests/join-population/just-macarthur.mbtiles.json.check
+	./tippecanoe-decode -x generator tests/join-population/no-macarthur.mbtiles > tests/join-population/no-macarthur.mbtiles.json.check
+	cmp tests/join-population/just-macarthur.mbtiles.json.check tests/join-population/just-macarthur.mbtiles.json
+	cmp tests/join-population/no-macarthur.mbtiles.json.check tests/join-population/no-macarthur.mbtiles.json
+	./tile-join -q --no-tile-compression -f -e tests/join-population/raw-merged-folder tests/join-population/tabblock_06001420.mbtiles tests/join-population/macarthur.mbtiles tests/join-population/macarthur2.mbtiles
+	./tippecanoe-decode -x generator tests/join-population/raw-merged-folder > tests/join-population/raw-merged-folder.json.check
+	cmp tests/join-population/raw-merged-folder.json.check tests/join-population/raw-merged-folder.json
+	rm -f tests/join-population/raw-merged-folder.json.check
+	./tippecanoe -q -z12 -f -e tests/join-population/tabblock_06001420-folder -YALAND10:'Land area' -L'{"file": "tests/join-population/tabblock_06001420.json", "description": "population"}'
+	./tippecanoe -q -Z5 -z10 -f -e tests/join-population/macarthur-folder -l macarthur tests/join-population/macarthur.json
+	./tippecanoe -q -d10 -D10 -Z9 -z11 -f -e tests/join-population/macarthur2-folder -l macarthur tests/join-population/macarthur2.json
+	./tile-join -q -f -o tests/join-population/merged-folder.mbtiles tests/join-population/tabblock_06001420-folder tests/join-population/macarthur-folder tests/join-population/macarthur2-folder
+	./tippecanoe-decode -x generator tests/join-population/merged-folder.mbtiles > tests/join-population/merged-folder.mbtiles.json.check
+	cmp tests/join-population/merged-folder.mbtiles.json.check tests/join-population/merged-folder.mbtiles.json
+	./tile-join -q -n "merged name" -N "merged description" -f -e tests/join-population/merged-mbtiles-to-folder tests/join-population/tabblock_06001420.mbtiles tests/join-population/macarthur.mbtiles tests/join-population/macarthur2.mbtiles
+	./tile-join -q -n "merged name" -N "merged description" -f -e tests/join-population/merged-folders-to-folder tests/join-population/tabblock_06001420-folder tests/join-population/macarthur-folder tests/join-population/macarthur2-folder
+	./tippecanoe-decode -x generator -x generator_options tests/join-population/merged-mbtiles-to-folder > tests/join-population/merged-mbtiles-to-folder.json.check
+	./tippecanoe-decode -x generator -x generator_options tests/join-population/merged-folders-to-folder > tests/join-population/merged-folders-to-folder.json.check
+	cmp tests/join-population/merged-mbtiles-to-folder.json.check tests/join-population/merged-folders-to-folder.json.check
+	rm -f tests/join-population/merged-mbtiles-to-folder.json.check tests/join-population/merged-folders-to-folder.json.check
+	./tile-join -q -f -c tests/join-population/windows.csv -o tests/join-population/windows-merged.mbtiles tests/join-population/macarthur.mbtiles tests/join-population/macarthur2-folder
+	./tile-join -q -c tests/join-population/windows.csv -f -e tests/join-population/windows-merged-folder tests/join-population/macarthur.mbtiles tests/join-population/macarthur2-folder
+	./tile-join -q -f -o tests/join-population/windows-merged2.mbtiles tests/join-population/windows-merged-folder
+	./tippecanoe-decode -x generator -x generator_options tests/join-population/windows-merged.mbtiles > tests/join-population/windows-merged.mbtiles.json.check
+	./tippecanoe-decode -x generator -x generator_options tests/join-population/windows-merged2.mbtiles > tests/join-population/windows-merged2.mbtiles.json.check
+	cmp tests/join-population/windows-merged.mbtiles.json.check tests/join-population/windows-merged2.mbtiles.json.check
+	./tile-join -q -f -o tests/join-population/macarthur-and-macarthur2-merged.mbtiles tests/join-population/macarthur.mbtiles tests/join-population/macarthur2-folder
+	./tile-join -q -f -e tests/join-population/macarthur-and-macarthur2-folder tests/join-population/macarthur.mbtiles tests/join-population/macarthur2-folder
+	./tile-join -q -f -o tests/join-population/macarthur-and-macarthur2-merged2.mbtiles tests/join-population/macarthur-and-macarthur2-folder
+	./tippecanoe-decode -x generator -x generator_options tests/join-population/macarthur-and-macarthur2-merged.mbtiles > tests/join-population/macarthur-and-macarthur2-merged.mbtiles.json.check
+	./tippecanoe-decode -x generator -x generator_options tests/join-population/macarthur-and-macarthur2-merged2.mbtiles > tests/join-population/macarthur-and-macarthur2-merged2.mbtiles.json.check
+	cmp tests/join-population/macarthur-and-macarthur2-merged.mbtiles.json.check tests/join-population/macarthur-and-macarthur2-merged2.mbtiles.json.check
+	rm tests/join-population/tabblock_06001420.mbtiles tests/join-population/joined.mbtiles tests/join-population/joined-i.mbtiles tests/join-population/joined.mbtiles.json.check tests/join-population/joined-i.mbtiles.json.check tests/join-population/macarthur.mbtiles tests/join-population/merged.mbtiles tests/join-population/merged.mbtiles.json.check  tests/join-population/merged-folder.mbtiles tests/join-population/macarthur2.mbtiles tests/join-population/windows.mbtiles tests/join-population/windows-merged.mbtiles tests/join-population/windows-merged2.mbtiles tests/join-population/windows.mbtiles.json.check tests/join-population/just-macarthur.mbtiles tests/join-population/no-macarthur.mbtiles tests/join-population/just-macarthur.mbtiles.json.check tests/join-population/no-macarthur.mbtiles.json.check tests/join-population/merged-folder.mbtiles.json.check tests/join-population/windows-merged.mbtiles.json.check tests/join-population/windows-merged2.mbtiles.json.check tests/join-population/macarthur-and-macarthur2-merged.mbtiles tests/join-population/macarthur-and-macarthur2-merged2.mbtiles tests/join-population/macarthur-and-macarthur2-merged.mbtiles.json.check tests/join-population/macarthur-and-macarthur2-merged2.mbtiles.json.check
+	rm -rf tests/join-population/raw-merged-folder tests/join-population/tabblock_06001420-folder tests/join-population/macarthur-folder tests/join-population/macarthur2-folder tests/join-population/merged-mbtiles-to-folder tests/join-population/merged-folders-to-folder tests/join-population/windows-merged-folder tests/join-population/macarthur-and-macarthur2-folder
+	# Test renaming of layers
+	./tippecanoe -q -f -Z5 -z10 -o tests/join-population/macarthur.mbtiles -l macarthur1 tests/join-population/macarthur.json
+	./tippecanoe -q -f -Z5 -z10 -o tests/join-population/macarthur2.mbtiles -l macarthur2 tests/join-population/macarthur2.json
+	./tile-join -q -R macarthur1:one --rename-layer=macarthur2:two -f -o tests/join-population/renamed.mbtiles tests/join-population/macarthur.mbtiles tests/join-population/macarthur2.mbtiles
+	./tippecanoe-decode -x generator tests/join-population/renamed.mbtiles > tests/join-population/renamed.mbtiles.json.check
+	cmp tests/join-population/renamed.mbtiles.json.check tests/join-population/renamed.mbtiles.json
+	rm -f tests/join-population/renamed.mbtiles.json.check tests/join-population/renamed.mbtiles.json.check tests/join-population/macarthur.mbtiles tests/join-population/macarthur2.mbtiles
+	# Make sure the concatenated name isn't too long
+	./tippecanoe -q -f -z0 -n 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ' -o tests/join-population/macarthur.mbtiles tests/join-population/macarthur.json
+	./tile-join -f -o tests/join-population/concat.mbtiles tests/join-population/macarthur.mbtiles tests/join-population/macarthur.mbtiles tests/join-population/macarthur.mbtiles tests/join-population/macarthur.mbtiles tests/join-population/macarthur.mbtiles tests/join-population/macarthur.mbtiles
+	./tippecanoe-decode -x generator tests/join-population/concat.mbtiles > tests/join-population/concat.mbtiles.json.check
+	cmp tests/join-population/concat.mbtiles.json.check tests/join-population/concat.mbtiles.json
+	rm tests/join-population/concat.mbtiles.json.check tests/join-population/concat.mbtiles tests/join-population/macarthur.mbtiles
+	# Test reading list of input files from file
+	./tippecanoe -q -f -Z5 -z10 -o tests/readfile/macarthur.mbtiles -l macarthur1 tests/join-population/macarthur.json
+	./tippecanoe -q -f -Z5 -z10 -o tests/readfile/macarthur2.mbtiles -l macarthur2 tests/join-population/macarthur2.json
+	./tile-join -q -R macarthur1:one --rename-layer=macarthur2:two -f -o tests/readfile/renamed.mbtiles tests/readfile/macarthur.mbtiles tests/readfile/macarthur2.mbtiles
+	./tippecanoe-decode -x generator -x generator_options tests/readfile/renamed.mbtiles > tests/readfile/renamed.mbtiles.json.check
+	./tile-join -q -R macarthur1:one --rename-layer=macarthur2:two -f -r tests/readfile/readfile.list -o tests/readfile/readfile.mbtiles
+	./tippecanoe-decode -x generator -x generator_options tests/readfile/readfile.mbtiles > tests/readfile/readfile.mbtiles.json.check
+	cmp tests/readfile/renamed.mbtiles.json.check tests/readfile/readfile.mbtiles.json.check
+	rm tests/readfile/renamed.mbtiles.json.check tests/readfile/readfile.mbtiles.json.check  tests/readfile/readfile.mbtiles tests/readfile/renamed.mbtiles
+	#`
+	# Make sure empty tilesets work
+	#
+	# mbtiles:
+	./tippecanoe -q -z0 -f -o tests/join-population/empty.mbtiles tests/join-population/empty.json
+	./tile-join -f -o tests/join-population/empty.out.mbtiles tests/join-population/empty.mbtiles
+	./tippecanoe-decode -x generator -x generator_options -x name -x description tests/join-population/empty.mbtiles > tests/join-population/empty.out.json.check
+	cmp tests/join-population/empty.out.json.check tests/join-population/empty.out.json
+	rm -f tests/join-population/empty.mbtiles tests/join-population/empty.out.mbtiles tests/join-population/empty.out.json.check
+	# pmtiles:
+	./tippecanoe -q -z0 -f -o tests/join-population/empty.pmtiles tests/join-population/empty.json
+	./tile-join -f -o tests/join-population/empty.out.pmtiles tests/join-population/empty.pmtiles
+	./tippecanoe-decode -x generator -x generator_options -x name -x description tests/join-population/empty.pmtiles > tests/join-population/empty.out.json.check
+	cmp tests/join-population/empty.out.json.check tests/join-population/empty.out.json
+	rm -f tests/join-population/empty.pmtiles tests/join-population/empty.out.pmtiles tests/join-population/empty.out.json.check
+	# pmtiles again, with --overzoom
+	./tippecanoe -q -z0 -f -o tests/join-population/empty.pmtiles tests/join-population/empty.json
+	./tile-join --overzoom -f -o tests/join-population/empty.out.pmtiles tests/join-population/empty.pmtiles
+	./tippecanoe-decode -x generator -x generator_options -x name -x description tests/join-population/empty.pmtiles > tests/join-population/empty.out.json.check
+	cmp tests/join-population/empty.out.json.check tests/join-population/empty.out.json
+	rm -f tests/join-population/empty.pmtiles tests/join-population/empty.out.pmtiles tests/join-population/empty.out.json.check
+	# dirtiles:
+	./tippecanoe -q -z0 -f -e tests/join-population/empty.dirtiles tests/join-population/empty.json
+	./tile-join -f -e tests/join-population/empty.out.dirtiles tests/join-population/empty.dirtiles
+	./tippecanoe-decode -x generator -x generator_options -x name -x description tests/join-population/empty.dirtiles > tests/join-population/empty.out.json.check
+	cmp tests/join-population/empty.out.json.check tests/join-population/empty.out.json
+	rm -rf tests/join-population/empty.dirtiles tests/join-population/empty.out.dirtiles tests/join-population/empty.out.json.check
+	#
+	# Test overzooming of tilesets with different maxzooms
+	#
+	mkdir -p tests/ne_110m_ocean/join
+	./tippecanoe -q -z2 -f -o tests/ne_110m_ocean/join/ocean.mbtiles tests/ne_110m_ocean/in.json
+	./tippecanoe -q -z4 -d8 -y name -f -o tests/ne_110m_ocean/join/countries.mbtiles tests/ne_110m_admin_0_countries/in.json.gz
+	./tile-join --overzoom -f -o tests/ne_110m_ocean/join/joined.mbtiles tests/ne_110m_ocean/join/ocean.mbtiles tests/ne_110m_ocean/join/countries.mbtiles
+	./tippecanoe-decode -x generator tests/ne_110m_ocean/join/joined.mbtiles > tests/ne_110m_ocean/join/joined.mbtiles.json.check
+	cmp tests/ne_110m_ocean/join/joined.mbtiles.json.check tests/ne_110m_ocean/join/joined.mbtiles.json
+	rm -f tests/ne_110m_ocean/join/ocean.mbtiles tests/ne_110m_ocean/join/countries.mbtiles tests/ne_110m_ocean/join/joined.mbtiles tests/ne_110m_ocean/join/joined.mbtiles.json.check
+
+join-filter-test: tippecanoe tippecanoe-decode tile-join
+	# Comes out different from the direct tippecanoe run because null attributes are lost
+	./tippecanoe -q -z0 -f -o tests/feature-filter/out/all.mbtiles tests/feature-filter/in.json
+	./tile-join -q -J tests/feature-filter/filter -f -o tests/feature-filter/out/filtered.mbtiles tests/feature-filter/out/all.mbtiles
+	./tippecanoe-decode -x generator tests/feature-filter/out/filtered.mbtiles > tests/feature-filter/out/filtered.json.check
+	cmp tests/feature-filter/out/filtered.json.check tests/feature-filter/out/filtered.json.standard
+	rm -f tests/feature-filter/out/filtered.json.check tests/feature-filter/out/filtered.mbtiles tests/feature-filter/out/all.mbtiles
+	# Test zoom level filtering
+	./tippecanoe -q -r1 -z8 -f -o tests/feature-filter/out/places.mbtiles tests/ne_110m_populated_places/in.json
+	./tile-join -q -J tests/feature-filter/places-filter -f -o tests/feature-filter/out/places-filter.mbtiles tests/feature-filter/out/places.mbtiles
+	./tippecanoe-decode -x generator tests/feature-filter/out/places-filter.mbtiles > tests/feature-filter/out/places-filter.mbtiles.json.check
+	cmp tests/feature-filter/out/places-filter.mbtiles.json.check tests/feature-filter/out/places-filter.mbtiles.json.standard
+	rm -f tests/feature-filter/out/places.mbtiles tests/feature-filter/out/places-filter.mbtiles tests/feature-filter/out/places-filter.mbtiles.json.check
 
 # Use this target to regenerate the standards that the tests are compared against
 # after making a change that legitimately changes their output

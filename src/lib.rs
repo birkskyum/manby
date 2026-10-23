@@ -1,13 +1,16 @@
 //! manby builds vector tilesets from geographic features, like tippecanoe, but
 //! several times faster. See DESIGN.md.
 //!
-//! [`run`] takes [`Options`] and writes the tileset. Nothing in manby exits the
-//! process or keeps global state; errors come back as [`Error`].
+//! [`run`] takes [`Options`] and writes the tileset, and [`join`] takes
+//! [`JoinOptions`] and joins tilesets as tippecanoe's tile-join does. Nothing
+//! in manby exits the process or keeps global state; errors come back as
+//! [`Error`].
 
 pub mod buf;
 pub mod compress;
 pub mod error;
 pub mod ingest;
+pub mod join;
 pub mod mem;
 pub mod mlt;
 pub mod options;
@@ -22,6 +25,7 @@ use tippecanoe::options::{P_TILE_COMPRESSION, P_TILE_STATS};
 use tippecanoe::projection::tile2lonlat;
 
 pub use error::{Error, Result};
+pub use join::{JoinOptions, JoinSummary, join};
 pub use options::Options;
 
 /// What a run produced.

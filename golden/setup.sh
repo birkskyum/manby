@@ -7,8 +7,8 @@
 # .check files and the like) are not linked, so that no recipe writes through
 # a link into them.
 #
-# ./tippecanoe is manby, under the name the expected outputs record in
-# generator_options.
+# ./tippecanoe and ./tile-join are manby, under the names the expected outputs
+# record in generator_options.
 #
 #   golden/setup.sh <tippecanoe-rs tests> <scratch directory> <manby> <tippecanoe-rs release directory>
 set -e
@@ -37,6 +37,8 @@ mirror() {
 rm -rf "$dst/tests"
 mirror "$src" "$dst/tests"
 ln -sf "$manby" "$dst/tippecanoe"
+ln -sf "$manby" "$dst/tile-join"
 ln -sf "$bin/tippecanoe-decode" "$dst/tippecanoe-decode"
+ln -sf "$bin/tippecanoe-enumerate" "$dst/tippecanoe-enumerate"
 ln -sf "$bin/tippecanoe-json-tool" "$dst/tippecanoe-json-tool"
 ln -sf "$bin/examples/json2geobuf" "$dst/json2geobuf"

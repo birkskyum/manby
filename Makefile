@@ -2,7 +2,7 @@
 #
 #   make test          the unit tests and the golden tests
 #   make test-golden   tippecanoe's golden .json.check tests and the other
-#                      recipes that need only tippecanoe, run with manby
+#                      recipes of tippecanoe and tile-join, run with manby
 #   make test-geobuf   the golden tests again from Geobuf input
 #   make test-golden-mlt  the golden tests written as MVT and as MLT, compared
 #                      tile by tile (needs Rust 1.98 for the mlt feature)
@@ -26,7 +26,7 @@ manby:
 
 # tippecanoe-rs's tools that the recipes use
 tools:
-	cd $(TIPPECANOE_RS) && $(CARGO) build --release --bin tippecanoe-decode --bin tippecanoe-json-tool --example json2geobuf
+	cd $(TIPPECANOE_RS) && $(CARGO) build --release --bin tippecanoe-decode --bin tippecanoe-enumerate --bin tippecanoe-json-tool --example json2geobuf
 
 unit:
 	$(CARGO) test --release

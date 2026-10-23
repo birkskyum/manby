@@ -1,6 +1,6 @@
 # manby
 
-manby builds vector tilesets from GeoJSON, FlatGeobuf, CSV or Geobuf features. It makes the same tiles as [tippecanoe](https://github.com/felt/tippecanoe), eleven to eighteen times faster, in less memory.
+manby builds vector tilesets from GeoJSON, FlatGeobuf, CSV or Geobuf features. It makes the same tiles as [tippecanoe](https://github.com/felt/tippecanoe), eleven to eighteen times faster, in less memory. `manby join` is tippecanoe's tile-join, three to twenty-eight times faster.
 
 The `manby` command takes tippecanoe's options:
 
@@ -41,6 +41,34 @@ manby's peak memory is below tippecanoe's on the benchmarks. For inputs larger t
 | 40 million points (5.6 GB), `-zg --drop-densest-as-needed` | 587 s, 7.7 GB | 91 s, 1.0 GB |
 | The census tracts 20 times over (3 GB), `-zg --coalesce-densest-as-needed` | 611 s, 5.5 GB | 156 s, 1.1 GB |
 
+## Joining tilesets
+
+`manby join` takes tile-join's options, prints its messages, exits as it does, and makes the same tiles, with their features in the same order. It merges tilesets, joins attributes from a CSV file, filters and renames layers, filters features, overzooms, and converts between MBTiles, PMTiles and directories:
+
+```sh
+manby join -o merged.pmtiles roads.pmtiles places.mbtiles
+manby join -c tracts.csv -o joined.pmtiles tracts.pmtiles
+```
+
+Under the name `tile-join`, a link to it for example, manby is tile-join, so it can take its place.
+
+On the same machine, median of three alternating runs, against tippecanoe-rs's tile-join. For every run the tiles decode to exactly what tile-join makes.
+
+| Benchmark | tile-join | manby join | |
+| --- | --- | --- | --- |
+| The tracts at `-z12` (312,073 tiles) copied to PMTiles | 17.3 s, 0.45 GB | 0.61 s, 0.16 GB | 28.3x |
+| The same, to MBTiles | 12.5 s, 0.46 GB | 1.21 s, 0.38 GB | 10.3x |
+| The same tracts joined to a CSV keyed on `GEOID` | 16.5 s, 0.52 GB | 1.04 s, 0.30 GB | 15.8x |
+| The points and the tracts, both `-zg`, merged to PMTiles | 1.41 s, 0.48 GB | 0.37 s, 0.26 GB | 3.8x |
+| The same, to MBTiles | 1.40 s, 0.48 GB | 0.40 s, 0.27 GB | 3.5x |
+| Counties at `-z5` and tracts at `-z9`, with `--overzoom` | 2.88 s, 0.46 GB | 0.34 s, 0.18 GB | 8.5x |
+
+The merges spend most of their time on a hundred tiles near the 500 KB limit, which manby join, like tile-join, has to compress with zlib to check their size. `bench/join.sh` has the benchmarks.
+
+tile-join decodes each tile into layers that each allocate a megabyte of hash tables, does its overzooming one tile at a time, compresses every tile with zlib, and writes PMTiles by way of a SQLite database. manby join keeps tile-join's order of input tiles and its metadata, does the work on the tiles on every core without those tables, keeps the compression of tiles it does not change, and writes PMTiles directly. [DESIGN.md](DESIGN.md) has the details.
+
+Where several inputs have a tile at the same z/x/y, tile-join appends their features in the order of the tiles' stored bytes. manby compresses most tiles with libdeflate, whose bytes sort differently from zlib's, so for tilesets that manby made, manby join compares tiles by the bytes zlib makes of them, which are tippecanoe's. So manby and then manby join make the tiles that tippecanoe and then tile-join make. tile-join itself, run on manby's tilesets, can order the features of those shared tiles differently. Tilesets that manby made with `--compression=zlib` are joined the same way by both.
+
 ## Building and testing
 
 manby uses tippecanoe-rs as a library, so it expects that repository next to this one, at `../tippecanoe-rs`.
@@ -50,9 +78,9 @@ cargo build --release
 make test
 ```
 
-`make test` runs the unit tests and tippecanoe's own test suite with manby in place of tippecanoe, from GeoJSON input and again from Geobuf input. All 188 of tippecanoe's expected outputs match.
+`make test` runs the unit tests and tippecanoe's own test suite with manby in place of tippecanoe, from GeoJSON input and again from Geobuf input. All 188 of tippecanoe's expected outputs match, and tile-join's tests pass with manby as tile-join.
 
-manby is a library first. `manby::run(&Options)` reads, tiles and writes a tileset and returns an error instead of exiting, and the command is a thin layer over it.
+manby is a library first. `manby::run(&Options)` reads, tiles and writes a tileset and returns an error instead of exiting, `manby::join(&JoinOptions)` joins tilesets, and the commands are thin layers over them.
 
 ## MapLibre Tiles
 

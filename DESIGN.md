@@ -91,14 +91,56 @@ Opt-in changes that make different tiles, measured against the default mode for 
 - **Rust version.** mlt-core needs Rust 1.98, so MLT output is behind the `mlt` cargo feature (`cargo +1.98.1 build --release --features mlt`). Without it, `--tile-format=mlt` fails with an error that says so.
 - **Verification.** `examples/mlt_verify.rs` decodes the MLT archive of a run with mlt-core and the MVT archive of the same run with tippecanoe-rs, and compares every tile, layer, feature, id, geometry part and attribute value under the typing rules above. `make test-golden-mlt` runs it on the golden tests.
 
+## tile-join (`src/join/`)
+
+`manby join` is tippecanoe's tile-join, with tile-join's options, messages and exit statuses. It makes tile-join's tiles, with their features in the same order, and tile-join's metadata. Under the name `tile-join` (a link to manby, say) it is tile-join, so it can replace it.
+
+### Where tile-join spends its time
+
+Copying the tracts at `-z12` (312,073 tiles, 168 MB) from PMTiles to PMTiles, tippecanoe-rs's tile-join takes 16 s, with 48 s of user time and 26 to 30 s of system time on 18 cores.
+- **A megabyte for every layer of every tile.** A layer keeps two hash tables of 65,536 slots for its keys and values, which every decoded and every written layer allocates and fills. Most of the system time is that memory coming and going.
+- **Attributes as strings.** Each feature's attributes go through a map keyed by their names, and into tile-stats as text, which is parsed back for the minimum and maximum of numbers.
+- **zlib for every tile.**
+- **PMTiles by way of SQLite.** The output is a complete MBTiles database first, copied into the archive at the end (1.7 of the 16 s).
+- **Overzooming one tile at a time,** with four more tiles made for each, to find out which of its children will have features, each with its hash tables.
+
+### Design
+
+- **The readers' order** (`merge.rs`). Which input tiles make each output tile, and in what order, comes from tile-join's queue of readers, followed step for step, overzooming and its end included, and so does the order in which the inputs' metadata is read at the end. Nothing in it waits for tile data except where two inputs have a tile at the same z/x/y (see below).
+- **Batches.** The queue hands over the input tiles of 2,048 output tiles at a time, never splitting a z/x/y. The tiles of a batch go biggest first, by the size of their input data, each thread taking the next as it finishes.
+- **Tiles** (`tile.rs`). Decoding follows tippecanoe-rs's decoder call for call on its protozero reader, so that malformed tiles fail where they fail there, but borrows the strings, and keeps the geometry as encoded commands. Appending follows tile-join's `append_tile`, with the hash slots of each layer's keys and values kept in small maps rather than tables of 65,536, which gives the same keys and values in the same order, collisions included. Geometry is decoded into points only where an extent changes. Encoding makes tippecanoe-rs's bytes.
+- **Tile-stats** (`stats.rs`). Each thread keeps its own, merged at the end as tile-join merges its threads', which gives the same result in any order. A full list of sample values leaves out larger values after one comparison, and numbers are taken as they are rather than parsed back from their text, which gives the same bits.
+- **Compression.** tile-join leaves out tiles over 500,000 compressed bytes unless `-pk`. As for tiling, a tile whose zlib bound is within that is compressed with libdeflate, and only the others with zlib. A tile that comes out as its one input tile, byte for byte, keeps the input's gzip stream when zlib or libdeflate made it (their headers say so), which spares compressing it again, so a copy compresses nothing. `--compression=zlib` compresses every tile with zlib, which makes tile-join's archive byte for byte, apart from the command line in `generator_options`.
+- **Reading** (`source.rs`). PMTiles directories are read at the start, and the tiles of each batch from a mapping of the archive made for that batch, whose pages leave memory with it. Reading each tile with `pread` took longer, since reads of one file do not overlap on macOS (152,000 random reads take 0.1 s on one thread and 0.15 s on eighteen). MBTiles rows come from tile-join's query on a thread of their own, a chunk at a time. Directories are listed at the start and their files read by the threads that need them.
+- **Overzooming** (`overzoom.rs`). tippecanoe-rs's `overzoom_source_tiles` with tile-join's arguments, making the same bytes with the output layers of the joining code and tippecanoe-rs's own clipping and cleaning. The children it tries only need to know whether a feature survives, so they stop at the first. A reader makes its overzoomed tiles 256 at a time on all threads, in the order the queue takes them, from the same parent tiles.
+- **Output.** manby's sinks, PMTiles written directly.
+
+### Tiles at the same z/x/y (`key.rs`)
+
+Where several inputs have a tile at the same z/x/y, tile-join appends their features in the order of the stored bytes of the tiles. manby compresses most tiles with libdeflate, so its tiles' bytes are not tippecanoe's and sort differently, and tippecanoe and then tile-join, and manby and then tile-join, give the features of shared tiles in different orders. So manby join compares a tile by the bytes zlib makes of it, with tippecanoe's settings, which are the bytes tippecanoe would have stored, when
+- its gzip header says libdeflate made it (OS byte 255, where zlib writes its own system's code), and
+- its tileset's `generator` says tippecanoe or tile-join made it, which manby's tilesets say.
+
+tippecanoe and tile-join store only zlib's bytes, so this changes nothing for their tilesets, and other tools' tilesets keep the comparison of stored bytes. Nothing changes for manby's tilesets made with `--compression=zlib` either, since all their tiles are zlib's. tile-join's own output says tile-join made it, and manby join stores only zlib's or libdeflate's streams, so joins of joins compare the same way.
+
+So manby and then manby join make what tippecanoe and then tile-join make, which `bench/join.sh` checks for its merges, and tile-join's tests pass with manby making their inputs. The price is that tile-join itself, run on manby's tilesets, can order the features of shared tiles differently from manby join on the same files. `TieBreak::Bytes` in `JoinOptions` compares stored bytes for every tile, as tile-join does.
+
+Compressing with zlib to compare costs processor time where shared tiles are many and large. The queue works these keys out ahead on all threads. When a tile ties with another reader's, it looks at each reader's next tiles (up to 16 MB or 16,384 tiles), finds those that share a z/x/y, and works out their keys together. Merging the points and the tracts that manby made takes 0.46 s comparing zlib's bytes against 0.42 s comparing stored bytes (medians of five), with 0.5 s more processor time. Comparing as the queue came to the tiles, one at a time, it took 0.93 s.
+
+### Differences from tile-join
+
+- **Messages.** The progress line names the first tile of each batch, and tiles over the size limit are reported as threads finish them, so in another order.
+- **Duplicate tiles.** An MBTiles database without a unique index can have two rows for one z/x/y. tile-join can write such a tile twice; manby join joins the rows into one tile.
+- **Errors inside tippecanoe-rs.** A feature filter that tippecanoe-rs's evaluator does not understand still ends the process from inside it, as in tile-join, rather than coming back as an error.
+
 ## Library and command
 
-`manby::run(&Options) -> Result<Summary>` is the entry point. Transitionally, the algorithm functions borrowed from tippecanoe-rs read tippecanoe-rs's globals. manby sets those once from `Options` and replaces each borrowed function with its own parameterized copy when it needs to change it.
+`manby::run(&Options) -> Result<Summary>` is the entry point for tiling, and `manby::join(&JoinOptions) -> Result<JoinSummary>` for joining. Transitionally, the algorithm functions borrowed from tippecanoe-rs read tippecanoe-rs's globals. manby sets those once from `Options` and replaces each borrowed function with its own parameterized copy when it needs to change it.
 
 ## Verification
 
-- **Expected outputs.** `make test-golden` runs tippecanoe's `.json.check` recipes with `manby` for the options it supports. A skip list names the rest and shrinks over time.
-- **Against tippecanoe-rs.** The benchmark script compares manby's decoded output with tippecanoe-rs's for every benchmark, every time.
+- **Expected outputs.** `make test-golden` runs tippecanoe's `.json.check` recipes with `manby` for the options it supports, and tile-join's recipes with `manby join` as `./tile-join`. A skip list names the rest and shrinks over time.
+- **Against tippecanoe-rs.** The benchmark scripts compare manby's decoded output with tippecanoe-rs's for every benchmark, every time. Unit tests check the decoding, joining and overzooming of `manby join` against tippecanoe-rs's and tile-join's own code on random tiles.
 - **Unit tests** for each module, and determinism tests that run the same input with 1, 2 and 18 threads.
 
 ## Milestones

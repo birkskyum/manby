@@ -24,7 +24,7 @@ against tippecanoe-rs's.
 time and peak resident memory, and checks that the tiles decode the same. It copies the tracts
 at `-z12` to PMTiles and to MBTiles, joins them to a CSV keyed on `GEOID` (`tracts-csv.py`),
 merges the points and the tracts (both `-zg`) to PMTiles and to MBTiles, and merges counties at
-`-z5` with tracts at `-z9` with `--overzoom`. It makes its inputs in `out/join` on the first run:
+`-z5` with tracts at `-z9` with `--overzoom`. It makes its inputs in `out/join` on the first run,
 with manby for the copies and the CSV join, and with tippecanoe-rs for the merges, since the order
 of features in tiles that several inputs share depends on the bytes of the stored tiles. For the
 merges it also checks manby, then `manby join`, against tippecanoe, then tile-join.

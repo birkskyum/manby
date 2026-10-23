@@ -4,7 +4,7 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
 use std::sync::Arc;
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 
 use tippecanoe::errors::{EXIT_ARGS, EXIT_IMPOSSIBLE, EXIT_INCOMPLETE};
 use tippecanoe::globals::MAX_ZOOM;
@@ -572,9 +572,9 @@ pub fn drive<'s>(
         if d.in_flight == 0 {
             break;
         }
-        let done = match rx.recv() {
-            Ok(e) => e,
-            Err(_) => break,
+        let done = match recv_soon(&rx) {
+            Some(e) => e,
+            None => break,
         };
         if let Done::Made { .. } | Done::Failed(_) = done {
             d.in_flight -= 1;
@@ -1170,6 +1170,28 @@ impl<'d, 's> Driver<'d, 's> {
         level.slots = Vec::new();
         level.history = Vec::new();
         Ok(())
+    }
+}
+
+/// How long the coordinator waits for the next result before it sleeps.
+const COORDINATOR_SPIN: std::time::Duration = std::time::Duration::from_micros(200);
+
+/// The next result, waited for awake for a moment before sleeping. Results
+/// come every few microseconds while small tiles are being made, and each
+/// time the coordinator sleeps, waking it costs more than that (much more
+/// in a virtual machine, where it wakes a virtual processor), while the
+/// pool runs out of tasks.
+fn recv_soon(rx: &Receiver<Done>) -> Option<Done> {
+    let started = std::time::Instant::now();
+    loop {
+        match rx.try_recv() {
+            Ok(done) => return Some(done),
+            Err(TryRecvError::Disconnected) => return None,
+            Err(TryRecvError::Empty) if started.elapsed() > COORDINATOR_SPIN => {
+                return rx.recv().ok();
+            }
+            Err(TryRecvError::Empty) => std::hint::spin_loop(),
+        }
     }
 }
 

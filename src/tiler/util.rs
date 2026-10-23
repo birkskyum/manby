@@ -323,13 +323,17 @@ impl Helpers {
             finished: std::sync::Condvar::new(),
             panic: std::sync::Mutex::new(None),
         });
+        // one helper woken for each queued entry, not every helper
+        let helping = parts.min(self.width()) - 1;
         {
             let mut q = self.shared.queue.lock().unwrap();
-            for _ in 1..parts.min(self.width()) {
+            for _ in 0..helping {
                 q.0.push_back(batch.clone());
             }
         }
-        self.shared.ready.notify_all();
+        for _ in 0..helping {
+            self.shared.ready.notify_one();
+        }
         batch.work();
         let mut done = batch.done.lock().unwrap();
         while *done < parts {

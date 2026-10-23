@@ -387,17 +387,29 @@ impl TileSink for PmtilesSink {
             bytes += len(item);
         }
         pieces.push((start, layout.order.len(), at, bytes));
-        pieces
-            .into_par_iter()
-            .try_for_each(|(from, to, at, bytes)| {
-                let mut buf = Vec::with_capacity(bytes as usize);
-                for &(s, n) in &layout.order[from..to] {
-                    let shard = &shards[s as usize];
-                    shard.data_into(&shard.contents[n as usize], spill, &mut buf)?;
-                }
-                this.file.write_all_at(&buf, at)
-            })
-            .map_err(write_error)?;
+        let gather = || {
+            pieces
+                .into_par_iter()
+                .try_for_each(|(from, to, at, bytes)| {
+                    let mut buf = Vec::with_capacity(bytes as usize);
+                    for &(s, n) in &layout.order[from..to] {
+                        let shard = &shards[s as usize];
+                        shard.data_into(&shard.contents[n as usize], spill, &mut buf)?;
+                    }
+                    this.file.write_all_at(&buf, at)
+                })
+        };
+        // Reads of one file do not overlap on macOS (152,000 random reads
+        // take 0.1 s on one thread and 0.15 s on eighteen), so spilled tiles
+        // are read back by two threads; more only wait for each other.
+        let gathered = match spill {
+            Some(_) => match rayon::ThreadPoolBuilder::new().num_threads(2).build() {
+                Ok(pool) => pool.install(gather),
+                Err(_) => gather(),
+            },
+            None => gather(),
+        };
+        gathered.map_err(write_error)?;
         Ok(())
     }
 }

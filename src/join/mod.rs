@@ -20,7 +20,6 @@ mod tests;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-use rayon::prelude::*;
 use tippecanoe::errors::{EXIT_CSV, EXIT_EXISTS, EXIT_PTHREAD};
 use tippecanoe::jsonpull::{JsonPull, JsonRef, JsonTree, JsonType};
 use tippecanoe::mbtiles::{LayermapEntry, make_metadata, merge_layermaps};
@@ -286,27 +285,60 @@ fn join_in_pool(o: &JoinOptions, threads: usize) -> Result<JoinSummary> {
         // a mapping of each archive for this batch only, so that the pages
         // of tiles already done leave memory
         let maps: Vec<Option<memmap2::Mmap>> = sources.iter().map(|s| s.batch_map()).collect();
-        groups.par_iter().try_for_each(|g| {
+        // The biggest tiles first, each thread taking the next when it is
+        // done, so that no thread is left with a big tile at the end.
+        let mut order: Vec<(u64, u32)> = groups
+            .iter()
+            .enumerate()
+            .map(|(i, g)| (g.members.iter().map(|m| m.1.size()).sum(), i as u32))
+            .collect();
+        order.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let failure: Mutex<Option<Error>> = Mutex::new(None);
+        let work = || {
             let slot = rayon::current_thread_index().unwrap_or(threads);
             let mut acc = accums[slot].lock().unwrap_or_else(|p| p.into_inner());
             let mut scratch = scratches[slot].lock().unwrap_or_else(|p| p.into_inner());
-            let tile = make_tile(g, &sources, &maps, &rules, o, &mut acc, &mut scratch)?;
-            match tile {
-                Made::Tile(data) => {
-                    sink.write_tile(g.z as u8, g.x as u32, g.y as u32, &data)?;
-                    written.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            loop {
+                let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if k >= order.len() {
+                    break;
                 }
-                Made::TooBig(n) => {
-                    eprintln!(
-                        "Tile {}/{}/{} size is {}, >{}. Skipping this tile.",
-                        g.z, g.x, g.y, n, MAX_TILE_BYTES
-                    );
-                    skipped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let g = &groups[order[k].1 as usize];
+                let done = make_tile(g, &sources, &maps, &rules, o, &mut acc, &mut scratch)
+                    .and_then(|tile| match tile {
+                        Made::Tile(data) => {
+                            sink.write_tile(g.z as u8, g.x as u32, g.y as u32, &data)?;
+                            written.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            Ok(())
+                        }
+                        Made::TooBig(n) => {
+                            eprintln!(
+                                "Tile {}/{}/{} size is {}, >{}. Skipping this tile.",
+                                g.z, g.x, g.y, n, MAX_TILE_BYTES
+                            );
+                            skipped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            Ok(())
+                        }
+                        Made::Nothing => Ok(()),
+                    });
+                if let Err(e) = done {
+                    let mut f = failure.lock().unwrap_or_else(|p| p.into_inner());
+                    f.get_or_insert(e);
+                    // the others stop at their next tile
+                    next.store(order.len(), std::sync::atomic::Ordering::Relaxed);
+                    break;
                 }
-                Made::Nothing => {}
             }
-            Ok::<(), Error>(())
-        })?;
+        };
+        rayon::scope(|s| {
+            for _ in 0..threads {
+                s.spawn(|_| work());
+            }
+        });
+        if let Some(e) = failure.into_inner().unwrap_or_else(|p| p.into_inner()) {
+            return Err(e);
+        }
         working += t.elapsed().as_secs_f64();
         if !more {
             break;

@@ -72,6 +72,17 @@ pub struct TileRef {
     pub loc: Loc,
 }
 
+impl TileRef {
+    /// The size of the tile's data, where it is known without reading it.
+    pub fn size(&self) -> u64 {
+        match &self.loc {
+            Loc::Range { len, .. } => *len as u64,
+            Loc::Data(d) => d.len() as u64,
+            Loc::File { .. } => 0,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Pmtiles,

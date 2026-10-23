@@ -16,7 +16,7 @@ mod read;
 mod util;
 
 #[cfg(test)]
-mod oracle;
+pub(crate) mod oracle;
 #[cfg(test)]
 mod tests;
 

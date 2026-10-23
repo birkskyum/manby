@@ -405,6 +405,11 @@ mod tests {
     #[test]
     fn stats_match_add_to_tilestats() {
         use std::sync::atomic::Ordering;
+        // add_to_tilestats reads the limit from tippecanoe-rs's globals,
+        // which other tests set
+        let _g = crate::tiler::oracle::GLOBALS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         tippecanoe::globals::MAX_TILESTATS_SAMPLE_VALUES.store(7, Ordering::Relaxed);
         let mut ts = BTreeMap::new();
         let mut st = Stat::default();

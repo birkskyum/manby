@@ -13,12 +13,15 @@
 # again, for its time and memory.
 #
 # BUDGET: manby's --memory-budget (default 1G)
+# PAUSE: seconds to wait before each run, for the machine to cool down after
+#   the one before (default 0)
 # TIPPECANOE, DECODE, MANBY, OUT: as in run.sh
 cd "$(dirname "$0")/.."
 TIPPECANOE=${TIPPECANOE:-../tippecanoe-rs/target/release/tippecanoe}
 DECODE=${DECODE:-../tippecanoe-rs/target/release/tippecanoe-decode}
 MANBY=${MANBY:-target/release/manby}
 BUDGET=${BUDGET:-1G}
+PAUSE=${PAUSE:-0}
 D=bench/data
 O=${OUT:-bench/out}
 mkdir -p $D $O
@@ -60,9 +63,11 @@ for name in $names; do
 	[ -z "$args" ] && { echo "unknown benchmark $name"; continue; }
 	make_input $name
 	if [ ! -s $O/tippecanoe-$name.pmtiles ] || [ -n "$TIPPECANOE_AGAIN" ]; then
+		sleep $PAUSE
 		read w m < <(measured $TIPPECANOE -q -f -o $O/tippecanoe-$name.pmtiles $args)
 		printf "%-10s %-22s %10s %10s\n" $name tippecanoe $w $m
 	fi
+	sleep $PAUSE
 	read w m < <(measured $MANBY -q -f -o $O/manby-$name.pmtiles --memory-budget=$BUDGET $args)
 	printf "%-10s %-22s %10s %10s\n" $name "manby, budget $BUDGET" $w $m
 	strip="-x generator -x generator_options -x name -x description"

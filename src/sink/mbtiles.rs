@@ -166,15 +166,16 @@ impl TileSink for MbtilesSink {
 /// printed and the database is used as it is, as in tippecanoe.
 pub fn mbtiles_open(path: &str, settings: &SinkSettings) -> Result<Connection> {
     let program = &settings.program;
-    let db =
-        sqlite3_open(path).map_err(|msg| Error::new(EXIT_OPEN, format!("{}: {}", path, msg)))?;
+    let db = sqlite3_open(path)
+        .map_err(|msg| Error::new(EXIT_OPEN, format!("{}: {}: {}", program, path, msg)))?;
 
     for pragma in [
         c"PRAGMA synchronous=0",
         c"PRAGMA locking_mode=EXCLUSIVE",
         c"PRAGMA journal_mode=DELETE",
     ] {
-        sqlite3_exec(&db, pragma).map_err(|err| sqlite_error(format!("async: {}", err)))?;
+        sqlite3_exec(&db, pragma)
+            .map_err(|err| sqlite_error(format!("{}: async: {}", program, err)))?;
     }
 
     let creates: [(&CStr, &str); 7] = [
@@ -209,16 +210,16 @@ pub fn mbtiles_open(path: &str, settings: &SinkSettings) -> Result<Connection> {
         if let Err(err) = sqlite3_exec(&db, sql) {
             let message = if what.is_empty() {
                 format!(
-                    "Tileset \"{}\" already exists. You can use --force if you want to delete the old tileset.\n{}: {}",
-                    path, program, err
+                    "{}: Tileset \"{}\" already exists. You can use --force if you want to delete the old tileset.\n{}: {}",
+                    program, path, program, err
                 )
             } else {
-                format!("{}: {}", what, err)
+                format!("{}: {}: {}", program, what, err)
             };
             if !settings.allow_existing {
                 return Err(Error::new(EXIT_EXISTS, message));
             }
-            eprintln!("{}: {}", program, message);
+            eprintln!("{}", message);
         }
     }
 

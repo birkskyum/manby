@@ -183,8 +183,8 @@ impl PmtilesSink {
             let _ = fs::remove_file(path);
         } else if fs::metadata(path).is_ok() {
             let mut message = format!(
-                "Tileset \"{}\" already exists. You can use --force if you want to delete the old tileset.\n{}: {}: file exists",
-                path, settings.program, path
+                "{}: Tileset \"{}\" already exists. You can use --force if you want to delete the old tileset.\n{}: {}: file exists",
+                settings.program, path, settings.program, path
             );
             if settings.allow_existing {
                 message += &format!(

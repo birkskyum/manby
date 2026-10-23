@@ -58,13 +58,13 @@ impl DirSink {
             let _ = fs::remove_file(&meta); // error OK since it may not exist
         } else if fs::metadata(&meta).is_ok() {
             let message = format!(
-                "Tileset \"{}\" already exists. You can use --force if you want to delete the old tileset.\n{}: {}: file exists",
-                dir, settings.program, meta
+                "{}: Tileset \"{}\" already exists. You can use --force if you want to delete the old tileset.\n{}: {}: file exists",
+                settings.program, dir, settings.program, meta
             );
             if !settings.allow_existing {
                 return Err(Error::new(EXIT_EXISTS, message));
             }
-            eprintln!("{}: {}", settings.program, message);
+            eprintln!("{}", message);
         }
 
         if !settings.allow_existing {

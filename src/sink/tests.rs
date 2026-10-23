@@ -313,7 +313,7 @@ fn pmtiles_errors() {
     let p = path.to_str().unwrap();
     let e = PmtilesSink::create(p, &settings()).err().unwrap();
     assert_eq!(e.exit_code, tippecanoe::errors::EXIT_EXISTS);
-    assert!(e.message.starts_with("Tileset \""));
+    assert!(e.message.starts_with("test: Tileset \""));
     let e = PmtilesSink::create(
         p,
         &SinkSettings {

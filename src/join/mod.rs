@@ -10,6 +10,7 @@ pub mod args;
 pub mod csv;
 pub mod key;
 pub mod merge;
+pub mod overzoom;
 pub mod source;
 pub mod stats;
 pub mod tile;
@@ -232,7 +233,6 @@ fn join_in_pool(o: &JoinOptions, threads: usize) -> Result<JoinSummary> {
         want_overzoom: o.overzoom,
         buffer: o.buffer,
         tie_break: o.tie_break,
-        unidecode_data: &o.unidecode_data,
     };
 
     // tile-join opens the -r inputs while it reads its options, and the

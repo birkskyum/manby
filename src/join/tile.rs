@@ -341,7 +341,7 @@ pub fn decompress(d: &mut libdeflater::Decompressor, data: &[u8], out: &mut Vec<
 
 /// What a feature's geometry becomes in the output tile.
 #[derive(Clone)]
-enum Geom {
+pub(crate) enum Geom {
     None,
     /// Commands of input tile `tile`, unchanged in scale.
     Commands {
@@ -352,31 +352,44 @@ enum Geom {
     Points(Range<u32>),
 }
 
-struct OutFeature {
-    id: u64,
-    has_id: bool,
-    type_: i32,
+pub(crate) struct OutFeature {
+    pub id: u64,
+    pub has_id: bool,
+    pub type_: i32,
     /// Pairs of key and value numbers, in [`Out::tags`].
-    tags: Range<u32>,
-    geom: Geom,
+    pub tags: Range<u32>,
+    pub geom: Geom,
 }
 
-struct OutLayer<'t> {
-    name: &'t str,
-    version: i32,
-    extent: i64,
+pub(crate) struct OutLayer<'t> {
+    pub name: &'t str,
+    pub version: i32,
+    pub extent: i64,
     keys: Vec<&'t str>,
     /// `key_dedup`: the slot of a key hash, and the key number it last held.
     key_slots: FxHashMap<u32, u32>,
     values: Vec<&'t Val<'t>>,
     value_slots: FxHashMap<u32, u32>,
-    features: Vec<OutFeature>,
+    pub features: Vec<OutFeature>,
 }
 
 impl<'t> OutLayer<'t> {
+    pub fn new(name: &'t str, version: i32, extent: i64) -> OutLayer<'t> {
+        OutLayer {
+            name,
+            version,
+            extent,
+            keys: Vec::new(),
+            key_slots: FxHashMap::default(),
+            values: Vec::new(),
+            value_slots: FxHashMap::default(),
+            features: Vec::new(),
+        }
+    }
+
     /// `mvt_layer::tag`: the key and value numbers, adding them to the
     /// layer's lists unless the hash slot of each holds the same already.
-    fn tag(&mut self, key: &'t str, value: &'t Val<'t>, tags: &mut Vec<u32>) {
+    pub fn tag(&mut self, key: &'t str, value: &'t Val<'t>, tags: &mut Vec<u32>) {
         let slot = (fnv1a(key.as_bytes()) % 65536) as u32;
         let k = match self.key_slots.get(&slot) {
             Some(&k) if self.keys[k as usize] == key => k,
@@ -405,23 +418,48 @@ impl<'t> OutLayer<'t> {
 
 /// A point of decoded geometry: `mvt_geometry`.
 #[derive(Clone, Copy)]
-struct Point {
-    op: i32,
-    x: i64,
-    y: i64,
+pub(crate) struct Point {
+    pub op: i32,
+    pub x: i64,
+    pub y: i64,
 }
 
 /// The output tile being built.
 #[derive(Default)]
-struct Out<'t> {
-    layers: Vec<OutLayer<'t>>,
-    tags: Vec<u32>,
-    points: Vec<Point>,
+pub(crate) struct Out<'t> {
+    pub layers: Vec<OutLayer<'t>>,
+    pub tags: Vec<u32>,
+    pub points: Vec<Point>,
+}
+
+impl Out<'_> {
+    /// `mvt_tile::encode` of the layers that have features, into `pbf`.
+    /// False if none has.
+    pub fn encode(
+        &self,
+        tiles: &[Decoded<'_>],
+        scratch: &mut Scratch,
+        pbf: &mut Vec<u8>,
+    ) -> Result<bool> {
+        pbf.clear();
+        let mut anything = false;
+        for layer in &self.layers {
+            if layer.features.is_empty() {
+                continue;
+            }
+            anything = true;
+            encode_layer(layer, self, tiles, scratch)?;
+            pbf.push(3 << 3 | 2);
+            varint(pbf, scratch.layer.len() as u64);
+            pbf.extend_from_slice(&scratch.layer);
+        }
+        Ok(anything)
+    }
 }
 
 /// The decoding of a feature's commands in `mvt_tile::decode`, calling `f`
 /// with each point.
-fn for_each_point(geoms: &[u32], mut f: impl FnMut(Point)) {
+pub(crate) fn for_each_point(geoms: &[u32], mut f: impl FnMut(Point)) {
     let (mut px, mut py) = (0i64, 0i64);
     let mut g = 0;
     while g < geoms.len() {
@@ -644,16 +682,8 @@ pub fn join_tile<'t>(
             let ol = match out.layers.iter().position(|l| l.name == name) {
                 Some(ol) => ol,
                 None => {
-                    out.layers.push(OutLayer {
-                        name,
-                        version: layer.version,
-                        extent: layer.extent,
-                        keys: Vec::new(),
-                        key_slots: FxHashMap::default(),
-                        values: Vec::new(),
-                        value_slots: FxHashMap::default(),
-                        features: Vec::new(),
-                    });
+                    out.layers
+                        .push(OutLayer::new(name, layer.version, layer.extent));
                     out.layers.len() - 1
                 }
             };
@@ -883,19 +913,7 @@ pub fn join_tile<'t>(
         }
     }
 
-    pbf.clear();
-    let mut anything = false;
-    for layer in &out.layers {
-        if layer.features.is_empty() {
-            continue;
-        }
-        anything = true;
-        encode_layer(layer, &out, tiles, scratch)?;
-        pbf.push(3 << 3 | 2);
-        varint(pbf, scratch.layer.len() as u64);
-        pbf.extend_from_slice(&scratch.layer);
-    }
-    Ok(anything)
+    out.encode(tiles, scratch, pbf)
 }
 
 fn bad_index(z: i32, x: u32, y: u32) -> Error {

@@ -16,12 +16,11 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 use tippecanoe::errors::{EXIT_IMPOSSIBLE, EXIT_PROTOBUF};
-use tippecanoe::geometry::SourceTile;
-use tippecanoe::mvt::MvtTile;
 
 use super::key::{Key, TieBreak, cmp};
+use super::overzoom::overzoom;
 use super::source::{Loc, Source, TileRef};
-use super::tile::{decompress, is_compressed};
+use super::tile::{Decoded, decompress, is_compressed};
 use crate::{Error, Result};
 
 /// A tile's zoom, x and y.
@@ -31,11 +30,10 @@ type Zxy = (i64, i64, i64);
 const OVERZOOM_BATCH: usize = 256;
 
 /// What the readers' order depends on beyond their tiles.
-pub struct Settings<'a> {
+pub struct Settings {
     pub want_overzoom: bool,
     pub buffer: i32,
     pub tie_break: TieBreak,
-    pub unidecode_data: &'a [String],
 }
 
 /// An overzoomed tile made ahead of its turn, with the child tiles that will
@@ -121,7 +119,7 @@ impl<'s> Reader<'s> {
     }
 
     /// `begin_reading`: the reader at its first tile.
-    pub fn begin(source: &'s Source, index: usize, s: &Settings<'_>) -> Result<Reader<'s>> {
+    pub fn begin(source: &'s Source, index: usize, s: &Settings) -> Result<Reader<'s>> {
         let mut r = Reader::new(source, index);
         r.advance(s)?;
         Ok(r)
@@ -144,7 +142,7 @@ impl<'s> Reader<'s> {
     }
 
     /// The key of the current tile, worked out the first time it is needed.
-    fn key(&mut self, s: &Settings<'_>) -> Result<&Key> {
+    fn key(&mut self, s: &Settings) -> Result<&Key> {
         if self.key.is_none() {
             let data = self.source.data(&self.tile)?.shared();
             let key = if self.made {
@@ -170,7 +168,7 @@ impl<'s> Reader<'s> {
         (self.zoom, self.x, self.y, self.tile.clone())
     }
 
-    fn advance(&mut self, s: &Settings<'_>) -> Result<()> {
+    fn advance(&mut self, s: &Settings) -> Result<()> {
         if self.done {
             if !s.want_overzoom {
                 return Err(Error::new(
@@ -271,7 +269,7 @@ impl<'s> Reader<'s> {
 
     /// Makes the next overzoomed tiles, in the order they will be taken,
     /// as `retrieve_overzoom` makes each.
-    fn make_overzoomed(&mut self, s: &Settings<'_>) -> Result<()> {
+    fn make_overzoomed(&mut self, s: &Settings) -> Result<()> {
         let n = self.overzoomed_tiles.len().min(OVERZOOM_BATCH);
         let tiles: Vec<(u32, u32)> = self
             .overzoomed_tiles
@@ -294,71 +292,58 @@ impl<'s> Reader<'s> {
 
         let parents: BTreeSet<Zxy> = tiles.iter().map(parent_of).collect();
         let source = self.source;
-        let decoded: Vec<Result<(Zxy, Arc<MvtTile>)>> = parents
+        let fetched: Vec<Result<(Zxy, Vec<u8>)>> = parents
             .into_par_iter()
-            .map(|p| Ok((p, Arc::new(parent_tile(source, p)?))))
+            .map(|p| Ok((p, parent_tile(source, p)?)))
             .collect();
-        let mut parent_tiles: HashMap<Zxy, Arc<MvtTile>> = HashMap::new();
-        for d in decoded {
-            let (p, t) = d?;
-            parent_tiles.insert(p, t);
+        let mut bytes: HashMap<Zxy, Vec<u8>> = HashMap::new();
+        for f in fetched {
+            let (p, b) = f?;
+            bytes.insert(p, b);
+        }
+        let mut parents: HashMap<Zxy, Decoded<'_>> = HashMap::new();
+        for (p, b) in &bytes {
+            let decoded = Decoded::decode(b).map_err(|_| {
+                Error::new(
+                    EXIT_PROTOBUF,
+                    format!("PBF decoding error in tile {}/{}/{}", p.0, p.1, p.2),
+                )
+            })?;
+            parents.insert(*p, decoded);
         }
 
-        let made: Vec<Made> = tiles
+        let made: Vec<Result<Made>> = tiles
             .par_iter()
             .map(|xy| {
                 let p = parent_of(xy);
-                let parent = &parent_tiles[&p];
+                let parent = &parents[&p];
                 let mut children = Vec::new();
                 let data = if parent.layers.is_empty() {
                     Vec::new()
                 } else {
-                    let tv = vec![SourceTile {
-                        tile: (**parent).clone(),
-                        z: p.0 as i32,
-                        x: p.1 as i32,
-                        y: p.2 as i32,
-                    }];
-                    tippecanoe::clip::overzoom_source_tiles(
-                        &tv,
-                        z as i32,
-                        xy.0 as i32,
-                        xy.1 as i32,
-                        -1,
+                    overzoom(
+                        parent,
+                        (p.0 as i32, p.1, p.2),
+                        (z as i32, xy.0 as i64, xy.1 as i64),
                         s.buffer,
-                        &BTreeSet::new(),
-                        &BTreeSet::new(),
-                        &[],
-                        false,
-                        Some(&mut children),
-                        false,
-                        None,
-                        false,
-                        &HashMap::new(),
-                        s.unidecode_data,
-                        0.0,
-                        0.0,
-                        &[],
-                        "",
-                        "",
-                        usize::MAX,
-                        &[],
-                        false,
-                    )
+                        &mut children,
+                    )?
                 };
-                Made {
+                Ok(Made {
                     xy: *xy,
                     data: data.into(),
                     children,
-                }
+                })
             })
             .collect();
-        self.ready.extend(made);
+        for m in made {
+            self.ready.push_back(m?);
+        }
         Ok(())
     }
 
     /// `operator<`: by zoom, x, TMS y, then the tiles' bytes.
-    fn lt(&mut self, r: &mut Reader<'_>, s: &Settings<'_>) -> Result<bool> {
+    fn lt(&mut self, r: &mut Reader<'_>, s: &Settings) -> Result<bool> {
         if self.zoom < r.zoom {
             return Ok(true);
         }
@@ -391,36 +376,20 @@ impl<'s> Reader<'s> {
     }
 }
 
-/// tile-join's `get_tile` for overzooming, decoded, without the hash tables
-/// tippecanoe-rs's decoder gives each layer, which only output layers use.
-fn parent_tile(source: &Source, (z, x, y): Zxy) -> Result<MvtTile> {
+/// tile-join's `get_tile` for overzooming, uncompressed: empty if there is
+/// no such tile.
+fn parent_tile(source: &Source, (z, x, y): Zxy) -> Result<Vec<u8>> {
     let data = source.get_tile(z, x, y)?;
-    let mut content = MvtTile::default();
-    if data.is_empty() {
-        return Ok(content);
+    if !is_compressed(&data) {
+        return Ok(data);
     }
     let mut buf = Vec::new();
-    let src: &[u8] = if is_compressed(&data) {
-        let mut d = libdeflater::Decompressor::new();
-        if !decompress(&mut d, &data, &mut buf) {
-            return Err(Error::new(tippecanoe::errors::EXIT_MVT, String::new()));
-        }
-        &buf
-    } else {
-        &data
-    };
-    let mut was_compressed = false;
-    if content.try_decode(src, &mut was_compressed).is_err() {
-        return Err(Error::new(
-            EXIT_PROTOBUF,
-            format!("PBF decoding error in tile {}/{}/{}", z, x, y),
-        ));
+    let mut d = libdeflater::Decompressor::new();
+    if !decompress(&mut d, &data, &mut buf) {
+        // tippecanoe-rs's decompress has said why
+        return Err(Error::new(tippecanoe::errors::EXIT_MVT, String::new()));
     }
-    for layer in &mut content.layers {
-        layer.key_dedup = Vec::new();
-        layer.value_dedup = Vec::new();
-    }
-    Ok(content)
+    Ok(buf)
 }
 
 /// The input tiles of one output tile, in the order tile-join appends them.
@@ -448,7 +417,7 @@ impl<'s> Queue<'s> {
     }
 
     /// `insert_reader`: before the first reader that it sorts before.
-    pub fn insert(&mut self, r: usize, s: &Settings<'_>) -> Result<()> {
+    pub fn insert(&mut self, r: usize, s: &Settings) -> Result<()> {
         let mut at = self.order.len();
         for (i, &here) in self.order.iter().enumerate() {
             let (a, b) = two(&mut self.readers, r, here);
@@ -462,7 +431,7 @@ impl<'s> Queue<'s> {
     }
 
     /// Adds a reader that has begun.
-    pub fn add(&mut self, reader: Reader<'s>, s: &Settings<'_>) -> Result<()> {
+    pub fn add(&mut self, reader: Reader<'s>, s: &Settings) -> Result<()> {
         self.readers.push(reader);
         self.insert(self.readers.len() - 1, s)
     }
@@ -476,7 +445,7 @@ impl<'s> Queue<'s> {
     /// Returns false when the readers are done.
     pub fn run(
         &mut self,
-        s: &Settings<'_>,
+        s: &Settings,
         minzoom: i32,
         maxzoom: i32,
         limit: usize,

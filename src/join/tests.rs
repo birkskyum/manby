@@ -878,7 +878,6 @@ fn batches_never_split_a_tile() {
         want_overzoom: false,
         buffer: 5,
         tie_break: TieBreak::Zlib,
-        unidecode_data: &[],
     };
     let run = |limit: usize| {
         let sources: Vec<Source> = names
@@ -997,4 +996,67 @@ fn only_zlib_and_libdeflate_streams_pass_through() {
         );
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Overzooming makes what tippecanoe-rs's `overzoom_source_tiles` makes with
+/// tile-join's arguments, children included.
+#[test]
+fn overzooming_matches_tippecanoe() {
+    use std::collections::HashMap;
+    let mut rng = Rng(5);
+    let mut cases = 0;
+    for i in 0..120 {
+        let data = random_tile(&mut rng, i % 40 == 0);
+        let ours = Decoded::decode(&data).unwrap();
+        let mut theirs = MvtTile::default();
+        let mut was_compressed = false;
+        assert!(theirs.try_decode(&data, &mut was_compressed).unwrap());
+        let (sz, sx, sy) = (3, 1i64, 2i64);
+        let depth = 1 + rng.below(3) as i32;
+        let n = 1i64 << depth;
+        let (dx, dy) = (rng.below(n as u64) as i64, rng.below(n as u64) as i64);
+        let dst = (sz + depth, sx * n + dx, sy * n + dy);
+        for buffer in [0, 5, 64] {
+            let mut our_children = Vec::new();
+            let pbf =
+                super::overzoom::overzoom(&ours, (sz, sx, sy), dst, buffer, &mut our_children)
+                    .unwrap();
+            let mut their_children = Vec::new();
+            let expected = tippecanoe::clip::overzoom_source_tiles(
+                &[tippecanoe::geometry::SourceTile {
+                    tile: theirs.clone(),
+                    z: sz,
+                    x: sx as i32,
+                    y: sy as i32,
+                }],
+                dst.0,
+                dst.1 as i32,
+                dst.2 as i32,
+                -1,
+                buffer,
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                &[],
+                false,
+                Some(&mut their_children),
+                false,
+                None,
+                false,
+                &HashMap::new(),
+                &[],
+                0.0,
+                0.0,
+                &[],
+                "",
+                "",
+                usize::MAX,
+                &[],
+                false,
+            );
+            assert!(pbf == expected, "case {} buffer {}", i, buffer);
+            assert_eq!(our_children, their_children, "case {} buffer {}", i, buffer);
+            cases += !expected.is_empty() as usize;
+        }
+    }
+    assert!(cases > 100);
 }

@@ -34,7 +34,7 @@ Measured from tippecanoe's own progress output:
 2. **A library first.** manby's own code has no global state and never exits the process. An `Options` value goes in and a `Result` comes out, so manby can run inside servers, other tools and, later, WebAssembly. The `manby` command is a thin layer that accepts tippecanoe's options.
 3. **Deterministic in parallel.** The output does not depend on the number of threads or on scheduling. Tiles are keyed by z/x/y, the features of a tile are always in the same order, and parallel work inside a tile is collected in order.
 4. **Memory first.** Features live in memory in compact fixed-size records. Inputs larger than memory can later move those arrays into memory-mapped files without changing the code that reads them.
-5. **Same results on every platform.** No result depends on unstable sorts, fused multiply-add or other platform differences. Where tippecanoe's own output depends on the platform, manby follows the Linux build that made the expected test output.
+5. **Same results on every platform.** No result depends on unstable sorts, fused multiply-add or other platform differences, and manby makes the same tiles on macOS and Linux. Where tippecanoe's own output depends on the platform, manby follows its x86-64 build. Its arm64 builds differ: clang and GCC both fuse multiplications and additions there by default (`-ffp-contract`), which changes the size of the tracts' zoom 0 tile by 6 bytes and so which features the retry keeps. Built with `-ffp-contract=off`, or for x86-64, tippecanoe makes manby's tiles on every benchmark.
 
 ## Architecture
 
@@ -58,6 +58,8 @@ Sorts the records by tippecanoe's sort order with a parallel radix sort, then ma
 ### Tiler (`src/tiler/`)
 
 Walks the tile quadtree from the top. Each tile is a task. Its input is the features its parent passed down (clipped to the parent tile, as in tippecanoe), and its outputs are the finished tile and the clipped features for its children. Children start as soon as their parent is done, so all cores stay busy without waiting for whole zoom levels. A tile with many features splits its per-feature work (clipping, simplification, polygon cleaning, encoding) across threads and collects the results in order. When a tile is over the size or feature limit, the retry repeats only the selection and encoding of data already in memory, choosing the next threshold exactly as tippecanoe does, so the same tiles come out. The geometry algorithms come from tippecanoe-rs (`clip`, `geometry`, `visvalingam`, `shared_borders`, `wagyu`, `mvt`).
+
+A coordinator on the calling thread hands ready tiles to the pool and applies tippecanoe's zoom-level rules to the results in order. While small tiles are made, results come every few microseconds, so the coordinator waits for the next one awake for up to 200 µs before it sleeps. When it slept between results, waking it cost more than the tiles took, and the pool ran out of tasks. On Linux in a virtual machine, where a wakeup wakes a virtual processor, that nearly tripled the time of runs with many small tiles (roads at `-z14`: 2.7 s against 1.0 s on 16 processors).
 
 ### Sinks (`src/sink/`)
 
@@ -140,7 +142,7 @@ Compressing with zlib to compare costs processor time where shared tiles are man
 ## Verification
 
 - **Expected outputs.** `make test-golden` runs tippecanoe's `.json.check` recipes with `manby` for the options it supports, and tile-join's recipes with `manby join` as `./tile-join`. A skip list names the rest and shrinks over time.
-- **Against tippecanoe-rs.** The benchmark scripts compare manby's decoded output with tippecanoe-rs's for every benchmark, every time. Unit tests check the decoding, joining and overzooming of `manby join` against tippecanoe-rs's and tile-join's own code on random tiles.
+- **Against tippecanoe.** The benchmark scripts compare manby's decoded output with tippecanoe-rs's, or with the C++ tippecanoe's (`TIPPECANOE`), for every benchmark, every time. Unit tests check the decoding, joining and overzooming of `manby join` against tippecanoe-rs's and tile-join's own code on random tiles.
 - **Unit tests** for each module, and determinism tests that run the same input with 1, 2 and 18 threads.
 
 ## Milestones

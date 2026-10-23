@@ -212,6 +212,10 @@ pub fn parse_args(argv: &[String], commandline: String) -> Result<JoinOptions> {
         commandline,
         ..Default::default()
     };
+    // tile-join's number of threads, which --threads overrides
+    if let Some(max) = std::env::var_os("TIPPECANOE_MAX_THREADS") {
+        o.threads = tippecanoe::cstd::atoi(&max.to_string_lossy()).max(1) as usize;
+    }
     let mut out_mbtiles: Option<String> = None;
     let mut out_dir: Option<String> = None;
     let mut read_from: Option<Vec<String>> = None;

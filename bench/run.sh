@@ -19,12 +19,15 @@
 # MANBY: the manby to test (default: target/release/manby)
 # ROUNDS: runs per program (default 3); the summary has their medians
 # MANBY_FLAGS: extra flags for manby only, such as --fast
+# PAUSE: seconds to wait before each run, for the machine to cool down after
+#   the one before (default 0)
 # OUT: the directory for the tilesets (default: bench/out)
 cd "$(dirname "$0")/.."
 TIPPECANOE=${TIPPECANOE:-../tippecanoe-rs/target/release/tippecanoe}
 DECODE=${DECODE:-../tippecanoe-rs/target/release/tippecanoe-decode}
 MANBY=${MANBY:-target/release/manby}
 ROUNDS=${ROUNDS:-3}
+PAUSE=${PAUSE:-0}
 D=bench/data
 O=${OUT:-bench/out}
 mkdir -p $O
@@ -66,9 +69,11 @@ for name in $names; do
 	[ -z "$args" ] && { echo "unknown benchmark $name"; continue; }
 	tw="" tm="" mw="" mm=""
 	for round in $(seq 1 $ROUNDS); do
+		sleep $PAUSE
 		read w m < <(measured $TIPPECANOE -q -f -o $O/tippecanoe-$name.pmtiles $args)
 		printf "%-16s %-10s %10s %10s\n" $name tippecanoe $w $m
 		tw="$tw $w" tm="$tm $m"
+		sleep $PAUSE
 		read w m < <(measured $MANBY -q -f -o $O/manby-$name.pmtiles $MANBY_FLAGS $args)
 		printf "%-16s %-10s %10s %10s\n" $name manby $w $m
 		mw="$mw $w" mm="$mm $m"

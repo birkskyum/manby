@@ -19,3 +19,12 @@ larger than it, which it makes on the first run: `points40m.geojsonl`, 40 millio
 (5.6 GB), and `tracts20.geojsonl`, the tracts 20 times over, moved north and south by
 `repeat.py` (3 GB). It reports wall time and peak resident memory, and checks the tiles
 against tippecanoe-rs's.
+
+`join.sh` times `manby join` against tippecanoe-rs's tile-join, alternating the two, with wall
+time and peak resident memory, and checks that the tiles decode the same. It copies the tracts
+at `-z12` to PMTiles and to MBTiles, joins them to a CSV keyed on `GEOID` (`tracts-csv.py`),
+merges the points and the tracts (both `-zg`) to PMTiles and to MBTiles, and merges counties at
+`-z5` with tracts at `-z9` with `--overzoom`. It makes its inputs in `out/join` on the first run:
+with manby for the copies and the CSV join, and with tippecanoe-rs for the merges, since the order
+of features in tiles that several inputs share depends on the bytes of the stored tiles. For the
+merges it also checks manby, then `manby join`, against tippecanoe, then tile-join.

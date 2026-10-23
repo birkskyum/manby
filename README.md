@@ -50,7 +50,7 @@ manby join -o merged.pmtiles roads.pmtiles places.mbtiles
 manby join -c tracts.csv -o joined.pmtiles tracts.pmtiles
 ```
 
-Under the name `tile-join`, a link to it for example, manby is tile-join, so it can take its place.
+`manby tile-join` works too. Under the name `tile-join`, a link to it for example, manby is tile-join, so it can take its place.
 
 On the same machine, median of three alternating runs, against tippecanoe-rs's tile-join. For every run the tiles decode to exactly what tile-join makes.
 
@@ -69,6 +69,23 @@ tile-join decodes each tile into layers that each allocate a megabyte of hash ta
 
 Where several inputs have a tile at the same z/x/y, tile-join appends their features in the order of the tiles' stored bytes. manby compresses most tiles with libdeflate, whose bytes sort differently from zlib's, so for tilesets that manby made, manby join compares tiles by the bytes zlib makes of them, which are tippecanoe's. So manby and then manby join make the tiles that tippecanoe and then tile-join make. tile-join itself, run on manby's tilesets, can order the features of those shared tiles differently. Tilesets that manby made with `--compression=zlib` are joined the same way by both.
 
+## tippecanoe's other programs
+
+manby also runs tippecanoe's smaller programs, as tippecanoe-rs has them, so one program does all of tippecanoe's work:
+
+| tippecanoe | manby |
+| --- | --- |
+| `tippecanoe` | `manby` |
+| `tile-join` | `manby join` |
+| `tippecanoe-decode` | `manby decode` |
+| `tippecanoe-enumerate` | `manby enumerate` |
+| `tippecanoe-overzoom` | `manby overzoom` |
+| `tippecanoe-json-tool` | `manby json-tool` |
+
+Each program's own name works as the subcommand too (`manby tippecanoe-decode`), and under that name, through a link, manby is that program, so links named after all six make manby a drop-in replacement for tippecanoe. Only the tiling and joining are manby's own, since that is where the time goes. The other four are tippecanoe-rs's code and run at its speed.
+
+To tile an input file named like a subcommand, such as `decode`, write it as `./decode`.
+
 ## Building and testing
 
 manby uses tippecanoe-rs as a library, so it expects that repository next to this one, at `../tippecanoe-rs`.
@@ -78,7 +95,7 @@ cargo build --release
 make test
 ```
 
-`make test` runs the unit tests and tippecanoe's own test suite with manby in place of tippecanoe, from GeoJSON input and again from Geobuf input. All 188 of tippecanoe's expected outputs match, and tile-join's tests pass with manby as tile-join.
+`make test` runs the unit tests and tippecanoe's own test suite with manby in place of tippecanoe, from GeoJSON input and again from Geobuf input. All 188 of tippecanoe's expected outputs match, and the tests of tippecanoe's other programs pass with manby as each of them.
 
 manby is a library first. `manby::run(&Options)` reads, tiles and writes a tileset and returns an error instead of exiting, `manby::join(&JoinOptions)` joins tilesets, and the commands are thin layers over them.
 

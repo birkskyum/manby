@@ -20,6 +20,8 @@ RECIPES = csv-test flatgeobuf-test layer-json-test parallel-test radix-sort-test
 # either: its expected output is stale, and tippecanoe and tippecanoe-rs fail
 # it the same way (see tippecanoe-rs's README.md).
 RECIPES += raw-tiles-test pmtiles-test enumerate-test join-test join-filter-test
+# and those of tippecanoe's other programs, all of them manby too.
+RECIPES += pbf-test overzoom-test json-tool-test
 
 all: $(addsuffix .check,$(TESTS)) $(RECIPES)
 
@@ -355,3 +357,115 @@ geobuf-test: tippecanoe-json-tool $(addsuffix .checkbuf,$(filter-out $(nogeobuf)
 	./tippecanoe-decode -x generator $@.mbtiles | sed 's/checkbuf/check/g' | sed 's/\.geobuf//g' > $@.out
 	cmp $@.out $(patsubst %.checkbuf,%,$@)
 	rm $@.out $@.mbtiles
+
+pbf-test: tippecanoe-decode
+	./tippecanoe-decode -x generator tests/pbf/11-328-791.vector.pbf 11 328 791 > tests/pbf/11-328-791.vector.pbf.out
+	cmp tests/pbf/11-328-791.json tests/pbf/11-328-791.vector.pbf.out
+	rm tests/pbf/11-328-791.vector.pbf.out
+	./tippecanoe-decode -x generator -s EPSG:3857 tests/pbf/11-328-791.vector.pbf 11 328 791 > tests/pbf/11-328-791.3857.vector.pbf.out
+	cmp tests/pbf/11-328-791.3857.json tests/pbf/11-328-791.3857.vector.pbf.out
+	rm tests/pbf/11-328-791.3857.vector.pbf.out
+
+overzoom-test: tippecanoe-overzoom
+	# Basic operation
+	./tippecanoe-overzoom -o tests/pbf/13-1310-3166.pbf tests/pbf/11-327-791.pbf 11/327/791 13/1310/3166
+	./tippecanoe-decode tests/pbf/13-1310-3166.pbf 13 1310 3166 > tests/pbf/13-1310-3166.pbf.json.check
+	cmp tests/pbf/13-1310-3166.pbf.json.check tests/pbf/13-1310-3166.pbf.json
+	rm tests/pbf/13-1310-3166.pbf tests/pbf/13-1310-3166.pbf.json.check
+	# Make sure feature order is stable
+	# Large -b20 tile buffer to prevent altering the geometries by clipping
+	./tippecanoe-overzoom -b20 --preserve-input-order -o tests/pbf/11-327-791-out.pbf tests/pbf/11-327-791.pbf 11/327/791 11/327/791
+	./tippecanoe-decode tests/pbf/11-327-791.pbf 11 327 791 > tests/pbf/11-327-791.json
+	./tippecanoe-decode tests/pbf/11-327-791-out.pbf 11 327 791 > tests/pbf/11-327-791-out.json
+	cmp tests/pbf/11-327-791.json tests/pbf/11-327-791-out.json
+	rm tests/pbf/11-327-791.json tests/pbf/11-327-791-out.json tests/pbf/11-327-791-out.pbf
+	# Basic operation, multiple input form
+	./tippecanoe-overzoom -o tests/pbf/13-1310-3166.pbf -t 13/1310/3166 tests/pbf/11-327-791.pbf 11/327/791
+	./tippecanoe-decode tests/pbf/13-1310-3166.pbf 13 1310 3166 > tests/pbf/13-1310-3166.pbf.json.check
+	cmp tests/pbf/13-1310-3166.pbf.json.check tests/pbf/13-1310-3166.pbf.json
+	rm tests/pbf/13-1310-3166.pbf tests/pbf/13-1310-3166.pbf.json.check
+	# Multiple inputs, no compression
+	./tippecanoe-overzoom --no-tile-compression -o tests/pbf/13-1310-3166-ne.pbf -t 13/1310/3166 tests/pbf/11-327-791.pbf 11/327/791 tests/pbf/0-0-0.pbf 0/0/0
+	./tippecanoe-decode tests/pbf/13-1310-3166-ne.pbf 13 1310 3166 > tests/pbf/13-1310-3166-ne.pbf.json.check
+	cmp tests/pbf/13-1310-3166-ne.pbf.json.check tests/pbf/13-1310-3166-ne.pbf.json
+	rm tests/pbf/13-1310-3166-ne.pbf tests/pbf/13-1310-3166-ne.pbf.json.check
+	# Different detail and buffer, and attribute stripping
+	./tippecanoe-overzoom -d8 -b30 -y NAME -y name -y scalerank -o tests/pbf/13-1310-3166-8-30.pbf tests/pbf/11-327-791.pbf 11/327/791 13/1310/3166
+	./tippecanoe-decode tests/pbf/13-1310-3166-8-30.pbf 13 1310 3166 > tests/pbf/13-1310-3166-8-30.pbf.json.check
+	cmp tests/pbf/13-1310-3166-8-30.pbf.json.check tests/pbf/13-1310-3166-8-30.pbf.json
+	rm tests/pbf/13-1310-3166-8-30.pbf tests/pbf/13-1310-3166-8-30.pbf.json.check
+	# No features in child tile
+	./tippecanoe-overzoom -o tests/pbf/14-2616-6331.pbf tests/pbf/11-327-791.pbf 11/327/791 14/2616/6331
+	cmp tests/pbf/14-2616-6331.pbf /dev/null
+	rm tests/pbf/14-2616-6331.pbf
+	# Thinning
+	# 243 features in the source tile tests/pbf/0-0-0-pop.pbf
+	# 9 of them survive as the best of each cluster of 30
+	# ./tippecanoe -z1 -r30 --retain-points-multiplier 30 -f -e out.dir tests/ne_110m_populated_places/in.json
+	# cp out.dir/0/0/0.pbf tests/pbf/0-0-0-pop.pbf
+	./tippecanoe-overzoom -y NAME -m -o tests/pbf/0-0-0-pop-filtered.pbf tests/pbf/0-0-0-pop.pbf 0/0/0 0/0/0
+	./tippecanoe-decode tests/pbf/0-0-0-pop-filtered.pbf 0 0 0 > tests/pbf/0-0-0-pop-filtered.pbf.json.check
+	cmp tests/pbf/0-0-0-pop-filtered.pbf.json.check tests/pbf/0-0-0-pop-filtered.pbf.json
+	rm tests/pbf/0-0-0-pop-filtered.pbf tests/pbf/0-0-0-pop-filtered.pbf.json.check
+	# Thinning with accumulation
+	./tippecanoe-overzoom -y NAME -m --accumulate-attribute NAME:comma -o tests/pbf/0-0-0-pop-accum.pbf tests/pbf/0-0-0-pop.pbf 0/0/0 0/0/0
+	./tippecanoe-decode tests/pbf/0-0-0-pop-accum.pbf 0 0 0 > tests/pbf/0-0-0-pop-accum.pbf.json.check
+	cmp tests/pbf/0-0-0-pop-accum.pbf.json.check tests/pbf/0-0-0-pop-accum.pbf.json
+	rm tests/pbf/0-0-0-pop-accum.pbf tests/pbf/0-0-0-pop-accum.pbf.json.check
+	# Filtering
+	# 243 features in the source tile tests/pbf/0-0-0-pop.pbf
+	# 27 of them match the filter and are retained
+	./tippecanoe-overzoom -y NAME -j'{"*":["==","SCALERANK",0]}' -o tests/pbf/0-0-0-pop-expr.pbf tests/pbf/0-0-0-pop.pbf 0/0/0 0/0/0
+	./tippecanoe-decode tests/pbf/0-0-0-pop-expr.pbf 0 0 0 > tests/pbf/0-0-0-pop-expr.pbf.json.check
+	cmp tests/pbf/0-0-0-pop-expr.pbf.json.check tests/pbf/0-0-0-pop-expr.pbf.json
+	rm tests/pbf/0-0-0-pop-expr.pbf tests/pbf/0-0-0-pop-expr.pbf.json.check
+	# Same filter test, but reading the filter from a file
+	./tippecanoe-overzoom -y NAME -J tests/pbf/scalerank-0-filter.json -o tests/pbf/0-0-0-pop-expr.pbf tests/pbf/0-0-0-pop.pbf 0/0/0 0/0/0
+	./tippecanoe-decode tests/pbf/0-0-0-pop-expr.pbf 0 0 0 > tests/pbf/0-0-0-pop-expr.pbf.json.check
+	cmp tests/pbf/0-0-0-pop-expr.pbf.json.check tests/pbf/0-0-0-pop-expr.pbf.json
+	rm tests/pbf/0-0-0-pop-expr.pbf tests/pbf/0-0-0-pop-expr.pbf.json.check
+	# Filtering with multiplier
+	# 243 features in the source tile tests/pbf/0-0-0-pop.pbf
+	# 8 features survive into the output, from 9 clusters of 30
+	./tippecanoe-overzoom -y NAME -y SCALERANK -j'{"*":["==","SCALERANK",0]}' -m -o tests/pbf/0-0-0-filter-mult.pbf tests/pbf/0-0-0-pop.pbf 0/0/0 0/0/0
+	./tippecanoe-decode tests/pbf/0-0-0-filter-mult.pbf 0 0 0 > tests/pbf/0-0-0-filter-mult.pbf.json.check
+	cmp tests/pbf/0-0-0-filter-mult.pbf.json.check tests/pbf/0-0-0-filter-mult.pbf.json
+	rm tests/pbf/0-0-0-filter-mult.pbf tests/pbf/0-0-0-filter-mult.pbf.json.check
+	# Filtering with multiplier and preserve-input-order
+	# 243 features in the source tile tests/pbf/0-0-0-pop.pbf
+	./tippecanoe-overzoom -y NAME -y SCALERANK -y LATITUDE -j'{"*":[">","LATITUDE",40]}' -m --preserve-input-order -o tests/pbf/0-0-0-filter-mult-order.pbf tests/pbf/0-0-0-pop.pbf 0/0/0 0/0/0
+	./tippecanoe-decode tests/pbf/0-0-0-filter-mult-order.pbf 0 0 0 > tests/pbf/0-0-0-filter-mult-order.pbf.json.check
+	cmp tests/pbf/0-0-0-filter-mult-order.pbf.json.check tests/pbf/0-0-0-filter-mult-order.pbf.json
+	rm tests/pbf/0-0-0-filter-mult-order.pbf tests/pbf/0-0-0-filter-mult-order.pbf.json.check
+	# Test that overzooming with a multiplier exactly reverses the effect of tiling with a multiplier
+	./tippecanoe -q -z5 --preserve-point-density-threshold 8 --retain-points-multiplier 3 -f -e tests/muni/out/out.dir tests/muni/muni.json
+	./tippecanoe -q -z5 --preserve-point-density-threshold 8 -f -o tests/muni/out/out.mbtiles tests/muni/muni.json
+	./tippecanoe-overzoom -m -o tests/muni/out/out.dir/000.pbf tests/muni/out/out.dir/0/0/0.pbf 0/0/0 0/0/0
+	./tippecanoe-decode tests/muni/out/out.mbtiles 0 0 0 > tests/muni/out/out.dir/direct.json
+	./tippecanoe-decode tests/muni/out/out.dir/000.pbf 0 0 0 > tests/muni/out/out.dir/overzoomed.json
+	cmp tests/muni/out/out.dir/overzoomed.json tests/muni/out/out.dir/direct.json
+	rm -rf tests/muni/out/out.dir tests/muni/out/out.mbtiles tests/muni/out/out.dir/overzoomed.json tests/muni/out/out.dir/direct.json
+	# Tiny polygon reduction
+	./tippecanoe-overzoom --line-simplification=5 --tiny-polygon-size=50 -o tests/pbf/countries-0-0-0.pbf.out tests/pbf/countries-0-0-0.pbf 0/0/0 0/0/0
+	./tippecanoe-decode tests/pbf/countries-0-0-0.pbf.out 0 0 0 > tests/pbf/countries-0-0-0.pbf.out.json.check
+	cmp tests/pbf/countries-0-0-0.pbf.out.json.check tests/pbf/countries-0-0-0.pbf.out.json
+	rm tests/pbf/countries-0-0-0.pbf.out tests/pbf/countries-0-0-0.pbf.out.json.check
+	# Deduplication by feature ID
+	./tippecanoe -z0 -f -e tests/pbf/1.json.dir -l layer tests/pbf/1.json
+	./tippecanoe -z0 -f -e tests/pbf/2.json.dir -l layer tests/pbf/2.json
+	./tippecanoe-overzoom -b0 -o tests/pbf/merged-nodedup.pbf -t 1/1/0 tests/pbf/1.json.dir/0/0/0.pbf 0/0/0 tests/pbf/2.json.dir/0/0/0.pbf 0/0/0
+	./tippecanoe-decode tests/pbf/merged-nodedup.pbf 1 1 0 > tests/pbf/merged-nodedup.pbf.json.check
+	cmp tests/pbf/merged-nodedup.pbf.json.check tests/pbf/merged-nodedup.pbf.json
+	./tippecanoe-overzoom -b0 --deduplicate-by-id -o tests/pbf/merged-dedup.pbf -t 1/1/0 tests/pbf/1.json.dir/0/0/0.pbf 0/0/0 tests/pbf/2.json.dir/0/0/0.pbf 0/0/0
+	./tippecanoe-decode tests/pbf/merged-dedup.pbf 1 1 0 > tests/pbf/merged-dedup.pbf.json.check
+	cmp tests/pbf/merged-dedup.pbf.json.check tests/pbf/merged-dedup.pbf.json
+	rm -r tests/pbf/1.json.dir tests/pbf/2.json.dir tests/pbf/merged-nodedup.pbf tests/pbf/merged-nodedup.pbf.json.check tests/pbf/merged-dedup.pbf tests/pbf/merged-dedup.pbf.json.check
+
+json-tool-test: tippecanoe-json-tool
+	./tippecanoe-json-tool -e GEOID10 tests/join-population/tabblock_06001420.json | sort > tests/join-population/tabblock_06001420.json.sort
+	./tippecanoe-json-tool -c tests/join-population/population.csv tests/join-population/tabblock_06001420.json.sort > tests/join-population/tabblock_06001420.json.sort.joined
+	./tippecanoe-json-tool --empty-csv-columns-are-null -c tests/join-population/population.csv tests/join-population/tabblock_06001420.json.sort > tests/join-population/tabblock_06001420-null.json.sort.joined
+	cmp tests/join-population/tabblock_06001420.json.sort.joined tests/join-population/tabblock_06001420.json.sort.joined.standard
+	cmp tests/join-population/tabblock_06001420-null.json.sort.joined tests/join-population/tabblock_06001420-null.json.sort.joined.standard
+	rm -f tests/join-population/tabblock_06001420.json.sort tests/join-population/tabblock_06001420.json.sort.joined
+	rm -f tests/join-population/tabblock_06001420-null.json.sort.joined

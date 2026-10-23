@@ -83,6 +83,17 @@ impl Key {
         Key::Bytes(data)
     }
 
+    /// The same key with its bytes worked out, and nothing else kept.
+    pub fn forced(self) -> Key {
+        match self {
+            Key::Zlib { content, bytes } => match bytes.into_inner() {
+                Some(b) => Key::Bytes(b.into()),
+                None => Key::Bytes(crate::compress::gzip(&content, false).into()),
+            },
+            k => k,
+        }
+    }
+
     /// The bytes known without compressing anything.
     fn known(&self) -> &[u8] {
         match self {

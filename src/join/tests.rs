@@ -850,7 +850,7 @@ fn values_out_of_order_with_csv_text() {
 }
 
 #[test]
-fn batches_never_split_a_tile() {
+fn batches_never_split_a_tile_and_order_by_zlib_bytes() {
     use super::merge::{Queue, Reader, Settings};
     use super::source::Source;
     let _g = crate::tiler::oracle::GLOBALS
@@ -863,7 +863,7 @@ fn batches_never_split_a_tile() {
     for (out, input) in [
         ("a.pmtiles", "ne_110m_ocean/in.json"),
         ("b.pmtiles", "ne_110m_admin_0_countries/in.json.gz"),
-        ("c.pmtiles", "ne_110m_admin_0_countries/in.json.gz"),
+        ("c.pmtiles", "ne_110m_populated_places/in.json"),
     ] {
         let out = dir.join(out).to_string_lossy().into_owned();
         let argv: Vec<String> = ["tippecanoe", "-q", "-f", "-z3", "-o", &out]
@@ -895,6 +895,23 @@ fn batches_never_split_a_tile() {
             let mut groups = Vec::new();
             let more = queue.run(&settings, 0, 32, limit, &mut groups).unwrap();
             for g in groups {
+                // in the order of the bytes zlib makes of the tiles, as
+                // tile-join orders tippecanoe's tiles
+                let zlib: Vec<Vec<u8>> = g
+                    .members
+                    .iter()
+                    .map(|(i, t)| {
+                        let data = sources[*i].data(t).unwrap();
+                        let mut content = Vec::new();
+                        assert!(tile::decompress(
+                            &mut libdeflater::Decompressor::new(),
+                            &data,
+                            &mut content
+                        ));
+                        crate::compress::gzip(&content, false)
+                    })
+                    .collect();
+                assert!(zlib.windows(2).all(|w| w[0] <= w[1]));
                 all.push((
                     g.z,
                     g.x,
@@ -910,6 +927,8 @@ fn batches_never_split_a_tile() {
     };
     let whole = run(usize::MAX);
     assert!(whole.iter().any(|g| g.3.len() == 3));
+    // the inputs disagree with their own order somewhere
+    assert!(whole.iter().any(|g| g.3.windows(2).any(|w| w[0] > w[1])));
     assert_eq!(run(1), whole);
     assert_eq!(run(7), whole);
     let _ = std::fs::remove_dir_all(&dir);

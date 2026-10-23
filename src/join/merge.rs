@@ -11,7 +11,7 @@
 //! a function of its parent tile alone.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 
 use rayon::prelude::*;
@@ -58,6 +58,12 @@ pub struct Reader<'s> {
     /// tiles that `key.rs` compares by their zlib bytes.
     made: bool,
     key: Option<Key>,
+    /// The number of the current tile among the source's, if it is one of
+    /// them, and of the next to come.
+    seq: Option<u64>,
+    next_seq: u64,
+    /// Keys of tiles to come, worked out ahead by [`Queue::prefetch`].
+    cache: BTreeMap<u64, Key>,
     current_tile_is_overzoomed: bool,
     done: bool,
 
@@ -105,6 +111,9 @@ impl<'s> Reader<'s> {
             },
             made: true,
             key: None,
+            seq: None,
+            next_seq: 0,
+            cache: BTreeMap::new(),
             current_tile_is_overzoomed: false,
             done: false,
             maxzoom_so_far: -1,
@@ -125,24 +134,53 @@ impl<'s> Reader<'s> {
         Ok(r)
     }
 
-    fn next_source_tile(&mut self) -> Option<TileRef> {
-        while self.pending.is_empty() && !self.exhausted {
-            match self.source.next_chunk() {
-                Some(chunk) => self.pending.extend(chunk),
-                None => self.exhausted = true,
-            }
+    /// Reads more of the source's tiles. False if there are no more.
+    fn read_more(&mut self) -> bool {
+        if self.exhausted {
+            return false;
         }
-        self.pending.pop_front()
+        match self.source.next_chunk() {
+            Some(chunk) => self.pending.extend(chunk),
+            None => self.exhausted = true,
+        }
+        !self.exhausted
+    }
+
+    fn next_source_tile(&mut self) -> Option<TileRef> {
+        while self.pending.is_empty() && self.read_more() {}
+        let t = self.pending.pop_front()?;
+        self.seq = Some(self.next_seq);
+        self.next_seq += 1;
+        Some(t)
     }
 
     fn set_data(&mut self, tile: TileRef, made: bool) {
         self.tile = tile;
         self.made = made;
         self.key = None;
+        if made {
+            self.seq = None;
+        }
+        // keys worked out ahead for tiles passed by
+        let now = self.seq.unwrap_or(self.next_seq);
+        while self.cache.first_key_value().is_some_and(|(&k, _)| k < now) {
+            self.cache.pop_first();
+        }
+    }
+
+    /// Whether the key of the current tile is known or worked out ahead.
+    fn has_key(&self) -> bool {
+        self.key.is_some() || self.seq.is_some_and(|q| self.cache.contains_key(&q))
     }
 
     /// The key of the current tile, worked out the first time it is needed.
     fn key(&mut self, s: &Settings) -> Result<&Key> {
+        if self.key.is_none()
+            && let Some(q) = self.seq
+            && let Some(k) = self.cache.remove(&q)
+        {
+            self.key = Some(k);
+        }
         if self.key.is_none() {
             let data = self.source.data(&self.tile)?.shared();
             let key = if self.made {
@@ -406,18 +444,151 @@ pub struct Queue<'s> {
     pub readers: Vec<Reader<'s>>,
     /// Reader numbers, first to last.
     pub order: Vec<usize>,
+    /// How far [`Queue::prefetch`] has looked: all tiles up to here, or
+    /// all of them if None after a look.
+    prefetched: Option<Option<Place>>,
 }
+
+/// Where a tile comes in the readers' order: zoom, x and TMS y.
+type Place = (i64, i64, i32);
+
+fn place(z: i64, x: i64, y: i64) -> Place {
+    (
+        z,
+        x,
+        1i64.wrapping_shl(z as u32).wrapping_sub(1).wrapping_sub(y) as i32,
+    )
+}
+
+/// Bytes and tiles of each reader's tiles to come that a look ahead covers.
+const PREFETCH_BYTES: u64 = 16 << 20;
+const PREFETCH_TILES: usize = 16384;
 
 impl<'s> Queue<'s> {
     pub fn new() -> Queue<'s> {
         Queue {
             readers: Vec::new(),
             order: Vec::new(),
+            prefetched: None,
         }
+    }
+
+    fn covered(&self, p: Place) -> bool {
+        match self.prefetched {
+            Some(None) => true,
+            Some(Some(bound)) => p <= bound,
+            None => false,
+        }
+    }
+
+    /// Works out ahead, on all threads, the keys of the tiles to come that
+    /// share their z/x/y with another reader's, which the readers' order
+    /// will compare: with `TieBreak::Zlib`, the tiles manby compressed with
+    /// libdeflate have to be compressed with zlib to compare them.
+    fn prefetch(&mut self, s: &Settings) -> Result<()> {
+        // each reader's tiles to come, up to a size; all readers' up to the
+        // nearest end of one of those
+        let mut bound: Option<Place> = None;
+        for r in self.readers.iter_mut() {
+            if r.done {
+                continue;
+            }
+            let (mut n, mut bytes) = (0usize, 0u64);
+            loop {
+                while n < r.pending.len() && n < PREFETCH_TILES && bytes < PREFETCH_BYTES {
+                    bytes += r.pending[n].size();
+                    n += 1;
+                }
+                if n < r.pending.len() || n >= PREFETCH_TILES || bytes >= PREFETCH_BYTES {
+                    break;
+                }
+                if !r.read_more() {
+                    break;
+                }
+            }
+            if n < r.pending.len() || !r.exhausted {
+                if let Some(t) = r.pending.get(n.saturating_sub(1)) {
+                    let p = place(t.z, t.x, t.y);
+                    bound = Some(bound.map_or(p, |b| b.min(p)));
+                } else {
+                    // nothing read ahead; nothing beyond the current tile is covered
+                    bound = Some(
+                        bound.map_or(place(r.zoom, r.x, r.y), |b| b.min(place(r.zoom, r.x, r.y))),
+                    );
+                }
+            }
+        }
+
+        // the tiles that share a z/x/y
+        let mut tiles: Vec<(Place, usize, u64, TileRef)> = Vec::new();
+        for (i, r) in self.readers.iter().enumerate() {
+            if let Some(q) = r.seq
+                && !r.done
+            {
+                tiles.push((place(r.zoom, r.x, r.y), i, q, r.tile.clone()));
+            }
+            for (k, t) in r.pending.iter().enumerate() {
+                let p = place(t.z, t.x, t.y);
+                if bound.is_some_and(|b| p > b) {
+                    break;
+                }
+                tiles.push((p, i, r.next_seq + k as u64, t.clone()));
+            }
+        }
+        tiles.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        let mut jobs = Vec::new();
+        let mut i = 0;
+        while i < tiles.len() {
+            let mut j = i + 1;
+            while j < tiles.len() && tiles[j].0 == tiles[i].0 {
+                j += 1;
+            }
+            if j - i > 1 {
+                for t in &tiles[i..j] {
+                    let r = &self.readers[t.1];
+                    let known =
+                        r.cache.contains_key(&t.2) || (r.seq == Some(t.2) && r.key.is_some());
+                    if !known {
+                        jobs.push((t.1, t.2, &t.3));
+                    }
+                }
+            }
+            i = j;
+        }
+
+        let readers = &self.readers;
+        let keys: Vec<Result<(usize, u64, Key)>> = jobs
+            .par_iter()
+            .map(|&(r, q, t)| {
+                let source = readers[r].source;
+                let data = source.data(t)?.shared();
+                Ok((
+                    r,
+                    q,
+                    Key::new(data, source.tippecanoe_made, s.tie_break).forced(),
+                ))
+            })
+            .collect();
+        for k in keys {
+            let (r, q, key) = k?;
+            self.readers[r].cache.insert(q, key);
+        }
+        self.prefetched = Some(bound);
+        Ok(())
     }
 
     /// `insert_reader`: before the first reader that it sorts before.
     pub fn insert(&mut self, r: usize, s: &Settings) -> Result<()> {
+        // the keys of tiles it shares its z/x/y with, worked out ahead
+        let p = place(self.readers[r].zoom, self.readers[r].x, self.readers[r].y);
+        let ties = self.order.iter().any(|&here| {
+            let h = &self.readers[here];
+            place(h.zoom, h.x, h.y) == p && (!h.has_key() || !self.readers[r].has_key())
+        });
+        if ties && self.readers[r].seq.is_some() && !self.covered(p) {
+            self.prefetch(s)?;
+        }
+
         let mut at = self.order.len();
         for (i, &here) in self.order.iter().enumerate() {
             let (a, b) = two(&mut self.readers, r, here);

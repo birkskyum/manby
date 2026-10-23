@@ -101,6 +101,8 @@ pub struct JoinOptions {
     pub program: String,
     /// The command line, for the metadata's `generator_options`.
     pub commandline: String,
+    /// Prints how long the parts of the join take.
+    pub timing: bool,
 }
 
 impl Default for JoinOptions {
@@ -142,6 +144,7 @@ impl Default for JoinOptions {
             tie_break: TieBreak::default(),
             program: "tile-join".to_string(),
             commandline: String::new(),
+            timing: false,
         }
     }
 }
@@ -266,20 +269,28 @@ fn join_in_pool(o: &JoinOptions, threads: usize) -> Result<JoinSummary> {
     let written = std::sync::atomic::AtomicU64::new(0);
     let skipped = std::sync::atomic::AtomicU64::new(0);
 
+    let started = std::time::Instant::now();
+    let (mut queueing, mut working) = (0.0, 0.0);
     let mut groups: Vec<Group> = Vec::with_capacity(BATCH);
     loop {
+        let t = std::time::Instant::now();
         groups.clear();
         let more = queue.run(&settings, o.minzoom, o.maxzoom, BATCH, &mut groups)?;
+        queueing += t.elapsed().as_secs_f64();
+        let t = std::time::Instant::now();
         if let Some(g) = groups.first()
             && !o.quiet
         {
             eprint!("{}/{}/{}  \r", g.z, g.x, g.y);
         }
+        // a mapping of each archive for this batch only, so that the pages
+        // of tiles already done leave memory
+        let maps: Vec<Option<memmap2::Mmap>> = sources.iter().map(|s| s.batch_map()).collect();
         groups.par_iter().try_for_each(|g| {
             let slot = rayon::current_thread_index().unwrap_or(threads);
             let mut acc = accums[slot].lock().unwrap_or_else(|p| p.into_inner());
             let mut scratch = scratches[slot].lock().unwrap_or_else(|p| p.into_inner());
-            let tile = make_tile(g, &sources, &rules, o, &mut acc, &mut scratch)?;
+            let tile = make_tile(g, &sources, &maps, &rules, o, &mut acc, &mut scratch)?;
             match tile {
                 Made::Tile(data) => {
                     sink.write_tile(g.z as u8, g.x as u32, g.y as u32, &data)?;
@@ -296,9 +307,13 @@ fn join_in_pool(o: &JoinOptions, threads: usize) -> Result<JoinSummary> {
             }
             Ok::<(), Error>(())
         })?;
+        working += t.elapsed().as_secs_f64();
         if !more {
             break;
         }
+    }
+    if o.timing {
+        eprintln!("readers {:.3}s, tiles {:.3}s", queueing, working);
     }
 
     // The threads' layers and bounds, combined as tile-join combines its threads'.
@@ -418,7 +433,15 @@ fn join_in_pool(o: &JoinOptions, threads: usize) -> Result<JoinSummary> {
         2.5,
         1,
     );
+    let t = std::time::Instant::now();
     sink.finish(&m)?;
+    if o.timing {
+        eprintln!(
+            "output {:.3}s, {:.3}s in all",
+            t.elapsed().as_secs_f64(),
+            started.elapsed().as_secs_f64()
+        );
+    }
 
     Ok(JoinSummary {
         tiles: written.into_inner(),
@@ -460,6 +483,7 @@ enum Made {
 fn make_tile(
     g: &Group,
     sources: &[Source],
+    maps: &[Option<memmap2::Mmap>],
     rules: &Rules,
     o: &JoinOptions,
     acc: &mut Accum,
@@ -467,7 +491,7 @@ fn make_tile(
 ) -> Result<Made> {
     let mut data = Vec::with_capacity(g.members.len());
     for (i, t) in &g.members {
-        data.push(sources[*i].data(t)?);
+        data.push(sources[*i].data_in(t, maps[*i].as_ref())?);
     }
     let inputs: Vec<&[u8]> = data.iter().map(|d| &d[..]).collect();
     let mut buffers = std::mem::take(&mut scratch.buffers);
@@ -482,6 +506,16 @@ fn make_tile(
         let anything = tile::join_tile(&decoded, z, x, y, rules, acc, scratch, &mut pbf)?;
         if !anything {
             return Ok(Made::Nothing);
+        }
+        if inputs.len() == 1
+            && !o.no_tile_compression
+            && !o.zlib_tiles
+            && (o.no_tile_size_limit || crate::compress::zlib_bound(pbf.len()) <= MAX_TILE_BYTES)
+            && is_gzip_of(inputs[0], &pbf)
+        {
+            // The tile is the input tile, which is kept whatever zlib would
+            // make of it, so the input's own compression of it will do.
+            return Ok(Made::Tile(inputs[0].to_vec()));
         }
         let (tile, keep) = if o.no_tile_compression {
             let n = pbf.len();
@@ -505,6 +539,19 @@ fn make_tile(
     scratch.buffers = buffers;
     scratch.decompressor = Some(decompressor);
     result
+}
+
+/// Whether `data` is a gzip stream of exactly `content`, with a plain
+/// header and nothing after it.
+fn is_gzip_of(data: &[u8], content: &[u8]) -> bool {
+    let n = data.len();
+    n >= 18
+        && data[0] == 0x1F
+        && data[1] == 0x8B
+        && data[2] == 8
+        && data[3] == 0
+        && data[n - 4..] == (content.len() as u32).to_le_bytes()
+        && data[n - 8..n - 4] == libdeflater::crc32(content).to_le_bytes()
 }
 
 /// What tile-join reads from the inputs' metadata.

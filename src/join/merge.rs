@@ -146,7 +146,7 @@ impl<'s> Reader<'s> {
     /// The key of the current tile, worked out the first time it is needed.
     fn key(&mut self, s: &Settings<'_>) -> Result<&Key> {
         if self.key.is_none() {
-            let data = self.source.data(&self.tile)?;
+            let data = self.source.data(&self.tile)?.shared();
             let key = if self.made {
                 Key::Bytes(data)
             } else {

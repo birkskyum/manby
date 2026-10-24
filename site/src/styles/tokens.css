@@ -1,0 +1,59 @@
+/* VitePress's default theme colors, light and dark, as Tailwind colors
+   (bg-vp-bg, text-vp-text-2, ...) for the landing page and the docs. The
+   chart's bar colors are checked for contrast and colorblind separation on
+   vp-bg-soft. */
+
+:root {
+	--vp-bg: #ffffff;
+	--vp-bg-alt: #f6f6f7;
+	--vp-bg-soft: #f6f6f7;
+	--vp-border: #c2c2c4;
+	--vp-divider: #e2e2e3;
+	--vp-text-1: #3c3c43;
+	--vp-text-2: #67676c;
+	--vp-text-3: #929295;
+	--vp-brand-1: #3451b2;
+	--vp-brand-2: #3a5ccc;
+	--vp-brand-3: #5672cd;
+	--vp-brand-soft: rgba(100, 108, 255, 0.14);
+	--vp-button-alt: #ebebef;
+	--vp-bar-manby: #3a5ccc;
+	--vp-bar-other: #898781;
+}
+
+:root[data-theme='dark'] {
+	--vp-bg: #1b1b1f;
+	--vp-bg-alt: #161618;
+	--vp-bg-soft: #202127;
+	--vp-border: #3c3f44;
+	--vp-divider: #2e2e32;
+	--vp-text-1: #dfdfd6;
+	--vp-text-2: #98989f;
+	--vp-text-3: #6a6a71;
+	--vp-brand-1: #a8b1ff;
+	--vp-brand-2: #5c73e7;
+	--vp-brand-3: #3e63dd;
+	--vp-brand-soft: rgba(100, 108, 255, 0.16);
+	--vp-button-alt: #32363f;
+	--vp-bar-manby: #5c73e7;
+	--vp-bar-other: #898781;
+}
+
+@theme inline {
+	--color-vp-bg: var(--vp-bg);
+	--color-vp-bg-alt: var(--vp-bg-alt);
+	--color-vp-bg-soft: var(--vp-bg-soft);
+	--color-vp-border: var(--vp-border);
+	--color-vp-divider: var(--vp-divider);
+	--color-vp-text-1: var(--vp-text-1);
+	--color-vp-text-2: var(--vp-text-2);
+	--color-vp-text-3: var(--vp-text-3);
+	--color-vp-brand-1: var(--vp-brand-1);
+	--color-vp-brand-2: var(--vp-brand-2);
+	--color-vp-brand-3: var(--vp-brand-3);
+	--color-vp-brand-soft: var(--vp-brand-soft);
+	--color-vp-button-alt: var(--vp-button-alt);
+	--color-vp-bar-manby: var(--vp-bar-manby);
+	--color-vp-bar-other: var(--vp-bar-other);
+	--font-sans: 'Inter Variable', ui-sans-serif, system-ui, -apple-system, sans-serif;
+}

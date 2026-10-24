@@ -3,17 +3,39 @@
 @import '@astrojs/starlight-tailwind';
 @import 'tailwindcss/theme.css' layer(theme);
 @import 'tailwindcss/utilities.css' layer(utilities);
+@import './tokens.css';
 
-@theme {
-	--color-accent-50: var(--color-blue-50);
-	--color-accent-100: var(--color-blue-100);
-	--color-accent-200: var(--color-blue-200);
-	--color-accent-300: var(--color-blue-300);
-	--color-accent-400: var(--color-blue-400);
-	--color-accent-500: var(--color-blue-500);
-	--color-accent-600: var(--color-blue-600);
-	--color-accent-700: var(--color-blue-700);
-	--color-accent-800: var(--color-blue-800);
-	--color-accent-900: var(--color-blue-900);
-	--color-accent-950: var(--color-blue-950);
+/* Starlight's colors, as VitePress's: dark at the root, light under
+   data-theme='light', as Starlight sets them. */
+:root {
+	--sl-color-white: #dfdfd6;
+	--sl-color-gray-1: #dfdfd6;
+	--sl-color-gray-2: #dfdfd6;
+	--sl-color-gray-3: #98989f;
+	--sl-color-gray-4: #6a6a71;
+	--sl-color-gray-5: #3c3f44;
+	--sl-color-gray-6: #2e2e32;
+	--sl-color-black: #1b1b1f;
+	--sl-color-accent-low: #272843;
+	--sl-color-accent: #3e63dd;
+	--sl-color-accent-high: #a8b1ff;
+	--sl-color-bg-nav: #1b1b1f;
+	--sl-color-bg-sidebar: #161618;
+}
+
+:root[data-theme='light'] {
+	--sl-color-white: #3c3c43;
+	--sl-color-gray-1: #3c3c43;
+	--sl-color-gray-2: #3c3c43;
+	--sl-color-gray-3: #67676c;
+	--sl-color-gray-4: #929295;
+	--sl-color-gray-5: #c2c2c4;
+	--sl-color-gray-6: #e2e2e3;
+	--sl-color-gray-7: #f6f6f7;
+	--sl-color-black: #ffffff;
+	--sl-color-accent-low: #e9eaff;
+	--sl-color-accent: #3451b2;
+	--sl-color-accent-high: #2c4596;
+	--sl-color-bg-nav: #ffffff;
+	--sl-color-bg-sidebar: #f6f6f7;
 }

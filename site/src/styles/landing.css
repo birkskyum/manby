@@ -1,0 +1,7 @@
+/* The landing page is a page of its own, outside Starlight, with all of
+   Tailwind, preflight included. */
+@import 'tailwindcss';
+@import './tokens.css';
+
+/* dark mode follows Starlight's data-theme, so that both share one setting */
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));

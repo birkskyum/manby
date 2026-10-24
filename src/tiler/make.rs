@@ -101,31 +101,38 @@ pub fn dropping_features(th: &Thresholds, drop_by_attribute_descending: bool) ->
     th.mingap != 0 || th.minextent != 0 || th.mindrop_sequence != 0 || dropping_by_attribute
 }
 
-/// A vector that most features leave empty, in 8 bytes until it is used.
+/// What only some kept features have, boxed so that the others spend 8
+/// bytes on it.
 #[derive(Clone, Debug, Default)]
-#[allow(clippy::box_collection)]
-struct Lazy<T>(Option<Box<Vec<T>>>);
-
-impl<T> std::ops::Deref for Lazy<T> {
-    type Target = Vec<T>;
-
-    fn deref(&self) -> &Vec<T> {
-        match &self.0 {
-            Some(v) => v,
-            None => const { &Vec::new() },
-        }
-    }
+struct Extra {
+    /// The feature's attributes once something has changed them.
+    attrs: Option<Vec<Attr>>,
+    full_keys: Vec<Arc<String>>,
+    full_values: Vec<SerialVal>,
+    /// Accumulated numbers that `full_values` does not show yet.
+    accs: Vec<accum::Acc>,
 }
 
-impl<T> std::ops::DerefMut for Lazy<T> {
-    fn deref_mut(&mut self) -> &mut Vec<T> {
-        self.0.get_or_insert_with(Default::default)
-    }
-}
+static NO_EXTRA: Extra = Extra {
+    attrs: None,
+    full_keys: Vec::new(),
+    full_values: Vec::new(),
+    accs: Vec::new(),
+};
 
-impl<T> From<Vec<T>> for Lazy<T> {
-    fn from(v: Vec<T>) -> Lazy<T> {
-        Lazy((!v.is_empty()).then(|| Box::new(v)))
+impl Extra {
+    /// The extra part of a feature that arrives with full keys and values.
+    fn from_full(
+        (full_keys, full_values): (Vec<Arc<String>>, Vec<SerialVal>),
+    ) -> Option<Box<Extra>> {
+        (!full_keys.is_empty()).then(|| {
+            Box::new(Extra {
+                attrs: None,
+                full_keys,
+                full_values,
+                accs: Vec::new(),
+            })
+        })
     }
 }
 
@@ -136,13 +143,7 @@ struct TF {
     fi: u32,
     t: i8,
     geometry: DrawVec,
-    /// The feature's attributes once something has changed them.
-    #[allow(clippy::box_collection)]
-    attrs: Option<Box<Vec<Attr>>>,
-    full_keys: Lazy<Arc<String>>,
-    full_values: Lazy<SerialVal>,
-    /// Accumulated numbers that `full_values` does not show yet.
-    accs: Lazy<accum::Acc>,
+    extra: Option<Box<Extra>>,
     /// Where among `full_keys` the cluster attributes go, or
     /// `NO_CLUSTER_ATTRS`. They follow from `clustered`, so they are made
     /// when they are read rather than kept for every feature.
@@ -151,12 +152,15 @@ struct TF {
     index: u64,
     reduced: bool,
     coalesced: bool,
-    clustered: i64,
-    line_detail: i32,
-    extra_detail: i32,
+    clustered: u32,
+    line_detail: i8,
+    extra_detail: i8,
     spacing: f64,
     simplification: f64,
 }
+
+// A tile being made holds up to hundreds of thousands of these.
+const _: () = assert!(std::mem::size_of::<TF>() <= 88);
 
 const NO_CLUSTER_ATTRS: u32 = u32::MAX;
 
@@ -196,9 +200,17 @@ fn cluster_value(clustered: i64, k: usize) -> SerialVal {
 }
 
 impl TF {
+    fn extra(&self) -> &Extra {
+        self.extra.as_deref().unwrap_or(&NO_EXTRA)
+    }
+
+    fn extra_mut(&mut self) -> &mut Extra {
+        self.extra.get_or_insert_with(Default::default)
+    }
+
     /// How many attributes `full_keys` and the cluster attributes make.
     fn full_len(&self) -> usize {
-        self.full_keys.len()
+        self.extra().full_keys.len()
             + if self.cluster_at == NO_CLUSTER_ATTRS {
                 0
             } else {
@@ -209,18 +221,16 @@ impl TF {
     /// Attribute `i` of those, with the cluster attributes where they go.
     fn full_at(&self, i: usize) -> (&str, Cow<'_, SerialVal>) {
         let at = self.cluster_at as usize;
+        let x = self.extra();
         if self.cluster_at == NO_CLUSTER_ATTRS || i < at {
-            (&self.full_keys[i], Cow::Borrowed(&self.full_values[i]))
+            (&x.full_keys[i], Cow::Borrowed(&x.full_values[i]))
         } else if i < at + 4 {
             (
                 CLUSTER_KEYS[i - at],
-                Cow::Owned(cluster_value(self.clustered, i - at)),
+                Cow::Owned(cluster_value(self.clustered as i64, i - at)),
             )
         } else {
-            (
-                &self.full_keys[i - 4],
-                Cow::Borrowed(&self.full_values[i - 4]),
-            )
+            (&x.full_keys[i - 4], Cow::Borrowed(&x.full_values[i - 4]))
         }
     }
 }
@@ -254,7 +264,7 @@ impl<'a> Attrs<'a> {
     where
         'a: 'b,
     {
-        match &tf.attrs {
+        match &tf.extra().attrs {
             Some(a) => a,
             None => self.cand(tf.cand as usize),
         }
@@ -274,14 +284,14 @@ impl<'a> Attrs<'a> {
 
     /// The attributes without nulls, materialized so they can be changed.
     fn materialize(&self, tf: &mut TF) {
-        if tf.attrs.is_none() {
+        if tf.extra().attrs.is_none() {
             let list: Vec<Attr> = self
                 .of(tf)
                 .iter()
                 .filter(|a| self.live(a))
                 .copied()
                 .collect();
-            tf.attrs = Some(Box::new(list));
+            tf.extra_mut().attrs = Some(list);
         }
     }
 }
@@ -306,10 +316,10 @@ fn promote_attribute(
         });
     if let Some(i) = found {
         ax.materialize(p);
-        let list = p.attrs.as_mut().unwrap();
-        let a = list.remove(i);
-        accum::push_one(&mut p.full_keys, key_pool.pool(key));
-        accum::push_one(&mut p.full_values, ax.sval(&a));
+        let x = p.extra_mut();
+        let a = x.attrs.as_mut().unwrap().remove(i);
+        accum::push_one(&mut x.full_keys, key_pool.pool(key));
+        accum::push_one(&mut x.full_values, ax.sval(&a));
     }
 }
 
@@ -329,15 +339,16 @@ fn preserve_attributes(ax: &Attrs<'_>, c: usize, p: &mut TF, key_pool: &mut KeyP
         let key = ax.key(a);
         let v = ax.ctx.store.values.get(a.value);
         promote_attribute(ax, key, Some(a.key), p, key_pool);
+        let x = p.extra_mut();
         accum::preserve(
             op,
             key,
             v.type_,
             v.s,
             ax.ctx.value_num[a.value as usize],
-            &mut p.full_keys,
-            &mut p.full_values,
-            &mut p.accs,
+            &mut x.full_keys,
+            &mut x.full_values,
+            &mut x.accs,
             key_pool,
         );
     }
@@ -347,15 +358,16 @@ fn preserve_attributes(ax: &Attrs<'_>, c: usize, p: &mut TF, key_pool: &mut KeyP
         for (key, sv) in keys.iter().zip(values.iter()) {
             if let Some(op) = accum.get(key.as_str()) {
                 promote_attribute(ax, key, None, p, key_pool);
+                let x = p.extra_mut();
                 accum::preserve(
                     op,
                     key,
                     sv.type_,
                     &sv.s,
                     accum::to_double(&sv.s),
-                    &mut p.full_keys,
-                    &mut p.full_values,
-                    &mut p.accs,
+                    &mut x.full_keys,
+                    &mut x.full_values,
+                    &mut x.accs,
                     key_pool,
                 );
             }
@@ -571,7 +583,11 @@ fn assemble_multiplier_clusters(rpm: i32, features: Vec<TF>) -> Vec<Vec<TF>> {
         }
     } else {
         for feature in features {
-            let is_cluster_start = feature.full_keys.iter().any(|k| **k == MULTIPLIER_FIRST);
+            let is_cluster_start = feature
+                .extra()
+                .full_keys
+                .iter()
+                .any(|k| **k == MULTIPLIER_FIRST);
 
             if is_cluster_start || clusters.is_empty() {
                 clusters.push(Vec::new());
@@ -592,17 +608,19 @@ fn disassemble_multiplier_clusters(ctx: &Ctx<'_>, clusters: Vec<Vec<TF>>) -> Vec
 
     for mut cluster in clusters {
         'outer: for i in 0..cluster.len() {
-            for j in 0..cluster[i].full_keys.len() {
-                if *cluster[i].full_keys[j] == MULTIPLIER_FIRST {
-                    let k = cluster[i].full_keys.remove(j);
-                    let v = cluster[i].full_values.remove(j);
+            for j in 0..cluster[i].extra().full_keys.len() {
+                if *cluster[i].extra().full_keys[j] == MULTIPLIER_FIRST {
+                    let x = cluster[i].extra_mut();
+                    let k = x.full_keys.remove(j);
+                    let v = x.full_values.remove(j);
                     let at = &mut cluster[i].cluster_at;
                     if *at != NO_CLUSTER_ATTRS && (j as u32) < *at {
                         *at -= 1;
                     }
 
-                    cluster[0].full_keys.push(k);
-                    cluster[0].full_values.push(v);
+                    let x = cluster[0].extra_mut();
+                    x.full_keys.push(k);
+                    x.full_values.push(v);
 
                     break 'outer;
                 }
@@ -635,7 +653,7 @@ fn simplify_feature(
     let o = ctx.o;
     let mut geom = std::mem::take(&mut p.geometry);
     let t = p.t as i32;
-    let line_detail = p.line_detail;
+    let line_detail = p.line_detail as i32;
 
     if o.a(A_GRID_LOW_ZOOMS) && z < maxzoom {
         geom = stairstep(&mut geom, z, line_detail);
@@ -727,7 +745,7 @@ fn simplify_and_scale(
     let area = simplify_feature(ctx, feature, z, tx, ty, maxzoom, shared_nodes);
 
     let t = feature.t as i32;
-    let out_detail = feature.extra_detail;
+    let out_detail = feature.extra_detail as i32;
 
     let mut geom = std::mem::take(&mut feature.geometry);
     to_tile_scale(&mut geom, z, out_detail);
@@ -1331,18 +1349,15 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                         fi: c.fi,
                         t,
                         geometry: DrawVec::new(),
-                        attrs: None,
-                        full_keys: full.0.into(),
-                        full_values: full.1.into(),
-                        accs: Lazy(None),
+                        extra: Extra::from_full(full),
                         cluster_at: NO_CLUSTER_ATTRS,
                         extent,
                         index: f.index(),
                         reduced: false,
                         coalesced: false,
                         clustered: 0,
-                        line_detail,
-                        extra_detail: line_detail,
+                        line_detail: line_detail as i8,
+                        extra_detail: line_detail as i8,
                         spacing,
                         simplification,
                     };
@@ -1486,18 +1501,15 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                             Some(g) => g,
                             None => cg.to_vec(),
                         },
-                        attrs: None,
-                        full_keys: full.0.into(),
-                        full_values: full.1.into(),
-                        accs: Lazy(None),
+                        extra: Extra::from_full(full),
                         cluster_at: NO_CLUSTER_ATTRS,
                         extent,
                         index: f.index(),
                         reduced: !still_need_simplification_after_reduction,
                         coalesced: false,
                         clustered: 0,
-                        line_detail,
-                        extra_detail: line_detail,
+                        line_detail: line_detail as i8,
+                        extra_detail: line_detail as i8,
                         spacing,
                         simplification,
                     };
@@ -1508,8 +1520,9 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                     }
 
                     if dropped == FEATURE_KEPT && retain_points_multiplier > 1 {
-                        tf.full_keys.push(key_pool.pool(MULTIPLIER_FIRST));
-                        tf.full_values.push(SerialVal::new(MVT_BOOL, "true"));
+                        let x = tf.extra_mut();
+                        x.full_keys.push(key_pool.pool(MULTIPLIER_FIRST));
+                        x.full_values.push(SerialVal::new(MVT_BOOL, "true"));
                     }
 
                     if dropped == FEATURE_KEPT {
@@ -1525,11 +1538,8 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                     shared_nodes.extend_from_slice(rt.cand_edges(seq));
 
                     if line_detail == detail && o.extra_detail >= 0 && z == maxzoom {
-                        tf.extra_detail = o.extra_detail;
-                        if tf.extra_detail >= 30 - z {
-                            tf.extra_detail = 30 - z;
-                        }
-                        tile_detail = tf.extra_detail;
+                        tile_detail = o.extra_detail.min(30 - z);
+                        tf.extra_detail = tile_detail as i8;
                     }
 
                     unsimplified_geometry_size += tf.geometry.len() * 16;
@@ -1585,8 +1595,11 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
         shared_nodes.sort();
 
         for l in layers.iter_mut().flatten() {
-            for p in l.features.iter_mut().filter(|p| !p.accs.is_empty()) {
-                accum::settle(&mut p.full_values, &mut p.accs);
+            for x in l.features.iter_mut().filter_map(|p| p.extra.as_deref_mut()) {
+                if x.accs.is_empty() {
+                    continue;
+                }
+                accum::settle(&mut x.full_values, &mut x.accs);
             }
         }
 
@@ -1610,23 +1623,24 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                     .collect();
                 feature_sequences.sort();
                 for (i, &(_, j)) in feature_sequences.iter().enumerate() {
-                    features[j]
-                        .full_keys
+                    let x = features[j].extra_mut();
+                    x.full_keys
                         .push(key_pool.pool("tippecanoe:retain_points_multiplier_sequence"));
-                    features[j]
-                        .full_values
+                    x.full_values
                         .push(SerialVal::new(MVT_DOUBLE, &i.to_string()));
                 }
             }
 
             for p in features.iter_mut() {
                 if p.clustered > 0 {
-                    p.cluster_at = p.full_keys.len() as u32;
+                    p.cluster_at = p.extra().full_keys.len() as u32;
                 }
 
-                for v in p.full_values.iter_mut() {
-                    if let Some(found) = v.s.find('\0') {
-                        v.s.truncate(found);
+                if let Some(x) = p.extra.as_deref_mut() {
+                    for v in x.full_values.iter_mut() {
+                        if let Some(found) = v.s.find('\0') {
+                            v.s.truncate(found);
+                        }
                     }
                 }
                 for j in 0..p.full_len() {

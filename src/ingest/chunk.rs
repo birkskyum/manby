@@ -99,6 +99,16 @@ impl Interner {
         id
     }
 
+    /// Frees the hash table, which only interning needs, and the room that
+    /// growing left. The hashes stay, for merging.
+    pub fn finish(&mut self) {
+        self.table = Buf::new();
+        self.types.shrink_to_fit();
+        self.hashes.shrink_to_fit();
+        self.ends.shrink_to_fit();
+        self.bytes.shrink_to_fit();
+    }
+
     /// Frees what only interning needs: the hash table and the hashes.
     pub fn stop_interning(&mut self) {
         self.table = Buf::new();
@@ -318,6 +328,21 @@ pub struct Chunk {
 }
 
 impl Chunk {
+    /// Frees what only parsing needs, and the room that growing left: a read
+    /// chunk waits for the others before they are merged.
+    pub fn finish(&mut self) {
+        self.keys.finish();
+        self.values.finish();
+        self.features.shrink_to_fit();
+        self.ids.shrink_to_fit();
+        self.extents.shrink_to_fit();
+        self.label_points.shrink_to_fit();
+        self.geometry.shrink_to_fit();
+        self.attrs.shrink_to_fit();
+        self.dist_terms.shrink_to_fit();
+        self.area_terms.shrink_to_fit();
+    }
+
     pub fn new(layers: &[String]) -> Chunk {
         let mut c = Chunk {
             file_bbox: [u32::MAX as i64, u32::MAX as i64, 0, 0],

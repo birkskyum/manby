@@ -23,6 +23,8 @@
 # MANBY: the manby to test (default target/release/manby)
 # ROUNDS: runs per program (default 3); the summary has their medians
 # OUT: the directory for the tilesets and the inputs it makes (default: bench/out)
+# MANBY_ONLY: run only manby join, and check its tiles against tile-join's
+#   tilesets that an earlier run left in OUT
 cd "$(dirname "$0")/.."
 RS=../tippecanoe-rs/target/release
 TILE_JOIN=${TILE_JOIN:-$RS/tile-join}
@@ -120,9 +122,11 @@ for name in $names; do
 	ext=$(suffix_for $name)
 	tw="" tm="" mw="" mm=""
 	for round in $(seq 1 $ROUNDS); do
-		read w m < <(measured $TILE_JOIN -q -f -o $O/tile-join-$name.$ext $args)
-		printf "%-14s %-10s %10s %10s\n" $name tile-join $w $m
-		tw="$tw $w" tm="$tm $m"
+		if [ -z "$MANBY_ONLY" ]; then
+			read w m < <(measured $TILE_JOIN -q -f -o $O/tile-join-$name.$ext $args)
+			printf "%-14s %-10s %10s %10s\n" $name tile-join $w $m
+			tw="$tw $w" tm="$tm $m"
+		fi
 		read w m < <(measured $MANBY join -q -f -o $O/manby-join-$name.$ext $args)
 		printf "%-14s %-10s %10s %10s\n" $name "manby join" $w $m
 		mw="$mw $w" mm="$mm $m"
@@ -144,12 +148,22 @@ for name in $names; do
 		;;
 	esac
 	echo "$name: $check"
-	t=$(echo $tw | median) m=$(echo $mw | median)
-	summary="$summary$(printf "%-14s %8.2f s %6s MB %8.2f s %6s MB %6.1fx" $name $t $(echo $tm | median) $m $(echo $mm | median) $(echo "$t / $m" | bc -l))
+	m=$(echo $mw | median)
+	if [ -n "$MANBY_ONLY" ]; then
+		summary="$summary$(printf "%-14s %8.2f s %6s MB" $name $m $(echo $mm | median))
 "
+	else
+		t=$(echo $tw | median)
+		summary="$summary$(printf "%-14s %8.2f s %6s MB %8.2f s %6s MB %6.1fx" $name $t $(echo $tm | median) $m $(echo $mm | median) $(echo "$t / $m" | bc -l))
+"
+	fi
 done
 
 echo
 echo "medians of $ROUNDS runs"
-printf "%-14s %20s %20s %7s\n" benchmark tile-join "manby join" speedup
+if [ -n "$MANBY_ONLY" ]; then
+	printf "%-14s %20s\n" benchmark "manby join"
+else
+	printf "%-14s %20s %20s %7s\n" benchmark tile-join "manby join" speedup
+fi
 printf "%s" "$summary"

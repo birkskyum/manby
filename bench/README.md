@@ -37,12 +37,17 @@ merges it also checks manby, then `manby join`, against tippecanoe, then tile-jo
 
 ## Linux
 
-The Linux numbers in the README come from Debian 12 on arm64 in a virtual machine on the same Mac,
-made with Apple's `container` tool from the `rust:1.89-bookworm` image, with `time`, `bc`,
-`python3`, `libsqlite3-dev` and `zlib1g-dev` added, the repositories and the data copied into the
-machine, and the scripts run under `taskset -c 0-15`. The virtual machine has all 18 of the
-Mac's cores, but when it uses all 18, macOS's own work keeps interrupting its processors, which
-slows down any program whose threads often wait for each other. So the runs use 16.
+The Linux numbers in the README come from a Lenovo Yoga Slim 7x (Snapdragon X Elite, 12 cores,
+32 GB) running Arch Linux ARM, with the output and the data on its btrfs home filesystem and `/tmp`
+in memory. tippecanoe, tile-join and manby were built for it in a Debian 12 arm64 container, from
+the `rust:1.89-bookworm` image with `libsqlite3-dev` and `zlib1g-dev` added, and copied over with
+GNU `time` from the same image. The large inputs were made there with `points.py` and
+`repeat.py`, and match the Mac's byte for byte.
+
+`MANBY_ONLY=1` runs only manby, against the reference's tilesets that an earlier run of the
+reference left in `OUT`, so a new manby can be measured without waiting for tippecanoe again.
+The README's figures for tippecanoe and tile-join come from such earlier runs on the same
+machines.
 
 tippecanoe's arm64 builds (Apple's clang on macOS, GCC on Linux) fuse multiplications and
 additions, where its x86-64 build does not, and so make a few tiles near the size limit

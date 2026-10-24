@@ -125,7 +125,9 @@ pub struct TileOptions {
     /// read or written out; the rest waits in temporary files.
     pub rest_memory: usize,
     /// Memory for the tiles with the most data, which run together only as
-    /// far as this allows.
+    /// far as this allows: three quarters of the memory budget, up to 768 MB.
+    /// Under a small budget the store waits in the temporary file, so the
+    /// tiles being made take most of what is resident.
     pub big_memory: usize,
     /// The run's memory budget, which also bounds how many tiles are made at
     /// once.
@@ -250,7 +252,7 @@ impl TileOptions {
             trace: false,
             tmpdir: std::path::PathBuf::from(&o.tmpdir),
             rest_memory: (o.memory_budget() / 64).min(16 << 20) as usize,
-            big_memory: (o.memory_budget() / 4).min(768 << 20) as usize,
+            big_memory: (o.memory_budget() / 4 * 3).min(768 << 20) as usize,
             memory_budget: o.memory_budget(),
             mlt: (o.tile_format == crate::mlt::TileFormat::Mlt).then_some(
                 crate::mlt::MltSettings {

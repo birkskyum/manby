@@ -1,6 +1,6 @@
 # manby
 
-manby builds vector tilesets from GeoJSON, FlatGeobuf, CSV or Geobuf features. It makes the same tiles as [tippecanoe](https://github.com/felt/tippecanoe), ten to seventeen times faster on a Mac and six to fourteen times faster on Linux, in less memory. `manby join` is tippecanoe's tile-join, two to thirty-five times faster.
+manby builds vector tilesets from GeoJSON, FlatGeobuf, CSV or Geobuf features. It makes the same tiles as [tippecanoe](https://github.com/felt/tippecanoe), in less memory, ten to eighteen times faster on a Mac and eight to fifteen times faster on Linux, more where tippecanoe's disk slows it down. `manby join` is tippecanoe's tile-join, two to thirty-five times faster.
 
 The `manby` command takes tippecanoe's options:
 
@@ -10,33 +10,33 @@ manby -zg --drop-densest-as-needed -o places.pmtiles places.geojson
 
 ## Speed
 
-Against tippecanoe 2.82.0 itself, the C++ built with its own Makefile, writing PMTiles, median of three alternating runs. The memory figures are peak resident memory.
+Against tippecanoe 2.82.0 itself, the C++ built with its own Makefile, writing PMTiles. Each figure is the median of three runs, and memory is peak resident memory. tippecanoe's runs and manby's come from separate sessions on the same machine, since tippecanoe's do not change with manby's version.
 
-On macOS, on an Apple M5 Max with 18 cores:
-
-| Benchmark | tippecanoe | manby | |
-| --- | --- | --- | --- |
-| 4 million points, `-zg --drop-densest-as-needed` | 61.4 s, 2.22 GB | 3.6 s, 1.34 GB | 17.0x |
-| The same points, `-zg -r1 --cluster-distance=10 --cluster-densest-as-needed --accumulate-attribute=value:sum` | 54.4 s, 1.29 GB | 3.8 s, 0.90 GB | 14.2x |
-| The same points, `-zg --cluster-densest-as-needed` | 59.8 s, 2.28 GB | 3.7 s, 1.33 GB | 16.2x |
-| The same points, `-zg -r1 --cluster-densest-as-needed --accumulate-attribute=value:sum` | 87.7 s, 3.36 GB | 7.2 s, 2.07 GB | 12.1x |
-| 17,522 roads at `-z14`, 122,725 tiles | 11.8 s, 0.32 GB | 0.86 s, 0.22 GB | 13.7x |
-| 85,186 census tracts at `-z12`, 312,073 tiles | 46.6 s, 0.55 GB | 4.1 s, 0.40 GB | 11.5x |
-| 85,186 census tracts, `-zg --coalesce-densest-as-needed` | 24.8 s, 0.54 GB | 2.3 s, 0.36 GB | 10.8x |
-
-On Linux (Debian 12, arm64), in a virtual machine on the same Mac, with 16 of its cores:
+On macOS, on an Apple M5 Max with 18 cores and 128 GB:
 
 | Benchmark | tippecanoe | manby | |
 | --- | --- | --- | --- |
-| 4 million points, `-zg --drop-densest-as-needed` | 46.4 s, 1.64 GB | 3.6 s, 1.18 GB | 12.8x |
-| The same points, clustered within 10 pixels, summing `value` | 40.9 s, 1.08 GB | 3.0 s, 0.87 GB | 13.8x |
-| The same points, `-zg --cluster-densest-as-needed` | 47.5 s, 1.73 GB | 3.9 s, 1.20 GB | 12.3x |
-| The same points, `-zg -r1 --cluster-densest-as-needed`, summing `value` | 74.0 s, 2.62 GB | 7.7 s, 1.94 GB | 9.7x |
-| 17,522 roads at `-z14`, 122,725 tiles | 8.5 s, 0.35 GB | 1.3 s, 0.20 GB | 6.5x |
-| 85,186 census tracts at `-z12`, 312,073 tiles | 37.2 s, 0.58 GB | 4.9 s, 0.37 GB | 7.6x |
-| 85,186 census tracts, `-zg --coalesce-densest-as-needed` | 23.9 s, 0.59 GB | 2.7 s, 0.32 GB | 8.8x |
+| 4 million points, `-zg --drop-densest-as-needed` | 61.4 s, 2,276 MB | 3.44 s, 919 MB | 17.8x |
+| The same points, `-zg -r1 --cluster-distance=10 --cluster-densest-as-needed --accumulate-attribute=value:sum` | 54.4 s, 1,318 MB | 3.88 s, 891 MB | 14.0x |
+| The same points, `-zg --cluster-densest-as-needed` | 59.8 s, 2,330 MB | 4.07 s, 916 MB | 14.7x |
+| The same points, `-zg -r1 --cluster-densest-as-needed --accumulate-attribute=value:sum` | 87.7 s, 3,443 MB | 7.82 s, 1,115 MB | 11.2x |
+| 17,522 roads at `-z14`, 122,725 tiles | 11.8 s, 327 MB | 0.81 s, 177 MB | 14.5x |
+| 85,186 census tracts at `-z12`, 312,073 tiles | 46.6 s, 566 MB | 3.78 s, 338 MB | 12.3x |
+| 85,186 census tracts, `-zg --coalesce-densest-as-needed` | 24.8 s, 554 MB | 2.27 s, 366 MB | 10.9x |
 
-tippecanoe runs faster on Linux than on macOS, and manby slower in the virtual machine on the runs with many small tiles, since its threads hand those tiles to each other often and a thread takes longer to wake there. A Linux machine of its own may differ. `bench/` has the data, the scripts and how the Linux numbers were made.
+On Linux, on a Lenovo Yoga Slim 7x with a Snapdragon X Elite (12 cores, 32 GB), running Arch Linux ARM:
+
+| Benchmark | tippecanoe | manby | |
+| --- | --- | --- | --- |
+| 4 million points, `-zg --drop-densest-as-needed` | 88.5 s, 1,088 MB | 5.86 s, 994 MB | 15.1x |
+| The same points, clustered within 10 pixels, summing `value` | 82.5 s, 1,028 MB | 6.02 s, 974 MB | 13.7x |
+| The same points, `-zg --cluster-densest-as-needed` | 89.6 s, 1,165 MB | 6.37 s, 1,000 MB | 14.1x |
+| The same points, `-zg -r1 --cluster-densest-as-needed`, summing `value` | 133.6 s, 1,498 MB | 13.9 s, 1,152 MB | 9.6x |
+| 17,522 roads at `-z14`, 122,725 tiles | 59.0 s, 240 MB | 1.51 s, 236 MB | 39.1x |
+| 85,186 census tracts at `-z12`, 312,073 tiles | 196.8 s, 456 MB | 7.77 s, 360 MB | 25.3x |
+| 85,186 census tracts, `-zg --coalesce-densest-as-needed` | 36.1 s, 451 MB | 4.46 s, 379 MB | 8.1x |
+
+On this machine tippecanoe uses 8 of the 12 cores, since it rounds its thread count down to a power of 2, which keeps its memory low, while manby uses all 12. tippecanoe is slow on the runs with many tiles here because it writes PMTiles by way of a SQLite database next to the output, on a btrfs filesystem that compresses with zstd. With the output in memory instead, roads take it 27 s rather than 59. The kernel also backs memory with 2 MB pages wherever it can (transparent huge pages set to `always`, as Arch sets them), which adds about a tenth to manby's figures, and leaves its roads only just below tippecanoe's. `bench/` has the data, the scripts and how the Linux numbers were made.
 
 For every run the tiles decode to exactly what tippecanoe makes, with one exception. tippecanoe's arm64 builds, from Apple's clang on macOS and from GCC on Linux, fuse multiplications and additions where its x86-64 build does not, and that changes a few tiles near the size limit. On these benchmarks it changes only the census tracts at `-zg`, here and 20 times over below. In the tracts, the zoom 0 tile comes out 6 bytes smaller compressed, so that tippecanoe's retry keeps other features. manby makes the same tiles on macOS and Linux alike, the tiles of tippecanoe's x86-64 build. Built for x86-64, or on arm64 with `-ffp-contract=off`, tippecanoe makes manby's tiles on the tracts too.
 
@@ -54,10 +54,10 @@ manby's peak memory is below tippecanoe's on the benchmarks. For inputs larger t
 
 | Input | System | tippecanoe | manby, `--memory-budget=1G` |
 | --- | --- | --- | --- |
-| 40 million points (5.6 GB), `-zg --drop-densest-as-needed` | macOS | 652 s, 9.97 GB | 103 s, 1.05 GB |
-| | Linux | 674 s, 7.96 GB | 87 s, 1.06 GB |
-| The census tracts 20 times over (3 GB), `-zg --coalesce-densest-as-needed` | macOS | 564 s, 4.70 GB | 151 s, 1.05 GB |
-| | Linux | 534 s, 4.17 GB | 172 s, 0.99 GB |
+| 40 million points (5.6 GB), `-zg --drop-densest-as-needed` | macOS | 652 s, 10,206 MB | 79 s, 1,139 MB |
+| | Linux | 1,025 s, 6,379 MB | 121 s, 1,188 MB |
+| The census tracts 20 times over (3 GB), `-zg --coalesce-densest-as-needed` | macOS | 564 s, 4,810 MB | 137 s, 1,022 MB |
+| | Linux | 854 s, 3,730 MB | 269 s, 1,206 MB |
 
 ## Joining tilesets
 
@@ -70,22 +70,22 @@ manby join -c tracts.csv -o joined.pmtiles tracts.pmtiles
 
 `manby tile-join` works too. Under the name `tile-join`, a link to it for example, manby is tile-join, so it can take its place.
 
-On the same machines, median of three alternating runs, against tile-join 2.82.0, the C++. For every run the tiles decode to exactly what tile-join makes.
+On the same machines, median of three runs, against tile-join 2.82.0, the C++. For every run the tiles decode to exactly what tile-join makes.
 
 | Benchmark | System | tile-join | manby join | |
 | --- | --- | --- | --- | --- |
-| The tracts at `-z12` (312,073 tiles) copied to PMTiles | macOS | 21.9 s, 0.58 GB | 0.62 s, 0.16 GB | 35.3x |
-| | Linux | 9.9 s, 0.51 GB | 0.65 s, 0.14 GB | 15.2x |
-| The same, to MBTiles | macOS | 16.6 s, 0.55 GB | 1.22 s, 0.37 GB | 13.6x |
-| | Linux | 7.5 s, 0.51 GB | 1.33 s, 0.32 GB | 5.6x |
-| The same tracts joined to a CSV keyed on `GEOID` | macOS | 22.6 s, 0.64 GB | 1.05 s, 0.29 GB | 21.5x |
-| | Linux | 10.3 s, 0.62 GB | 1.17 s, 0.27 GB | 8.8x |
-| The points and the tracts, both `-zg`, merged to PMTiles | macOS | 1.20 s, 0.68 GB | 0.38 s, 0.25 GB | 3.2x |
-| | Linux | 1.24 s, 0.61 GB | 0.42 s, 0.21 GB | 3.0x |
-| The same, to MBTiles | macOS | 1.15 s, 0.69 GB | 0.47 s, 0.26 GB | 2.4x |
-| | Linux | 1.13 s, 0.61 GB | 0.42 s, 0.21 GB | 2.7x |
-| Counties at `-z5` and tracts at `-z9`, with `--overzoom` | macOS | 3.87 s, 0.58 GB | 0.34 s, 0.18 GB | 11.4x |
-| | Linux | 7.41 s, 0.52 GB | 0.44 s, 0.15 GB | 16.8x |
+| The tracts at `-z12` (312,073 tiles) copied to PMTiles | macOS | 21.9 s, 589 MB | 0.63 s, 161 MB | 34.8x |
+| | Linux | 24.2 s, 461 MB | 1.05 s, 185 MB | 23.1x |
+| The same, to MBTiles | macOS | 16.6 s, 560 MB | 1.19 s, 380 MB | 13.9x |
+| | Linux | 20.4 s, 463 MB | 1.28 s, 371 MB | 16.0x |
+| The same tracts joined to a CSV keyed on `GEOID` | macOS | 22.6 s, 652 MB | 1.09 s, 296 MB | 20.7x |
+| | Linux | 25.9 s, 556 MB | 1.92 s, 325 MB | 13.5x |
+| The points and the tracts, both `-zg`, merged to PMTiles | macOS | 1.20 s, 701 MB | 0.38 s, 269 MB | 3.2x |
+| | Linux | 1.62 s, 573 MB | 0.68 s, 249 MB | 2.4x |
+| The same, to MBTiles | macOS | 1.15 s, 707 MB | 0.40 s, 273 MB | 2.9x |
+| | Linux | 1.51 s, 567 MB | 0.69 s, 258 MB | 2.2x |
+| Counties at `-z5` and tracts at `-z9`, with `--overzoom` | macOS | 3.87 s, 592 MB | 0.39 s, 182 MB | 9.9x |
+| | Linux | 5.99 s, 440 MB | 0.72 s, 196 MB | 8.3x |
 
 The merges spend most of their time on a hundred tiles near the 500 KB limit, which manby join, like tile-join, has to compress with zlib to check their size. `bench/join.sh` has the benchmarks.
 

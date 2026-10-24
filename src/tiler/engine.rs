@@ -169,6 +169,9 @@ fn tiles_at_once(o: &TileOptions) -> usize {
     (o.memory_budget / 2 / per_tile.max(1)).clamp(2, usize::MAX as u64) as usize
 }
 
+/// Why a level's spools are there when they are used.
+const LIVE: &str = "a level's spools live until it is finalized";
+
 /// How many zoom levels the tiles may run ahead of the last finished level.
 const LOOKAHEAD: usize = 3;
 
@@ -328,9 +331,12 @@ struct Level {
     child_shards: i32,
     max_zoom_increment: i32,
     slots: Vec<Slot>,
-    /// Where the level's tiles wait, and where its tiles write their children.
-    spool: Arc<Spool>,
-    child_spool: Arc<Spool>,
+    /// Where the level's inputs and tiles wait, and where its tiles write
+    /// their children: the next level's inputs. Each spool goes, with its
+    /// memory and its temporary file, when the level whose inputs it holds
+    /// is finalized.
+    spool: Option<Arc<Spool>>,
+    child_spool: Option<Arc<Spool>>,
     /// Tiles whose first task waits for the level to start.
     waiting: Vec<usize>,
     /// Tiles not read yet.
@@ -381,8 +387,8 @@ impl Level {
             child_shards: 0,
             max_zoom_increment: 0,
             slots: Vec::new(),
-            spool,
-            child_spool: Spool::new(&o.tmpdir, rest),
+            spool: Some(spool),
+            child_spool: Some(Spool::new(&o.tmpdir, rest)),
             waiting: Vec::new(),
             unread: 0,
             missing: 0,
@@ -765,8 +771,8 @@ impl<'d, 's> Driver<'d, 's> {
             idx,
             pass,
             big: r.big,
-            spool: level.spool.clone(),
-            child_spool: level.child_spool.clone(),
+            spool: level.spool.clone().expect(LIVE),
+            child_spool: level.child_spool.clone().expect(LIVE),
             input: slot.input.clone(),
             rp: ReadParams {
                 nextzoom: level.nextzoom.unwrap(),
@@ -876,7 +882,7 @@ impl<'d, 's> Driver<'d, 's> {
         } else if !children.is_empty() {
             if k + 1 == self.levels.len() {
                 let z = children[0].z;
-                let spool = self.levels[k].child_spool.clone();
+                let spool = self.levels[k].child_spool.clone().expect(LIVE);
                 let mut next = Level::new(z, self.levels[k].z + 1, o, spool, &self.ctx.rest);
                 if z + 1 >= o.minzoom {
                     next.nextzoom = Some(z + 1);
@@ -1086,7 +1092,7 @@ impl<'d, 's> Driver<'d, 's> {
 
         debug_assert_eq!(k + 1, self.levels.len());
         let z = next[0].1.z;
-        let spool = self.levels[k].child_spool.clone();
+        let spool = self.levels[k].child_spool.clone().expect(LIVE);
         let mut nl = Level::new(z, self.levels[k].z + 1, o, spool, &self.ctx.rest);
         if z + 1 >= o.minzoom {
             nl.nextzoom = Some(z + 1);
@@ -1194,6 +1200,16 @@ impl<'d, 's> Driver<'d, 's> {
         // free the level's memory
         level.slots = Vec::new();
         level.history = Vec::new();
+        if let Some(spool) = level.spool.take() {
+            for l in &mut self.levels {
+                if l.child_spool
+                    .as_ref()
+                    .is_some_and(|c| Arc::ptr_eq(c, &spool))
+                {
+                    l.child_spool = None;
+                }
+            }
+        }
         Ok(())
     }
 }

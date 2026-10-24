@@ -1,6 +1,7 @@
 //! Making a tile from its candidates: tippecanoe's `write_tile`, from choosing
 //! which features to keep to encoding and checking the size, with its retries.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -142,6 +143,10 @@ struct TF {
     full_values: Lazy<SerialVal>,
     /// Accumulated numbers that `full_values` does not show yet.
     accs: Lazy<accum::Acc>,
+    /// Where among `full_keys` the cluster attributes go, or
+    /// `NO_CLUSTER_ATTRS`. They follow from `clustered`, so they are made
+    /// when they are read rather than kept for every feature.
+    cluster_at: u32,
     extent: i64,
     index: u64,
     reduced: bool,
@@ -151,6 +156,73 @@ struct TF {
     extra_detail: i32,
     spacing: f64,
     simplification: f64,
+}
+
+const NO_CLUSTER_ATTRS: u32 = u32::MAX;
+
+/// The attributes tippecanoe gives a feature that others were clustered
+/// onto, in its order.
+const CLUSTER_KEYS: [&str; 4] = [
+    "clustered",
+    "point_count",
+    "sqrt_point_count",
+    "point_count_abbreviated",
+];
+
+/// Cluster attribute `k` of a feature that `clustered` others joined.
+fn cluster_value(clustered: i64, k: usize) -> SerialVal {
+    let point_count = clustered + 1;
+    match k {
+        0 => SerialVal::new(MVT_BOOL, "true"),
+        1 => SerialVal::new(MVT_DOUBLE, &point_count.to_string()),
+        2 => SerialVal::new(
+            MVT_DOUBLE,
+            &format!(
+                "{:.6}",
+                (100.0 * (point_count as f64).sqrt()).round() / 100.0
+            ),
+        ),
+        _ => {
+            let abbrev = if point_count >= 10000 {
+                format!("{:.0}k", point_count as f64 / 1000.0)
+            } else if point_count >= 1000 {
+                format!("{:.1}k", point_count as f64 / 1000.0)
+            } else {
+                format!("{}", point_count)
+            };
+            SerialVal::new(MVT_STRING, &abbrev)
+        }
+    }
+}
+
+impl TF {
+    /// How many attributes `full_keys` and the cluster attributes make.
+    fn full_len(&self) -> usize {
+        self.full_keys.len()
+            + if self.cluster_at == NO_CLUSTER_ATTRS {
+                0
+            } else {
+                4
+            }
+    }
+
+    /// Attribute `i` of those, with the cluster attributes where they go.
+    fn full_at(&self, i: usize) -> (&str, Cow<'_, SerialVal>) {
+        let at = self.cluster_at as usize;
+        if self.cluster_at == NO_CLUSTER_ATTRS || i < at {
+            (&self.full_keys[i], Cow::Borrowed(&self.full_values[i]))
+        } else if i < at + 4 {
+            (
+                CLUSTER_KEYS[i - at],
+                Cow::Owned(cluster_value(self.clustered, i - at)),
+            )
+        } else {
+            (
+                &self.full_keys[i - 4],
+                Cow::Borrowed(&self.full_values[i - 4]),
+            )
+        }
+    }
 }
 
 #[derive(Default)]
@@ -385,28 +457,29 @@ fn coalcmp(ax: &Attrs<'_>, c1: &TF, c2: &TF) -> i32 {
         return cmp;
     }
 
-    if c1.full_keys.len() < c2.full_keys.len() {
+    if c1.full_len() < c2.full_len() {
         return -1;
-    } else if c1.full_keys.len() > c2.full_keys.len() {
+    } else if c1.full_len() > c2.full_len() {
         return 1;
     }
 
-    for i in 0..c1.full_keys.len() {
-        if *c1.full_keys[i] < *c2.full_keys[i] {
+    for i in 0..c1.full_len() {
+        let ((k1, v1), (k2, v2)) = (c1.full_at(i), c2.full_at(i));
+        if k1 < k2 {
             return -1;
-        } else if *c1.full_keys[i] > *c2.full_keys[i] {
+        } else if k1 > k2 {
             return 1;
         }
 
-        if c1.full_values[i].type_ < c2.full_values[i].type_ {
+        if v1.type_ < v2.type_ {
             return -1;
-        } else if c1.full_values[i].type_ > c2.full_values[i].type_ {
+        } else if v1.type_ > v2.type_ {
             return 1;
         }
 
-        if c1.full_values[i].s < c2.full_values[i].s {
+        if v1.s < v2.s {
             return -1;
-        } else if c1.full_values[i].s > c2.full_values[i].s {
+        } else if v1.s > v2.s {
             return 1;
         }
     }
@@ -451,9 +524,10 @@ fn find_attribute_value(ax: &Attrs<'_>, tf: &TF, key: &str) -> MvtValue {
         }
     }
 
-    for i in 0..tf.full_keys.len() {
-        if *tf.full_keys[i] == key {
-            return stringified_to_mvt_value(tf.full_values[i].type_, &tf.full_values[i].s);
+    for i in 0..tf.full_len() {
+        let (k, v) = tf.full_at(i);
+        if k == key {
+            return stringified_to_mvt_value(v.type_, &v.s);
         }
     }
 
@@ -522,6 +596,10 @@ fn disassemble_multiplier_clusters(ctx: &Ctx<'_>, clusters: Vec<Vec<TF>>) -> Vec
                 if *cluster[i].full_keys[j] == MULTIPLIER_FIRST {
                     let k = cluster[i].full_keys.remove(j);
                     let v = cluster[i].full_values.remove(j);
+                    let at = &mut cluster[i].cluster_at;
+                    if *at != NO_CLUSTER_ATTRS && (j as u32) < *at {
+                        *at -= 1;
+                    }
 
                     cluster[0].full_keys.push(k);
                     cluster[0].full_values.push(v);
@@ -1257,6 +1335,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                         full_keys: full.0.into(),
                         full_values: full.1.into(),
                         accs: Lazy(None),
+                        cluster_at: NO_CLUSTER_ATTRS,
                         extent,
                         index: f.index(),
                         reduced: false,
@@ -1411,6 +1490,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                         full_keys: full.0.into(),
                         full_values: full.1.into(),
                         accs: Lazy(None),
+                        cluster_at: NO_CLUSTER_ATTRS,
                         extent,
                         index: f.index(),
                         reduced: !still_need_simplification_after_reduction,
@@ -1541,47 +1621,17 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
 
             for p in features.iter_mut() {
                 if p.clustered > 0 {
-                    let point_count: i64 = p.clustered + 1;
-
-                    p.full_keys.push(key_pool.pool("clustered"));
-                    p.full_values.push(SerialVal::new(MVT_BOOL, "true"));
-
-                    p.full_keys.push(key_pool.pool("point_count"));
-                    p.full_values
-                        .push(SerialVal::new(MVT_DOUBLE, &point_count.to_string()));
-
-                    p.full_keys.push(key_pool.pool("sqrt_point_count"));
-                    p.full_values.push(SerialVal::new(
-                        MVT_DOUBLE,
-                        &format!(
-                            "{:.6}",
-                            (100.0 * (point_count as f64).sqrt()).round() / 100.0
-                        ),
-                    ));
-
-                    p.full_keys.push(key_pool.pool("point_count_abbreviated"));
-                    let abbrev = if point_count >= 10000 {
-                        format!("{:.0}k", point_count as f64 / 1000.0)
-                    } else if point_count >= 1000 {
-                        format!("{:.1}k", point_count as f64 / 1000.0)
-                    } else {
-                        format!("{}", point_count)
-                    };
-                    p.full_values.push(SerialVal::new(MVT_STRING, &abbrev));
+                    p.cluster_at = p.full_keys.len() as u32;
                 }
 
-                for j in 0..p.full_keys.len() {
-                    if let Some(found) = p.full_values[j].s.find('\0') {
-                        p.full_values[j].s.truncate(found);
+                for v in p.full_values.iter_mut() {
+                    if let Some(found) = v.s.find('\0') {
+                        v.s.truncate(found);
                     }
-                    add_tilestats(
-                        &mut res.tilestats,
-                        &mut unmap,
-                        layername,
-                        z,
-                        &p.full_keys[j],
-                        &p.full_values[j],
-                    );
+                }
+                for j in 0..p.full_len() {
+                    let (k, v) = p.full_at(j);
+                    add_tilestats(&mut res.tilestats, &mut unmap, layername, z, k, &v);
                 }
             }
 
@@ -1799,10 +1849,10 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                         });
                     }
                 }
-                for a in 0..f.full_keys.len() {
-                    let sv = &f.full_values[a];
+                for a in 0..f.full_len() {
+                    let (k, sv) = f.full_at(a);
                     let v = stringified_to_mvt_value(sv.type_, &sv.s);
-                    layer.tag_extra(&f.full_keys[a], &v);
+                    layer.tag_extra(k, &v);
                 }
 
                 if o.a(A_CALCULATE_FEATURE_DENSITY) {

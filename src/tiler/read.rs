@@ -76,6 +76,17 @@ const RUN_VERTICES: u32 = 1 << 15;
 /// No feature: the run is the first of its input.
 const NO_FEATURE: u32 = u32::MAX;
 
+/// About the bytes that reading a tile holds for each feature and vertex of
+/// its input: the candidate, its gap and geometry, the input itself and the
+/// children's inputs.
+const READ_PER_FEATURE: u64 = 64;
+const READ_PER_VERTEX: u64 = 12;
+/// About the bytes that making a tile holds for each feature it keeps and
+/// its vertices: the kept feature, its geometry and attributes, and the
+/// encoder's records of it.
+const MAKE_PER_FEATURE: u64 = 320;
+const MAKE_PER_VERTEX: u64 = 32;
+
 /// A run of features in a tile input.
 #[derive(Clone, Copy, Debug)]
 struct Run {
@@ -158,14 +169,26 @@ impl TileInput {
         }
     }
 
-    /// About how much memory reading and making the tile takes.
-    pub fn working_set(&self, store: &crate::store::FeatureStore) -> u64 {
+    /// About how much memory reading and making the tile takes. Reading
+    /// holds every feature of the input, and making the tile the features
+    /// it keeps, of which there are at most the feature limit.
+    pub fn working_set(&self, store: &crate::store::FeatureStore, o: &super::TileOptions) -> u64 {
         let vertices = if self.root {
             store.geometry.vertices()
         } else {
             self.vertices
         };
-        vertices * 12 + self.count as u64 * 64
+        let count = self.count as u64;
+        let kept = if o.p(P_FEATURE_LIMIT) {
+            count
+        } else {
+            count.min(o.max_tile_features as u64)
+        };
+        let kept_vertices = (vertices as u128 * kept as u128 / count.max(1) as u128) as u64;
+        count * READ_PER_FEATURE
+            + vertices * READ_PER_VERTEX
+            + kept * MAKE_PER_FEATURE
+            + kept_vertices * MAKE_PER_VERTEX
     }
 
     /// Appends a part that one read chunk of the parent wrote.

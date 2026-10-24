@@ -724,7 +724,7 @@ impl<'d, 's> Driver<'d, 's> {
         } else {
             o.simplification
         };
-        let ws = slot.input.working_set(self.ctx.store);
+        let ws = slot.input.working_set(self.ctx.store, o);
         let task = Task {
             level: k,
             idx,

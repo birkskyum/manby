@@ -1,63 +1,72 @@
 ---
-// The headline benchmark: 4 million points to PMTiles with
-// -zg --drop-densest-as-needed, medians of three runs (reference/benchmarks).
-// manby's bar is the accent, tippecanoe's the gray it is measured against;
-// both colors were checked for contrast and colorblind separation.
-const machines = [
-	{
-		name: 'Apple M5 Max, macOS',
-		runs: [
-			{ program: 'manby', seconds: 3.44, mb: 919 },
-			{ program: 'tippecanoe', seconds: 61.4, mb: 2276 },
-		],
-	},
-	{
-		name: 'Snapdragon X Elite, Linux',
-		runs: [
-			{ program: 'manby', seconds: 5.86, mb: 994 },
-			{ program: 'tippecanoe', seconds: 88.5, mb: 1088 },
-		],
-	},
+// The benchmarks on Linux (reference/benchmarks): seconds to make each
+// tileset as PMTiles, medians of three runs. manby's bars are the accent,
+// tippecanoe's the gray they are measured against; both colors were checked
+// for contrast and colorblind separation.
+const runs = [
+	{ name: 'Points', manby: [5.86, 994], tippecanoe: [88.5, 1088] },
+	{ name: 'Points, clustered by distance', manby: [6.02, 974], tippecanoe: [82.5, 1028] },
+	{ name: 'Points, clustered as needed', manby: [6.37, 1000], tippecanoe: [89.6, 1165] },
+	{ name: 'Points, all zooms, clustered and summed', manby: [13.9, 1152], tippecanoe: [133.6, 1498] },
+	{ name: 'Roads at z14', manby: [1.51, 236], tippecanoe: [59.0, 240] },
+	{ name: 'Tracts at z12', manby: [7.77, 360], tippecanoe: [196.8, 456] },
+	{ name: 'Tracts, coalesced as needed', manby: [4.46, 379], tippecanoe: [36.1, 451] },
 ];
-const max = 90;
+const max = 200;
+const programs = [
+	{ key: 'manby', color: 'bg-[#2a78d6] dark:bg-[#3987e5]' },
+	{ key: 'tippecanoe', color: 'bg-[#898781]' },
+] as const;
 const benchmarks = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/reference/benchmarks/`;
+const seconds = (s: number) => (s < 10 ? s.toFixed(1) : s.toFixed(0)) + ' s';
 ---
 
 <figure class="not-content mt-10 mb-4">
-	<figcaption class="text-base font-semibold text-gray-900 dark:text-gray-100">
-		Time to tile 4 million points into PMTiles
+	<figcaption class="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
+		<span class="text-base font-semibold text-gray-900 dark:text-gray-100">
+			Seconds to make each tileset, on Linux
+		</span>
+		<span class="flex gap-4 text-sm text-gray-700 dark:text-gray-300">
+			{
+				programs.map((p) => (
+					<span class="flex items-center gap-1.5">
+						<span class:list={['inline-block h-3 w-3 rounded-[2px]', p.color]} />
+						{p.key}
+					</span>
+				))
+			}
+		</span>
 	</figcaption>
-	{
-		machines.map((m) => (
-			<div class="mt-5">
-				<div class="text-sm text-gray-600 dark:text-gray-400">{m.name}</div>
-				{m.runs.map((r) => (
-					<div
-						class="mt-1.5 grid grid-cols-[6.5rem_1fr] items-center gap-3"
-						title={`${r.program} on ${m.name}: ${r.seconds} s, ${r.mb.toLocaleString('en')} MB peak memory`}
-					>
-						<span class="text-right text-sm text-gray-900 dark:text-gray-100">{r.program}</span>
-						<div class="flex items-center gap-2 border-l border-[#c3c2b7] dark:border-[#383835]">
+	<div class="mt-4 flex flex-col gap-3">
+		{
+			runs.map((r) => (
+				<div class="grid grid-cols-1 items-center gap-x-4 gap-y-1 sm:grid-cols-[17rem_1fr]">
+					<span class="text-sm text-gray-900 sm:text-right dark:text-gray-100">{r.name}</span>
+					<div class="flex flex-col gap-0.5 border-l border-[#c3c2b7] dark:border-[#383835]">
+						{programs.map((p) => (
 							<div
-								class:list={[
-									'h-5 rounded-r-[4px]',
-									r.program === 'manby' ? 'bg-[#2a78d6] dark:bg-[#3987e5]' : 'bg-[#898781]',
-								]}
-								style={`width: calc((100% - 4.5rem) * ${r.seconds / max})`}
-							/>
-							<span class="text-sm whitespace-nowrap text-gray-600 tabular-nums dark:text-gray-400">
-								{r.seconds.toFixed(1)} s
-							</span>
-						</div>
+								class="flex items-center gap-2"
+								title={`${p.key}, ${r.name}: ${r[p.key][0]} s, ${r[p.key][1].toLocaleString('en')} MB peak memory`}
+							>
+								<div
+									class:list={['h-3.5 rounded-r-[4px]', p.color]}
+									style={`width: calc((100% - 3.5rem) * ${r[p.key][0] / max})`}
+								/>
+								<span class="text-xs whitespace-nowrap text-gray-600 tabular-nums dark:text-gray-400">
+									{seconds(r[p.key][0])}
+								</span>
+							</div>
+						))}
 					</div>
-				))}
-			</div>
-		))
-	}
+				</div>
+			))
+		}
+	</div>
 	<p class="mt-4 text-sm text-gray-600 dark:text-gray-400">
-		<code>-zg --drop-densest-as-needed</code>, median of three runs, against tippecanoe 2.82.0.
-		The tiles are the same. <a class="text-accent-600 underline dark:text-accent-200" href={benchmarks}
-			>All the benchmarks</a
+		A Snapdragon X Elite with 12 cores, median of three runs, against tippecanoe 2.82.0. The tiles
+		are the same. On roads and tracts at z12, much of tippecanoe's time goes to its SQLite step on
+		this machine's compressed disk. <a class="text-accent-600 underline dark:text-accent-200" href={benchmarks}
+			>All the benchmarks, also on macOS</a
 		>
 	</p>
 </figure>

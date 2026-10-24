@@ -21,6 +21,7 @@ export default defineConfig({
 				styleOverrides: { borderRadius: '0.75rem' },
 			},
 			sidebar: [
+				{ label: 'Why manby?', slug: 'why' },
 				{ label: 'Getting started', slug: 'getting-started' },
 				{
 					label: 'Guides',
@@ -29,6 +30,7 @@ export default defineConfig({
 						{ label: 'Joining tilesets', slug: 'guides/join' },
 						{ label: "tippecanoe's other programs", slug: 'guides/programs' },
 						{ label: 'MapLibre Tiles', slug: 'guides/mlt' },
+						{ label: 'Other formats, with terrio', slug: 'guides/other-formats' },
 					],
 				},
 				{

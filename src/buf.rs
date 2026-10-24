@@ -340,8 +340,10 @@ impl<T> Buf<T> {
         }
     }
 
+    /// Gives back heap memory beyond the length. Storage in the file stays:
+    /// its unused end takes no memory, and moving it would copy it all.
     pub fn shrink_to_fit(&mut self) {
-        if self.cap > self.len {
+        if self.cap > self.len && self.kind != Kind::File {
             self.set_capacity(self.len);
         }
     }

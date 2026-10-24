@@ -232,6 +232,7 @@ fn parse_range(
     let mut chunk = Chunk::new(layers);
     let input = &data[range.0..range.1];
     geojson::parse(input, reading, &mut chunk, found_features);
+    chunk.finish();
     chunk
 }
 
@@ -350,7 +351,8 @@ fn add_chunks(parts: &mut Parts, units: &[Unit], chunks: Vec<Accepted>, unit_off
     let mut unit_sums: Vec<(f64, f64)> = vec![(0.0, 0.0); units.len()];
     let mut segment_units: Vec<usize> = Vec::new();
 
-    for a in chunks {
+    for mut a in chunks {
+        a.chunk.finish();
         let u = a.unit - unit_offset;
         let unit = &units[u];
         parts.seq_base.push(unit.seq_base + rank_in_unit[u]);
@@ -377,6 +379,9 @@ fn add_chunks(parts: &mut Parts, units: &[Unit], chunks: Vec<Accepted>, unit_off
                 parts.area_sum += t;
             }
         }
+        // the sums are all they were for
+        a.chunk.dist_terms = Buf::new();
+        a.chunk.area_terms = Buf::new();
         parts.chunks.push(Accepted { unit: a.unit, ..a });
     }
 

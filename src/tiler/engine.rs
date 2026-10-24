@@ -196,9 +196,18 @@ struct Task {
     mp: MakeParams,
 }
 
+/// A tile waiting for a thread, with what its task needs that may change
+/// before it starts. The task itself is made when it starts, since a level
+/// can queue hundreds of thousands of tiles at once.
 struct Ready {
+    /// The level, and the order the tile was queued in.
     key: (usize, u64),
-    task: Task,
+    idx: u32,
+    pass: u32,
+    maxzoom: i32,
+    extend_zooms_max: i64,
+    /// About how much memory the task takes, if it counts as big.
+    big: u64,
 }
 
 impl PartialEq for Ready {
@@ -634,7 +643,7 @@ impl<'d, 's> Driver<'d, 's> {
             let Some(Reverse(ready)) = self.ready.pop() else {
                 break;
             };
-            let big = ready.task.big;
+            let big = ready.big;
             if big > 0 && self.running_big > 0 && self.running_big + big > self.big_memory {
                 deferred.push(ready);
                 continue;
@@ -643,7 +652,7 @@ impl<'d, 's> Driver<'d, 's> {
             self.in_flight += 1;
             let ctx = self.ctx;
             let tx = self.tx.clone();
-            let t = ready.task;
+            let t = self.task(&ready);
             self.scope.spawn(move |_| {
                 // a task that panics fails the run; its message is printed
                 // already
@@ -718,44 +727,60 @@ impl<'d, 's> Driver<'d, 's> {
             level.missing -= 1;
             return;
         }
-        let loop_z = if pass == 0 { level.loop_z } else { level.z };
-        let simplification = if loop_z == self.maxzoom && o.maxzoom_simplification > 0.0 {
-            o.maxzoom_simplification
-        } else {
-            o.simplification
-        };
-        let ws = slot.input.working_set(self.ctx.store);
-        let task = Task {
-            level: k,
-            idx,
-            pass,
+        let ws = slot.input.working_set(self.ctx.store, o);
+        level.outstanding += 1;
+        self.seq += 1;
+        self.ready.push(Reverse(Ready {
+            key: (k, self.seq),
+            idx: idx as u32,
+            pass: pass as u32,
+            maxzoom: self.maxzoom,
+            extend_zooms_max: self.extend_zooms_max,
             big: if ws >= BIG_TASK.min(self.big_memory / 64) {
                 ws
             } else {
                 0
             },
+        }));
+    }
+
+    /// The task of a queued tile. Nothing it is made from changes while the
+    /// tile waits, apart from what `Ready` keeps: a level's thresholds and
+    /// its tiles' reads change only once its pass is done.
+    fn task(&self, r: &Ready) -> Task {
+        let o = self.ctx.o;
+        let k = r.key.0;
+        let idx = r.idx as usize;
+        let pass = r.pass as usize;
+        let level = &self.levels[k];
+        let slot = &level.slots[idx];
+        let loop_z = if pass == 0 { level.loop_z } else { level.z };
+        let simplification = if loop_z == r.maxzoom && o.maxzoom_simplification > 0.0 {
+            o.maxzoom_simplification
+        } else {
+            o.simplification
+        };
+        Task {
+            level: k,
+            idx,
+            pass,
+            big: r.big,
             spool: level.spool.clone(),
             child_spool: level.child_spool.clone(),
             input: slot.input.clone(),
             rp: ReadParams {
                 nextzoom: level.nextzoom.unwrap(),
-                maxzoom: self.maxzoom,
-                extend_zooms_max: self.extend_zooms_max,
+                maxzoom: r.maxzoom,
+                extend_zooms_max: r.extend_zooms_max,
                 children: !slot.read,
             },
             complexity: slot.complexity,
             mp: MakeParams {
-                maxzoom: self.maxzoom,
+                maxzoom: r.maxzoom,
                 simplification,
                 th: level.th,
             },
-        };
-        level.outstanding += 1;
-        self.seq += 1;
-        self.ready.push(Reverse(Ready {
-            key: (k, self.seq),
-            task,
-        }));
+        }
     }
 
     /// All the inputs of level `k` are known: work out what tippecanoe's

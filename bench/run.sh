@@ -22,6 +22,8 @@
 # PAUSE: seconds to wait before each run, for the machine to cool down after
 #   the one before (default 0)
 # OUT: the directory for the tilesets (default: bench/out)
+# MANBY_ONLY: run only manby, and check its tiles against the reference's
+#   tilesets that an earlier run left in OUT
 cd "$(dirname "$0")/.."
 TIPPECANOE=${TIPPECANOE:-../tippecanoe-rs/target/release/tippecanoe}
 DECODE=${DECODE:-../tippecanoe-rs/target/release/tippecanoe-decode}
@@ -69,10 +71,12 @@ for name in $names; do
 	[ -z "$args" ] && { echo "unknown benchmark $name"; continue; }
 	tw="" tm="" mw="" mm=""
 	for round in $(seq 1 $ROUNDS); do
-		sleep $PAUSE
-		read w m < <(measured $TIPPECANOE -q -f -o $O/tippecanoe-$name.pmtiles $args)
-		printf "%-16s %-10s %10s %10s\n" $name tippecanoe $w $m
-		tw="$tw $w" tm="$tm $m"
+		if [ -z "$MANBY_ONLY" ]; then
+			sleep $PAUSE
+			read w m < <(measured $TIPPECANOE -q -f -o $O/tippecanoe-$name.pmtiles $args)
+			printf "%-16s %-10s %10s %10s\n" $name tippecanoe $w $m
+			tw="$tw $w" tm="$tm $m"
+		fi
 		sleep $PAUSE
 		read w m < <(measured $MANBY -q -f -o $O/manby-$name.pmtiles $MANBY_FLAGS $args)
 		printf "%-16s %-10s %10s %10s\n" $name manby $w $m
@@ -84,12 +88,22 @@ for name in $names; do
 	else
 		echo "$name: TILES DIFFER from tippecanoe"
 	fi
-	t=$(echo $tw | median) m=$(echo $mw | median)
-	summary="$summary$(printf "%-16s %8.2f s %6s MB %8.2f s %6s MB %6.1fx" $name $t $(echo $tm | median) $m $(echo $mm | median) $(echo "$t / $m" | bc -l))
+	m=$(echo $mw | median)
+	if [ -n "$MANBY_ONLY" ]; then
+		summary="$summary$(printf "%-16s %8.2f s %6s MB" $name $m $(echo $mm | median))
 "
+	else
+		t=$(echo $tw | median)
+		summary="$summary$(printf "%-16s %8.2f s %6s MB %8.2f s %6s MB %6.1fx" $name $t $(echo $tm | median) $m $(echo $mm | median) $(echo "$t / $m" | bc -l))
+"
+	fi
 done
 
 echo
 echo "medians of $ROUNDS runs"
-printf "%-16s %20s %20s %7s\n" benchmark tippecanoe manby speedup
+if [ -n "$MANBY_ONLY" ]; then
+	printf "%-16s %20s\n" benchmark manby
+else
+	printf "%-16s %20s %20s %7s\n" benchmark tippecanoe manby speedup
+fi
 printf "%s" "$summary"

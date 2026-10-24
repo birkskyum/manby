@@ -1,0 +1,35 @@
+---
+// Starlight's hero, with the benchmark right under the tagline instead of
+// an image beside it, so that the chart is the first thing on the page.
+import { LinkButton } from '@astrojs/starlight/components';
+import BenchChart from './BenchChart.astro';
+
+const { data } = Astro.locals.starlightRoute.entry;
+const { title = data.title, tagline, actions = [] } = data.hero || {};
+---
+
+<div class="not-content pt-4 pb-2 md:pt-10">
+	<h1
+		id="_top"
+		data-page-title
+		class="text-5xl font-semibold text-gray-900 md:text-6xl dark:text-white"
+		set:html={title}
+	/>
+	{
+		tagline && (
+			<p class="mt-4 max-w-[60ch] text-lg text-gray-700 md:text-xl dark:text-gray-300" set:html={tagline} />
+		)
+	}
+	{
+		actions.length > 0 && (
+			<div class="mt-6 flex flex-wrap items-center gap-x-8 gap-y-4">
+				{actions.map(({ icon, link: href, text, variant }) => (
+					<LinkButton {href} {variant} icon={icon?.name}>
+						{text}
+					</LinkButton>
+				))}
+			</div>
+		)
+	}
+	<BenchChart />
+</div>

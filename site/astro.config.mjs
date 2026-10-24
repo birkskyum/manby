@@ -14,8 +14,12 @@ export default defineConfig({
 			description:
 				'Builds vector tilesets from geographic features. The same tiles as tippecanoe, eight to eighteen times faster, in less memory.',
 			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/birkskyum/manby' }],
-			customCss: ['./src/styles/global.css'],
-			components: { Hero: './src/components/Hero.astro' },
+			customCss: ['@fontsource-variable/inter', './src/styles/global.css'],
+			components: { SiteTitle: './src/components/SiteTitle.astro' },
+			expressiveCode: {
+				themes: ['github-dark', 'github-light'],
+				styleOverrides: { borderRadius: '0.75rem' },
+			},
 			sidebar: [
 				{ label: 'Getting started', slug: 'getting-started' },
 				{

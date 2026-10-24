@@ -67,19 +67,19 @@ const datasets = [
 ];
 const max = 200;
 const programs = [
-	{ key: 'manby', color: 'bg-[#2a78d6] dark:bg-[#3987e5]' },
-	{ key: 'tippecanoe', color: 'bg-[#898781]' },
+	{ key: 'manby', color: 'bg-vp-bar-manby' },
+	{ key: 'tippecanoe', color: 'bg-vp-bar-other' },
 ] as const;
 const benchmarks = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/reference/benchmarks/`;
 const seconds = (s: number) => (s < 10 ? s.toFixed(1) : s.toFixed(0)) + ' s';
 ---
 
-<figure class="not-content mt-10 mb-4">
+<figure>
 	<figcaption class="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
-		<span class="text-base font-semibold text-gray-900 dark:text-gray-100">
+		<span class="text-base font-semibold text-vp-text-1">
 			Seconds to make each tileset, on Linux
 		</span>
-		<span class="flex gap-4 text-sm text-gray-700 dark:text-gray-300">
+		<span class="flex gap-4 text-sm text-vp-text-2">
 			{
 				programs.map((p) => (
 					<span class="flex items-center gap-1.5">
@@ -94,17 +94,17 @@ const seconds = (s: number) => (s < 10 ? s.toFixed(1) : s.toFixed(0)) + ' s';
 		datasets.map((d) => (
 			<div class="mt-5">
 				<div class="text-sm">
-					<span class="font-semibold text-gray-900 dark:text-gray-100">{d.name}</span>
-					<span class="text-gray-600 dark:text-gray-400">, {d.about}</span>
+					<span class="font-semibold text-vp-text-1">{d.name}</span>
+					<span class="text-vp-text-2">, {d.about}</span>
 				</div>
 				<div class="mt-2 flex flex-col gap-3">
 					{d.runs.map((r) => (
 						<div
-							class="grid grid-cols-1 items-center gap-x-4 gap-y-1 sm:grid-cols-[17rem_1fr]"
+							class="grid grid-cols-1 items-center gap-x-4 gap-y-1 sm:grid-cols-[19rem_1fr]"
 							title={`tippecanoe and manby ${r.options}`}
 						>
-							<span class="text-sm text-gray-700 sm:text-right dark:text-gray-300">{r.name}</span>
-							<div class="flex flex-col gap-0.5 border-l border-[#c3c2b7] dark:border-[#383835]">
+							<span class="text-sm text-vp-text-1 sm:text-right">{r.name}</span>
+							<div class="flex flex-col gap-0.5 border-l border-vp-border">
 								{programs.map((p) => (
 									<div
 										class="flex items-center gap-2"
@@ -114,7 +114,7 @@ const seconds = (s: number) => (s < 10 ? s.toFixed(1) : s.toFixed(0)) + ' s';
 											class:list={['h-3.5 rounded-r-[4px]', p.color]}
 											style={`width: calc((100% - 3.5rem) * ${r[p.key][0] / max})`}
 										/>
-										<span class="text-xs whitespace-nowrap text-gray-600 tabular-nums dark:text-gray-400">
+										<span class="text-xs whitespace-nowrap text-vp-text-2 tabular-nums">
 											{seconds(r[p.key][0])}
 										</span>
 									</div>
@@ -126,10 +126,10 @@ const seconds = (s: number) => (s < 10 ? s.toFixed(1) : s.toFixed(0)) + ' s';
 			</div>
 		))
 	}
-	<p class="mt-5 text-sm text-gray-600 dark:text-gray-400">
+	<p class="mt-5 text-sm text-vp-text-2">
 		On a Snapdragon X Elite with 12 cores, median of three runs, against tippecanoe 2.82.0. The
 		tiles are the same. On the roads and the tracts to z12, much of tippecanoe's time goes to its
-		SQLite step on this machine's compressed disk. <a class="text-accent-600 underline dark:text-accent-200" href={benchmarks}
+		SQLite step on this machine's compressed disk. <a class="text-vp-brand-1 underline underline-offset-2" href={benchmarks}
 			>The commands, and the same benchmarks on macOS</a
 		>
 	</p>

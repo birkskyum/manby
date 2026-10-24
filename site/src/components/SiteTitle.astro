@@ -1,0 +1,15 @@
+---
+// Starlight's site title, as manby's mark and name in the text color rather
+// than the accent.
+import Logo from './Logo.astro';
+
+const { siteTitle, siteTitleHref } = Astro.locals.starlightRoute;
+---
+
+<a
+	href={siteTitleHref}
+	class="flex min-w-0 items-center gap-2 text-xl font-semibold tracking-tight text-vp-text-1 no-underline"
+>
+	<Logo class="h-6 w-6 shrink-0" />
+	<span translate="no">{siteTitle}</span>
+</a>

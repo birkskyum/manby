@@ -1,0 +1,158 @@
+---
+// The landing page, outside Starlight so that its layout is free, in
+// VitePress's colors. It shares the docs' light or dark choice
+// (localStorage 'starlight-theme').
+import '@fontsource-variable/inter';
+import '../styles/landing.css';
+import { Icon } from '@astrojs/starlight/components';
+import Logo from '../components/Logo.astro';
+import BenchChart from '../components/BenchChart.astro';
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const github = 'https://github.com/birkskyum/manby';
+const description =
+	'manby builds vector tilesets from geographic features. The same tiles as tippecanoe, eight to eighteen times faster, in less memory.';
+const features = [
+	{
+		title: "tippecanoe's tiles",
+		text: "manby makes the tiles tippecanoe makes, for every option it supports. All 188 of tippecanoe's expected test outputs match, from GeoJSON and from Geobuf.",
+	},
+	{
+		title: 'Every core, all the time',
+		text: 'The features stay in memory, sorted once. The tile pyramid is made on every core at once, big tiles are split across threads, and oversized tiles are retried on data already in memory.',
+	},
+	{
+		title: 'Less memory',
+		text: "On every benchmark manby's peak memory is below tippecanoe's, on macOS and on Linux, and less than half of it for the points on a Mac.",
+	},
+	{
+		title: 'Larger than memory',
+		text: 'With --memory-budget, 40 million points (5.6 GB) take 79 seconds in 1.1 GB on a Mac, where tippecanoe takes 652 seconds and 10 GB.',
+	},
+	{
+		title: 'tile-join too',
+		text: 'manby join merges, joins, filters and converts tilesets like tile-join, with the same tiles, two to thirty-five times faster.',
+	},
+	{
+		title: 'PMTiles directly',
+		text: 'PMTiles archives are written directly, without the SQLite database tippecanoe goes through. MBTiles and directories of tiles work too.',
+	},
+];
+const button = 'rounded-full px-5 py-2.5 text-sm font-semibold transition-colors';
+---
+
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>manby | Vector tiles, fast</title>
+		<meta name="description" content={description} />
+		<link rel="icon" href={`${base}/favicon.svg`} type="image/svg+xml" />
+		<script is:inline>
+			(() => {
+				const stored = localStorage.getItem('starlight-theme');
+				const theme =
+					stored === 'light' || stored === 'dark'
+						? stored
+						: matchMedia('(prefers-color-scheme: light)').matches
+							? 'light'
+							: 'dark';
+				document.documentElement.dataset.theme = theme;
+			})();
+		</script>
+	</head>
+	<body class="bg-vp-bg font-sans text-vp-text-1 antialiased">
+		<header class="sticky top-0 z-10 border-b border-vp-divider bg-vp-bg/90 backdrop-blur">
+			<div class="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
+				<a href={`${base}/`} class="flex items-center gap-2 text-lg font-semibold tracking-tight">
+					<Logo class="h-6 w-6" />
+					manby
+				</a>
+				<nav class="flex items-center gap-5 text-sm font-medium">
+					<a href={`${base}/getting-started/`} class="transition-colors hover:text-vp-brand-1">Guide</a>
+					<a href={`${base}/reference/benchmarks/`} class="transition-colors hover:text-vp-brand-1">Benchmarks</a>
+					<a href={github} aria-label="GitHub" class="text-vp-text-2 transition-colors hover:text-vp-text-1">
+						<Icon name="github" size="1.25rem" />
+					</a>
+					<button
+						id="theme"
+						type="button"
+						aria-label="Switch between light and dark"
+						class="cursor-pointer text-vp-text-2 transition-colors hover:text-vp-text-1"
+					>
+						<span class="dark:hidden"><Icon name="moon" size="1.25rem" /></span>
+						<span class="hidden dark:inline"><Icon name="sun" size="1.25rem" /></span>
+					</button>
+				</nav>
+			</div>
+		</header>
+
+		<main class="mx-auto max-w-6xl px-6">
+			<section class="grid items-center gap-12 pt-16 pb-12 md:pt-24 lg:grid-cols-[1fr_auto]">
+				<div>
+					<h1 class="text-5xl leading-[1.1] font-bold tracking-tight md:text-6xl">
+						<span class="text-vp-brand-1">manby</span>
+						<br />
+						Vector tiles, fast
+					</h1>
+					<p class="mt-6 max-w-xl text-xl leading-snug text-pretty text-vp-text-2 md:text-2xl">
+						The same tiles as tippecanoe, eight to eighteen times faster, in less memory. From
+						GeoJSON, FlatGeobuf, CSV or Geobuf.
+					</p>
+					<div class="mt-8 flex flex-wrap gap-3">
+						<a
+							href={`${base}/getting-started/`}
+							class:list={[button, 'bg-vp-brand-3 text-white hover:bg-vp-brand-2']}>Get started</a
+						>
+						<a
+							href={`${base}/reference/benchmarks/`}
+							class:list={[button, 'bg-vp-button-alt hover:bg-vp-divider']}>Benchmarks</a
+						>
+						<a href={github} class:list={[button, 'bg-vp-button-alt hover:bg-vp-divider']}>GitHub</a>
+					</div>
+				</div>
+				<div class="relative hidden h-64 w-64 lg:block">
+					<div class="absolute inset-4 rounded-full bg-vp-brand-2 opacity-25 blur-3xl"></div>
+					<Logo class="relative h-64 w-64" />
+				</div>
+			</section>
+
+			<section class="rounded-2xl bg-vp-bg-soft px-5 py-7 sm:px-8">
+				<BenchChart />
+			</section>
+
+			<section class="mt-16 max-w-3xl">
+				<h2 class="text-2xl font-semibold tracking-tight">Use it as you use tippecanoe</h2>
+				<p class="mt-3 text-vp-text-2">
+					manby takes tippecanoe's options, so a tippecanoe command works with manby in its place.
+				</p>
+				<pre
+					class="mt-5 overflow-x-auto rounded-xl bg-vp-bg-alt px-5 py-4 font-mono text-sm"><code><span class="text-vp-brand-1">manby</span> -zg --drop-densest-as-needed -o places.pmtiles places.geojson</code></pre>
+			</section>
+
+			<section class="mt-16 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+				{
+					features.map((f) => (
+						<div class="rounded-xl bg-vp-bg-soft p-6">
+							<h3 class="font-semibold">{f.title}</h3>
+							<p class="mt-2 text-sm leading-relaxed text-vp-text-2">{f.text}</p>
+						</div>
+					))
+				}
+			</section>
+		</main>
+
+		<footer class="mt-24 border-t border-vp-divider py-8 text-center text-sm text-vp-text-2">
+			Released under the BSD 2-Clause License.
+		</footer>
+
+		<script>
+			document.getElementById('theme')?.addEventListener('click', () => {
+				const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+				document.documentElement.dataset.theme = next;
+				localStorage.setItem('starlight-theme', next);
+			});
+		</script>
+	</body>
+</html>

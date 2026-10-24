@@ -13,11 +13,11 @@ Past the budget, the features and the tile data live in an unlinked temporary fi
 
 Inputs several times larger than a 1 GB budget, once each, against tippecanoe 2.82.0:
 
-| Input | System | tippecanoe | manby | tippecanoe memory | manby memory |
-| --- | --- | --: | --: | --: | --: |
-| 40 million points (5.6 GB) | macOS | 652 s | 79 s | 10,206 MB | 1,139 MB |
-| | Linux | 1,025 s | 121 s | 6,379 MB | 1,188 MB |
-| The census tracts 20 times over (3 GB) | macOS | 564 s | 137 s | 4,810 MB | 1,022 MB |
-| | Linux | 854 s | 269 s | 3,730 MB | 1,206 MB |
+| Input | System | tippecanoe | manby |
+| --- | --- | --: | --: |
+| 40 million points (5.6 GB) | macOS | 652 s, 10,206 MB | 79 s, 1,139 MB |
+| | Linux | 1,025 s, 6,379 MB | 121 s, 1,188 MB |
+| The census tracts 20 times over (3 GB) | macOS | 564 s, 4,810 MB | 137 s, 1,022 MB |
+| | Linux | 854 s, 3,730 MB | 269 s, 1,206 MB |
 
 The tiles are tippecanoe's for both. The [benchmarks](../../reference/benchmarks/) give the commands and describe the machines.

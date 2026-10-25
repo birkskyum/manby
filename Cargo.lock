@@ -588,6 +588,9 @@ dependencies = [
 [[package]]
 name = "manby-wagyu"
 version = "0.5.0"
+dependencies = [
+ "wagyu",
+]
 
 [[package]]
 name = "memchr"

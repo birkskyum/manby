@@ -9,3 +9,6 @@ license = "ISC"
 name = "wagyu"
 
 [dependencies]
+
+[dev-dependencies]
+port-wagyu = { package = "wagyu", path = "../../../tippecanoe-rs/crates/wagyu" }

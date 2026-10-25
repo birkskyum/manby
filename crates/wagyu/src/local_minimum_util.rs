@@ -1,5 +1,7 @@
 //! Port of `local_minimum_util.hpp`.
 
+use std::collections::VecDeque;
+
 use crate::bound::{Bound, BoundPtr};
 use crate::config::{EdgeSide, Error, PolygonType, Result};
 use crate::edge::{Edge, is_horizontal};
@@ -55,13 +57,13 @@ fn start_list_on_local_maximum(edges: &mut [Edge]) {
     edges.rotate_left(edge);
 }
 
-fn create_bound_towards_minimum(edges: &mut Vec<Edge>) -> Bound {
+fn create_bound_towards_minimum(edges: &mut VecDeque<Edge>) -> Bound {
     if edges.len() == 1 {
         if is_horizontal(&edges[0]) {
             reverse_horizontal(&mut edges[0]);
         }
         let mut bnd = Bound::new();
-        std::mem::swap(&mut bnd.edges, edges);
+        bnd.edges = edges.drain(..).collect();
         return bnd;
     }
     let mut next_edge = 0;
@@ -103,19 +105,15 @@ fn create_bound_towards_minimum(edges: &mut Vec<Edge>) -> Bound {
         next_edge += 1;
     }
     let mut bnd = Bound::new();
-    if next_edge == edges.len() {
-        std::mem::swap(edges, &mut bnd.edges);
-    } else {
-        bnd.edges = edges.drain(0..next_edge).collect();
-    }
+    bnd.edges = edges.drain(0..next_edge).collect();
     bnd.edges.reverse();
     bnd
 }
 
-fn create_bound_towards_maximum(edges: &mut Vec<Edge>) -> Bound {
+fn create_bound_towards_maximum(edges: &mut VecDeque<Edge>) -> Bound {
     if edges.len() == 1 {
         let mut bnd = Bound::new();
-        std::mem::swap(&mut bnd.edges, edges);
+        bnd.edges = edges.drain(..).collect();
         return bnd;
     }
     let mut next_edge = 0;
@@ -151,11 +149,7 @@ fn create_bound_towards_maximum(edges: &mut Vec<Edge>) -> Bound {
         next_edge += 1;
     }
     let mut bnd = Bound::new();
-    if next_edge == edges.len() {
-        std::mem::swap(&mut bnd.edges, edges);
-    } else {
-        bnd.edges = edges.drain(0..next_edge).collect();
-    }
+    bnd.edges = edges.drain(0..next_edge).collect();
     bnd
 }
 
@@ -215,6 +209,10 @@ pub(crate) fn add_ring_to_local_minima_list(
     // Adjust the order of the ring so we start on a local maximum
     // therefore we start right away on a bound.
     start_list_on_local_maximum(edges);
+    // Bounds are taken off the front, which in a vector moves every edge after
+    // them, so that long rings took time quadratic in their length.
+    let mut edges: VecDeque<Edge> = std::mem::take(edges).into();
+    let edges = &mut edges;
 
     let mut first_minimum: BoundPtr = NIL;
     let mut last_maximum: BoundPtr = NIL;

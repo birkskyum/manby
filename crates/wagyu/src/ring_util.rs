@@ -691,33 +691,8 @@ fn point_in_polygon(pt: Point, mut op: PointPtr, pts: &[PointNode]) -> PointInPo
     loop {
         let o = &pts[op];
         let n = &pts[o.next];
-        if n.y == pt.y && ((n.x == pt.x) || (o.y == pt.y && ((n.x > pt.x) == (o.x < pt.x)))) {
+        if edge_is_on_or_crosses(pt, o.x, o.y, n.x, n.y, &mut result) {
             return OnPolygon;
-        }
-        if (o.y < pt.y) != (n.y < pt.y) {
-            if o.x >= pt.x {
-                if n.x > pt.x {
-                    result = toggle(result);
-                } else {
-                    let d = (o.x - pt.x) as f64 * (n.y - pt.y) as f64
-                        - (n.x - pt.x) as f64 * (o.y - pt.y) as f64;
-                    if value_is_zero(d) {
-                        return OnPolygon;
-                    }
-                    if (d > 0.0) == (n.y > o.y) {
-                        result = toggle(result);
-                    }
-                }
-            } else if n.x > pt.x {
-                let d = (o.x - pt.x) as f64 * (n.y - pt.y) as f64
-                    - (n.x - pt.x) as f64 * (o.y - pt.y) as f64;
-                if value_is_zero(d) {
-                    return OnPolygon;
-                }
-                if (d > 0.0) == (n.y > o.y) {
-                    result = toggle(result);
-                }
-            }
         }
         op = o.next;
         if start_op == op {
@@ -725,6 +700,141 @@ fn point_in_polygon(pt: Point, mut op: PointPtr, pts: &[PointNode]) -> PointInPo
         }
     }
     result
+}
+
+/// One edge of `point_in_polygon`: whether `pt` is on it, or else toggles `result`
+/// if the edge crosses the ray from `pt`.
+#[inline(always)]
+fn edge_is_on_or_crosses(
+    pt: Point,
+    ox: i64,
+    oy: i64,
+    nx: i64,
+    ny: i64,
+    result: &mut PointInPolygonResult,
+) -> bool {
+    if ny == pt.y && ((nx == pt.x) || (oy == pt.y && ((nx > pt.x) == (ox < pt.x)))) {
+        return true;
+    }
+    if (oy < pt.y) != (ny < pt.y) {
+        if ox >= pt.x {
+            if nx > pt.x {
+                *result = toggle(*result);
+            } else {
+                let d = (ox - pt.x) as f64 * (ny - pt.y) as f64
+                    - (nx - pt.x) as f64 * (oy - pt.y) as f64;
+                if value_is_zero(d) {
+                    return true;
+                }
+                if (d > 0.0) == (ny > oy) {
+                    *result = toggle(*result);
+                }
+            }
+        } else if nx > pt.x {
+            let d =
+                (ox - pt.x) as f64 * (ny - pt.y) as f64 - (nx - pt.x) as f64 * (oy - pt.y) as f64;
+            if value_is_zero(d) {
+                return true;
+            }
+            if (d > 0.0) == (ny > oy) {
+                *result = toggle(*result);
+            }
+        }
+    }
+    false
+}
+
+/// The edges of a ring in buckets by y, to test many points against a ring whose
+/// points do not change. `point_in_polygon` answers from the edges whose y range
+/// holds the point's y, in any order, as one of them on the point decides it and
+/// otherwise their crossings do, so the bucket that holds the point gives the
+/// same answer as the whole ring.
+pub(crate) struct RingIndex {
+    y0: i64,
+    y1: i64,
+    step: i64,
+    starts: Vec<u32>,
+    edges: Vec<[i64; 4]>,
+}
+
+impl RingIndex {
+    /// `None` where long edges would fill too many buckets.
+    fn new(start: PointPtr, pts: &[PointNode]) -> Option<RingIndex> {
+        let mut ring = Vec::new();
+        let (mut y0, mut y1) = (i64::MAX, i64::MIN);
+        let mut op = start;
+        loop {
+            let o = &pts[op];
+            let n = &pts[o.next];
+            ring.push([o.x, o.y, n.x, n.y]);
+            y0 = y0.min(o.y);
+            y1 = y1.max(o.y);
+            op = o.next;
+            if op == start {
+                break;
+            }
+        }
+        let buckets = (ring.len() / 4).clamp(1, 1 << 16) as i64;
+        let span = (y1 as i128 - y0 as i128 + buckets as i128) / buckets as i128;
+        let step = i64::try_from(span).ok()?;
+        let range = |e: &[i64; 4]| {
+            let (lo, hi) = (e[1].min(e[3]), e[1].max(e[3]));
+            (((lo - y0) / step) as usize, ((hi - y0) / step) as usize)
+        };
+        let mut starts = vec![0u32; buckets as usize + 1];
+        let mut total = 0;
+        for e in &ring {
+            let (a, b) = range(e);
+            total += b - a + 1;
+            if total > 8 * ring.len() {
+                return None;
+            }
+            for c in &mut starts[a + 1..=b + 1] {
+                *c += 1;
+            }
+        }
+        for i in 1..starts.len() {
+            starts[i] += starts[i - 1];
+        }
+        let mut fill = starts.clone();
+        let mut edges = vec![[0i64; 4]; total];
+        for e in &ring {
+            let (a, b) = range(e);
+            for f in &mut fill[a..=b] {
+                edges[*f as usize] = *e;
+                *f += 1;
+            }
+        }
+        Some(RingIndex {
+            y0,
+            y1,
+            step,
+            starts,
+            edges,
+        })
+    }
+
+    fn point_in_polygon(&self, pt: Point) -> PointInPolygonResult {
+        let mut result = OutsidePolygon;
+        if pt.y < self.y0 || pt.y > self.y1 {
+            return result;
+        }
+        let b = ((pt.y - self.y0) / self.step) as usize;
+        for e in &self.edges[self.starts[b] as usize..self.starts[b + 1] as usize] {
+            if edge_is_on_or_crosses(pt, e[0], e[1], e[2], e[3], &mut result) {
+                return OnPolygon;
+            }
+        }
+        result
+    }
+}
+
+/// The indexes of the rings that `poly2_contains_poly1_indexed` tests points
+/// against more than once. A ring is indexed the second time, as an index costs
+/// a few passes over the ring.
+#[derive(Default)]
+pub(crate) struct RingIndexes {
+    rings: std::collections::HashMap<RingPtr, Option<RingIndex>>,
 }
 
 fn point_in_polygon_f64(pt: PointF64, mut op: PointPtr, pts: &[PointNode]) -> PointInPolygonResult {
@@ -845,6 +955,26 @@ pub(crate) fn poly2_contains_poly1(
     ring2: RingPtr,
     manager: &mut RingManager,
 ) -> Result<bool> {
+    poly2_contains_poly1_in(ring1, ring2, manager, None)
+}
+
+/// `poly2_contains_poly1` for rings whose points do not change while `indexes`
+/// is in use, with the same answers.
+pub(crate) fn poly2_contains_poly1_indexed(
+    ring1: RingPtr,
+    ring2: RingPtr,
+    manager: &mut RingManager,
+    indexes: &mut RingIndexes,
+) -> Result<bool> {
+    poly2_contains_poly1_in(ring1, ring2, manager, Some(indexes))
+}
+
+fn poly2_contains_poly1_in(
+    ring1: RingPtr,
+    ring2: RingPtr,
+    manager: &mut RingManager,
+    indexes: Option<&mut RingIndexes>,
+) -> Result<bool> {
     if !box2_contains_box1(&manager.rings[ring1].bbox, &manager.rings[ring2].bbox) {
         return Ok(false);
     }
@@ -854,10 +984,29 @@ pub(crate) fn poly2_contains_poly1(
     let pts = &manager.points;
     let outpt1 = pts[manager.rings[ring1].points].next;
     let outpt2 = pts[manager.rings[ring2].points].next;
+    let index = match indexes {
+        Some(indexes) if manager.rings[ring2].size_ >= 64 => match indexes.rings.entry(ring2) {
+            std::collections::hash_map::Entry::Vacant(v) => {
+                v.insert(None);
+                None
+            }
+            std::collections::hash_map::Entry::Occupied(o) => {
+                let o = o.into_mut();
+                if o.is_none() {
+                    *o = RingIndex::new(outpt2, pts);
+                }
+                o.as_ref()
+            }
+        },
+        _ => None,
+    };
     let mut op = outpt1;
     loop {
         // nb: PointInPolygon returns 0 if false, +1 if true, -1 if pt on polygon
-        let res = point_in_polygon(pts[op].pt(), outpt2, pts);
+        let res = match index {
+            Some(index) => index.point_in_polygon(pts[op].pt()),
+            None => point_in_polygon(pts[op].pt(), outpt2, pts),
+        };
         if res != OnPolygon {
             return Ok(res == InsidePolygon);
         }

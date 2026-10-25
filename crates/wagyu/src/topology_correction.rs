@@ -11,7 +11,9 @@ use crate::ring::{
     reassign_as_child, remove_ring, remove_ring_and_points, reverse_ring, ring_depth, ring_is_hole,
     ring1_replaces_ring2,
 };
-use crate::ring_util::{poly2_contains_poly1, update_points_ring};
+use crate::ring_util::{
+    RingIndexes, poly2_contains_poly1, poly2_contains_poly1_indexed, update_points_ring,
+};
 use crate::stable_sort::stable_sort;
 use crate::util::value_is_zero;
 
@@ -1294,6 +1296,9 @@ fn correct_tree(manager: &mut RingManager) -> Result<()> {
     // contain a larger ring so we can use this to our advantage
     // as we iterate over the rings.
     let sorted_rings = sort_rings_largest_to_smallest(manager);
+    // Only the ring being placed loses its points below, and it has not been
+    // tested against yet, so the rings that are indexed do not change.
+    let mut indexes = RingIndexes::default();
     for itr in 0..sorted_rings.len() {
         let r = sorted_rings[itr];
         if manager.rings[r].points == NIL {
@@ -1313,7 +1318,7 @@ fn correct_tree(manager: &mut RingManager) -> Result<()> {
             if manager.is_hole(rr) == manager.is_hole(r) {
                 continue;
             }
-            if poly2_contains_poly1(r, rr, manager)? {
+            if poly2_contains_poly1_indexed(r, rr, manager, &mut indexes)? {
                 reassign_as_child(r, rr, manager)?;
                 found = true;
                 break;

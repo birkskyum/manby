@@ -1,12 +1,13 @@
 //! Replays recorded polygon cleanings through tippecanoe-rs's wagyu and this one,
 //! checks that they make the same polygons, and adds up the time each takes.
 //!
-//! `cargo run --release -p manby-wagyu --example wagyu_replay -- calls.bin [every]`
+//! `cargo run --release -p manby-wagyu --example wagyu_replay -- calls.bin [every] [ours]`
 //!
 //! The file holds one record per cleaning: the number of rings as a u32, then for
 //! each ring its type (0 subject, 1 clip) as a u8, its number of points as a u32
 //! and the points as pairs of i64, all little-endian. Every cleaning is a union
-//! with positive fill, as tippecanoe's are. `every` replays only every nth record.
+//! with positive fill, as tippecanoe's are. `every` replays only every nth record,
+//! and `ours` runs only this wagyu, for profiling it.
 
 use std::time::{Duration, Instant};
 
@@ -117,6 +118,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let bytes = std::fs::read(&args[1]).expect("read the recording");
     let every: usize = args.get(2).map_or(1, |s| s.parse().unwrap());
+    let only_ours = args.get(3).is_some_and(|s| s == "ours");
     let recs: Vec<(usize, usize)> = records(&bytes).into_iter().step_by(every).collect();
     let threads = std::thread::available_parallelism().map_or(8, |n| n.get());
     let results: Vec<(Duration, Duration, Vec<usize>)> = std::thread::scope(|s| {
@@ -130,13 +132,17 @@ fn main() {
                         let (a, b) = recs[k];
                         let rings = parse(&bytes[a..b]);
                         let t0 = Instant::now();
-                        let p = run_port(&rings);
+                        let p = if only_ours {
+                            Ok(Vec::new())
+                        } else {
+                            run_port(&rings)
+                        };
                         let t1 = Instant::now();
                         let o = run_ours(&rings);
                         let t2 = Instant::now();
                         port += t1 - t0;
                         ours += t2 - t1;
-                        if p != o {
+                        if !only_ours && p != o {
                             bad.push(k);
                         }
                     }

@@ -496,6 +496,20 @@ fn ring1_child_below_ring2(manager: &RingManager, mut ring1: RingPtr, ring2: Rin
     }
 }
 
+fn points_are_on_ring(ring: RingPtr, manager: &RingManager) -> bool {
+    let start = manager.rings[ring].points;
+    let mut op = start;
+    loop {
+        if manager.points[op].ring != ring {
+            return false;
+        }
+        op = manager.points[op].prev;
+        if op == start {
+            return true;
+        }
+    }
+}
+
 pub(crate) fn update_points_ring(ring: RingPtr, manager: &mut RingManager) {
     let start = manager.rings[ring].points;
     let mut op = start;
@@ -554,6 +568,17 @@ fn append_ring(
     let p2_lft = manager.rings[remove_ring].points;
     let p2_rt = pts[p2_lft].prev;
 
+    // Only the removed ring's points change rings, as the kept ring's are already
+    // its own. Walking the joined ring instead made long rings quadratic.
+    let mut op = p2_lft;
+    loop {
+        pts[op].ring = keep_ring;
+        op = pts[op].next;
+        if op == p2_lft {
+            break;
+        }
+    }
+
     // join b2 poly onto b1 poly and delete pointers to b2 ...
     if bnds[keep_bound].side == EdgeSide::Left {
         if bnds[remove_bound].side == EdgeSide::Left {
@@ -600,7 +625,7 @@ fn append_ring(
         ring1_replaces_ring2(keep_ring, remove_ring, manager);
     }
 
-    update_points_ring(keep_ring, manager);
+    debug_assert!(points_are_on_ring(keep_ring, manager));
 
     // nb: safe because we only get here via AddLocalMaxPoly
     bnds[keep_bound].ring = NIL;

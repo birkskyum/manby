@@ -6,7 +6,7 @@ description: What manby is for, how it compares with tippecanoe and the other wa
 ## The short answer
 
 - **tippecanoe's tiles.** manby takes tippecanoe's options and makes the tiles tippecanoe makes. All 188 of tippecanoe's expected test outputs match, so a tippecanoe command works with `manby` in its place.
-- **Much faster.** Eight to eighteen times faster on the [benchmarks](../reference/benchmarks/), and up to forty times where tippecanoe's disk slows it down. Less, about three times, on polygons that have to be coalesced again and again to fit, such as Nova Scotia's water polygons.
+- **Much faster.** Eight to eighteen times faster on the [benchmarks](../reference/benchmarks/), and up to forty times where tippecanoe's disk slows it down.
 - **Less memory.** manby's peak memory is below tippecanoe's on every benchmark, on macOS and on Linux.
 - **Larger than memory.** With [`--memory-budget`](../guides/memory/), 40 million points take 79 seconds in 1.1 GB, where tippecanoe takes 652 seconds and 10 GB.
 - **tile-join too.** [`manby join`](../guides/join/) makes tile-join's tiles, two to thirty-five times faster.

@@ -68,11 +68,11 @@ Each run has two steps. `ogr2ogr` converts the input to FlatGeobuf, and then man
 | Census tracts, Shapefile (82 MB) | 2.48 + 2.49 = 4.97 s | 2.48 + 24.2 = 26.7 s |
 | Natural Earth, GeoPackage, 3 layers | 0.90 + 0.95 = 1.85 s | 0.90 + 5.75 = 6.65 s |
 | Liechtenstein, OpenStreetMap, 3 layers | 0.75 + 0.37 = 1.12 s | 0.75 + 4.28 = 5.03 s |
-| Nova Scotia water, GeoParquet (226 MB) | 9.31 + 67.9 = 77.2 s | 9.31 + 185 = 194 s |
+| Nova Scotia water, GeoParquet (226 MB) | 9.31 + 23.9 = 33.2 s | 9.31 + 185 = 194 s |
 
 Once each, on an Apple M5 Max, with GDAL 3.13, tippecanoe 2.82.0 and the commands above. The GeoPackage row adds a third layer, the states and provinces. The census tracts are the 85,186 of the Census cartographic boundaries 2023, and the water the 169,852 polygons of the Nova Scotia hydrographic network. For every input, manby's tiles decode to exactly tippecanoe's from the same FlatGeobuf file. With manby, the conversion is half the time or more on the three smaller inputs, where with tippecanoe it was a small part.
 
-The water polygons are slower than the rest because a few of their tiles at zoom levels 4 to 9 are over the size limit even after coalescing, and each retry cleans their large polygons again.
+The water polygons take longer than the rest, for manby and for tippecanoe, because a few of their tiles at zoom levels 4 to 9 are over the size limit even after coalescing, and each retry cleans their large polygons again.
 
 ## Feature order
 

@@ -435,19 +435,28 @@ fn first_is_bottom_point(pts: &[PointNode], btm_pt1: PointPtr, btm_pt2: PointPtr
     }
 }
 
-fn get_bottom_point(pts: &[PointNode], mut pp: PointPtr) -> PointPtr {
+/// The bottom point, and whether no other point of the ring is where it is.
+fn get_bottom_point(pts: &[PointNode], mut pp: PointPtr) -> (PointPtr, bool) {
     let mut dups: PointPtr = NIL;
+    // The points where pp is, other than pp. Once pp is the bottom point, the
+    // walk goes once round the rest of the ring.
+    let mut same = 0;
     let mut p = pts[pp].next;
     while p != pp {
         if pts[p].y > pts[pp].y {
             pp = p;
             dups = NIL;
+            same = 0;
         } else if pts[p].y == pts[pp].y && pts[p].x <= pts[pp].x {
             if pts[p].x < pts[pp].x {
                 dups = NIL;
                 pp = p;
-            } else if pts[p].next != pp && pts[p].prev != pp {
-                dups = p;
+                same = 0;
+            } else {
+                same += 1;
+                if pts[p].next != pp && pts[p].prev != pp {
+                    dups = p;
+                }
             }
         }
         p = pts[p].next;
@@ -464,18 +473,33 @@ fn get_bottom_point(pts: &[PointNode], mut pp: PointPtr) -> PointPtr {
             }
         }
     }
-    pp
+    (pp, same == 0)
+}
+
+/// `get_bottom_point` of a ring, from what is known of it where that settles it.
+fn bottom_point(r: RingPtr, manager: &mut RingManager) -> PointPtr {
+    let known = manager.rings[r].bottom_if_unique;
+    if known != NIL {
+        debug_assert_eq!(
+            known,
+            get_bottom_point(&manager.points, manager.rings[r].points).0
+        );
+        return known;
+    }
+    let (p, unique) = get_bottom_point(&manager.points, manager.rings[r].points);
+    if unique {
+        manager.rings[r].bottom_if_unique = p;
+    }
+    p
 }
 
 fn get_lower_most_ring(ring1: RingPtr, ring2: RingPtr, manager: &mut RingManager) -> RingPtr {
     // work out which polygon fragment has the correct hole state ...
     if manager.rings[ring1].bottom_point == NIL {
-        manager.rings[ring1].bottom_point =
-            get_bottom_point(&manager.points, manager.rings[ring1].points);
+        manager.rings[ring1].bottom_point = bottom_point(ring1, manager);
     }
     if manager.rings[ring2].bottom_point == NIL {
-        manager.rings[ring2].bottom_point =
-            get_bottom_point(&manager.points, manager.rings[ring2].points);
+        manager.rings[ring2].bottom_point = bottom_point(ring2, manager);
     }
     let pts = &manager.points;
     let pt1 = manager.rings[ring1].bottom_point;
@@ -626,6 +650,25 @@ fn append_ring(
     }
 
     manager.rings[keep_ring].bottom_point = NIL;
+    // The joined ring has the points of both, so its bottom point is the lower
+    // of theirs, if they are not at the same place.
+    let (b1, b2) = (
+        manager.rings[keep_ring].bottom_if_unique,
+        manager.rings[remove_ring].bottom_if_unique,
+    );
+    manager.rings[keep_ring].bottom_if_unique = if b1 == NIL || b2 == NIL {
+        NIL
+    } else {
+        let (p1, p2) = (&manager.points[b1], &manager.points[b2]);
+        if p1.y > p2.y || (p1.y == p2.y && p1.x < p2.x) {
+            b1
+        } else if p1.y == p2.y && p1.x == p2.x {
+            NIL
+        } else {
+            b2
+        }
+    };
+    manager.rings[remove_ring].bottom_if_unique = NIL;
     let keep_is_hole = ring_is_hole(&manager.rings, keep_ring);
     let remove_is_hole = ring_is_hole(&manager.rings, remove_ring);
 

@@ -60,6 +60,11 @@ pub(crate) struct Ring {
 
     pub points: PointPtr,
     pub bottom_point: PointPtr,
+    /// The ring's bottom point while no other point of the ring is where it is,
+    /// as then `get_bottom_point` finds it from any start, or `NIL` if unknown.
+    /// Kept up as points are added and rings joined, so that the bottom point
+    /// need not be looked for again in a long ring each time it is joined.
+    pub bottom_if_unique: PointPtr,
     pub is_hole_: bool,
     pub corrected: bool,
 }
@@ -75,6 +80,7 @@ impl Ring {
             children: Vec::new(),
             points: NIL,
             bottom_point: NIL,
+            bottom_if_unique: NIL,
             is_hole_: false,
             corrected: false,
         }
@@ -180,6 +186,7 @@ pub(crate) fn create_new_point(r: RingPtr, pt: Point, rings: &mut RingManager) -
         prev: point,
     });
     rings.all_points.push(point);
+    rings.rings[r].bottom_if_unique = point;
     point
 }
 
@@ -201,6 +208,15 @@ pub(crate) fn create_new_point_before(
     rings.points[before_this_point].prev = point;
     rings.points[prev].next = point;
     rings.all_points.push(point);
+    let b = rings.rings[r].bottom_if_unique;
+    if b != NIL {
+        let bp = &rings.points[b];
+        if pt.y > bp.y || (pt.y == bp.y && pt.x < bp.x) {
+            rings.rings[r].bottom_if_unique = point;
+        } else if pt.y == bp.y && pt.x == bp.x {
+            rings.rings[r].bottom_if_unique = NIL;
+        }
+    }
     point
 }
 

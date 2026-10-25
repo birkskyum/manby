@@ -18,9 +18,9 @@ description: What manby is for, how it compares with tippecanoe and the other wa
 | --- | --- | --- | --- | --- |
 | tippecanoe | C++ | GeoJSON, FlatGeobuf, CSV, Geobuf | Drops, coalesces or clusters features evenly across each zoom level until its tiles fit | In review |
 | <span class="whitespace-nowrap">tippecanoe-rs</span> | Rust | As tippecanoe | As tippecanoe, with its tiles | No |
-| manby | Rust | As tippecanoe, and [other formats with terrio](../guides/other-formats/) | As tippecanoe, with its tiles | Yes |
+| manby | Rust | As tippecanoe, and [other formats by way of GDAL](../guides/other-formats/) | As tippecanoe, with its tiles | Yes |
 | planetiler | Java | OpenStreetMap, Shapefile, GeoPackage, GeoJSON, GeoParquet | A profile, in Java or YAML, decides what each zoom level keeps | Yes |
-| GDAL (ogr2ogr), terrio | C++, Rust | Almost any vector format | Each tile on its own, at a lower resolution past 500 kB, then only its largest features | No |
+| GDAL (ogr2ogr) | C++ | Almost any vector format | Each tile on its own, at a lower resolution past 500 kB, then only its largest features | No |
 | freestiler | Rust, from R and Python | Data frames, GeoParquet, DuckDB queries | A drop rate below a base zoom, clustering and coalescing, not fitted to a size limit | Experimental |
 | geojson-vt | JavaScript | GeoJSON | Simplification, with tiles made in the browser as the map asks for them | No |
 
@@ -36,9 +36,9 @@ Before manby, tippecanoe was ported to Rust line by line, as tippecanoe-rs. It p
 
 [planetiler](https://github.com/onthegomap/planetiler) builds basemaps, OpenMapTiles above all, from OpenStreetMap and other sources, and makes the whole planet in hours on one machine. A profile says which features each zoom level keeps. It is the tool for a basemap. manby is for tiling your own features as they are.
 
-### GDAL and terrio
+### GDAL
 
-GDAL's `ogr2ogr` writes vector tiles from anything GDAL reads, zoom levels 0 to 5 by default. Each tile is made on its own, so a tile over 500 kB is written at a lower resolution and then cut down to its largest features, and nothing keeps the density even across a zoom level. [terrio](https://terrio.opengeos.org/) writes tiles the same way, and reads the same formats in pure Rust. It converted the census tracts ten times faster than GDAL, which makes it a good way into manby.
+GDAL's `ogr2ogr` writes vector tiles from anything GDAL reads, zoom levels 0 to 5 by default. Each tile is made on its own, so a tile over 500 kB is written at a lower resolution and then cut down to its largest features, and nothing keeps the density even across a zoom level. GDAL is also the usual way into manby for the formats manby does not read, converting them to FlatGeobuf first.
 
 ### freestiler
 
@@ -61,4 +61,4 @@ GDAL's `ogr2ogr` writes vector tiles from anything GDAL reads, zoom levels 0 to 
 - **tippecanoe's tiles, in a fraction of the time.** Tilesets rebuilt often, in CI or every night, or many of them.
 - **Large inputs on a small machine.** `--memory-budget` keeps memory near a budget, at a fraction of tippecanoe's time.
 - **PMTiles for hosting.** manby writes PMTiles directly, ready for a bucket or a CDN.
-- **GeoPackage, GeoParquet, Shapefile or OpenStreetMap.** terrio converts them to FlatGeobuf, which manby reads in parallel. [Other formats, with terrio](../guides/other-formats/) shows how.
+- **GeoPackage, GeoParquet, Shapefile or OpenStreetMap.** GDAL's `ogr2ogr`, or any converter like it, makes FlatGeobuf of them, which manby reads in parallel. [Other formats](../guides/other-formats/) shows how.

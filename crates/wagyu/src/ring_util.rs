@@ -235,6 +235,9 @@ pub(crate) fn insert_hot_pixels_in_path(
     while rings.hot_pixels[itr].y <= start_y && itr != 0 {
         itr -= 1;
     }
+    // Only pixels between start_x and end_x can be inserted, as the set functions
+    // narrow the edge's reach on each row to them, so rows without such a pixel
+    // are passed over before working out that reach.
     if start_x > end_x {
         while itr != rings.hot_pixels.len() {
             if rings.hot_pixels[itr].y > start_y {
@@ -246,8 +249,13 @@ pub(crate) fn insert_hot_pixels_in_path(
             }
             let y = rings.hot_pixels[itr].y;
             let last_itr = itr;
+            let mut in_reach = false;
             while itr != rings.hot_pixels.len() && rings.hot_pixels[itr].y == y {
+                in_reach |= (end_x..=start_x).contains(&rings.hot_pixels[itr].x);
                 itr += 1;
+            }
+            if !in_reach {
+                continue;
             }
             let first_itr = itr;
             let add_end_point_itr = y != end_pt.y || add_end_point;
@@ -273,8 +281,13 @@ pub(crate) fn insert_hot_pixels_in_path(
             }
             let y = rings.hot_pixels[itr].y;
             let first_itr = itr;
+            let mut in_reach = false;
             while itr != rings.hot_pixels.len() && rings.hot_pixels[itr].y == y {
+                in_reach |= (start_x..=end_x).contains(&rings.hot_pixels[itr].x);
                 itr += 1;
+            }
+            if !in_reach {
+                continue;
             }
             let last_itr = itr;
             let add_end_point_itr = y != end_pt.y || add_end_point;

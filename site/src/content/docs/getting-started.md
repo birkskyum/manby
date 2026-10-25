@@ -22,7 +22,7 @@ manby takes [tippecanoe's options](https://github.com/felt/tippecanoe#readme), a
 manby -zg --drop-densest-as-needed -o places.pmtiles places.geojson
 ```
 
-The input can be GeoJSON, newline-delimited GeoJSON (read in parallel with `-P`), FlatGeobuf, CSV or Geobuf. GeoPackage, GeoParquet, Shapefile and OpenStreetMap data can be [converted with terrio](../guides/other-formats/) first. The output is a PMTiles archive, an MBTiles database, or a directory of tiles with `-e`.
+The input can be GeoJSON, newline-delimited GeoJSON (read in parallel with `-P`), FlatGeobuf, CSV or Geobuf. GeoPackage, GeoParquet, Shapefile and OpenStreetMap data can be [converted to FlatGeobuf](../guides/other-formats/) with GDAL first. The output is a PMTiles archive, an MBTiles database, or a directory of tiles with `-e`.
 
 Points can be clustered as tippecanoe clusters them, with their attributes accumulated.
 

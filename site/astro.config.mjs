@@ -30,7 +30,7 @@ export default defineConfig({
 						{ label: 'Joining tilesets', slug: 'guides/join' },
 						{ label: "tippecanoe's other programs", slug: 'guides/programs' },
 						{ label: 'MapLibre Tiles', slug: 'guides/mlt' },
-						{ label: 'Other formats, with terrio', slug: 'guides/other-formats' },
+						{ label: 'Other formats', slug: 'guides/other-formats' },
 					],
 				},
 				{

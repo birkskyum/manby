@@ -63,7 +63,7 @@ A coordinator on the calling thread hands ready tiles to the pool and applies ti
 
 ### Polygon cleaning (`src/clean.rs`, `crates/wagyu`)
 
-Polygons are cleaned with wagyu, as in tippecanoe, by manby's own copy of tippecanoe-rs's port of it, so that it can be made faster while tippecanoe-rs stays faithful to the C++. `src/clean.rs` has manby's copies of `clean_or_clip_poly` and `coalesce_polygon`, which call it. On the Nova Scotia water polygons at `-zg --coalesce-densest-as-needed`, where cleaning was most of the time, these changes took the run from 69 s to 24 s, against tippecanoe's 185 s, each with the same polygons:
+Polygons are cleaned with wagyu, as in tippecanoe, by manby's own copy of tippecanoe-rs's port of it, so that it can be made faster while tippecanoe-rs stays faithful to the C++. `src/clean.rs` has manby's copies of `clean_or_clip_poly` and `coalesce_polygon`, which call it. On the Nova Scotia water polygons at `-zg --coalesce-densest-as-needed`, where cleaning was most of the time, these changes took the run from 69 s to 24 s, against tippecanoe's 185 s, each with the same polygons.
 
 - **Bounds from the front of a deque.** Building a ring's bounds took them off the front of a vector of edges, moving all the edges after them each time, which was quadratic in the length of the ring. The C++ does the same.
 - **Joining rings.** When the sweep joins two rings, only the absorbed ring's points need to learn their new ring, rather than every point of the joined one.

@@ -7,7 +7,8 @@
 //! each ring its type (0 subject, 1 clip) as a u8, its number of points as a u32
 //! and the points as pairs of i64, all little-endian. Every cleaning is a union
 //! with positive fill, as tippecanoe's are. `every` replays only every nth record,
-//! and `ours` runs only this wagyu, for profiling it.
+//! and `ours` runs only this wagyu, for profiling it. `REPLAY_THREADS` sets the
+//! number of threads, all of the cores by default.
 
 use std::time::{Duration, Instant};
 
@@ -120,7 +121,10 @@ fn main() {
     let every: usize = args.get(2).map_or(1, |s| s.parse().unwrap());
     let only_ours = args.get(3).is_some_and(|s| s == "ours");
     let recs: Vec<(usize, usize)> = records(&bytes).into_iter().step_by(every).collect();
-    let threads = std::thread::available_parallelism().map_or(8, |n| n.get());
+    let threads = std::env::var("REPLAY_THREADS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(8, |n| n.get()));
     let results: Vec<(Duration, Duration, Vec<usize>)> = std::thread::scope(|s| {
         let handles: Vec<_> = (0..threads)
             .map(|t| {

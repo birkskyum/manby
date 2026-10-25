@@ -6,11 +6,12 @@
 //! features. Those only need to know whether a feature survives, so they stop
 //! at the first.
 //!
-//! The geometry is tippecanoe-rs's own: its clipping, cleaning and scaling.
+//! The geometry is tippecanoe-rs's own: its clipping and scaling, and its
+//! cleaning by way of manby's copy (`crate::clean`).
 
+use crate::clean::clean_or_clip_poly;
 use tippecanoe::clip::{
-    clean_or_clip_poly, clip_lines, clip_point, close_poly, remove_noop, simple_clip_poly,
-    to_tile_scale,
+    clip_lines, clip_point, close_poly, remove_noop, simple_clip_poly, to_tile_scale,
 };
 use tippecanoe::errors::EXIT_MVT;
 use tippecanoe::geometry::{Draw, DrawVec, VT_LINE, VT_LINETO, VT_POINT, VT_POLYGON};

@@ -1,3 +1,6 @@
+[workspace]
+members = ["crates/wagyu"]
+
 [package]
 name = "manby"
 version = "0.1.0"
@@ -15,6 +18,7 @@ tikv-jemallocator = "0.6"
 rayon = "1.12.0"
 rusqlite = { version = "0.40", features = ["bundled"] }
 tippecanoe = { version = "2.82.0", path = "../tippecanoe-rs" }
+wagyu = { package = "manby-wagyu", path = "crates/wagyu" }
 xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
 rustc-hash = "2.1"
 

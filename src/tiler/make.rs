@@ -5,9 +5,8 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use tippecanoe::clip::{
-    close_poly, coalesce_polygon, get_mp_area as get_mp_area_vec, remove_noop, to_tile_scale,
-};
+use crate::clean::coalesce_polygon;
+use tippecanoe::clip::{close_poly, get_mp_area as get_mp_area_vec, remove_noop, to_tile_scale};
 use tippecanoe::geometry::{
     DrawVec, VT_LINE, VT_POINT, VT_POLYGON, check_polygon, checkerboard_anchors, reorder_lines,
     simplify_lines, stairstep,

@@ -8,7 +8,7 @@ members = [
 
 [package]
 name = "manby"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Builds vector tilesets from geographic features, like tippecanoe, several times faster"
 license = "BSD-2-Clause"
@@ -29,7 +29,7 @@ tikv-jemallocator = "0.6"
 rayon = "1.12.0"
 rusqlite = { version = "0.40", features = ["bundled"] }
 tippecanoe-rs = { version = "2.82.0", path = "crates/tippecanoe-rs" }
-wagyu = { package = "manby-wagyu", version = "0.5.0", path = "crates/wagyu" }
+wagyu = { package = "manby-wagyu", version = "0.5.1", path = "crates/wagyu" }
 xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
 rustc-hash = "2.1"
 

@@ -14,7 +14,9 @@ export default defineConfig({
 			description:
 				'Builds vector tilesets from geographic features. The same tiles as tippecanoe, eight to eighteen times faster, in less memory.',
 			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/birkskyum/manby' }],
-			customCss: ['@fontsource-variable/inter', './src/styles/global.css'],
+			// global.css first: its @layer order has to come before any other
+			// stylesheet names a layer, or Tailwind's base resets win.
+			customCss: ['./src/styles/global.css', '@fontsource-variable/inter'],
 			components: { SiteTitle: './src/components/SiteTitle.astro' },
 			expressiveCode: {
 				themes: ['github-dark', 'github-light'],

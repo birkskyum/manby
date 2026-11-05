@@ -44,6 +44,36 @@ fn decode_clipped(t: &MultiPolygon, out: &mut DrawVec, scale: f64) {
     }
 }
 
+/// The ring wagyu would be given, scaled, if the geometry has just one.
+fn single_ring(geom: &DrawVec, scale: f64) -> Option<LinearRing> {
+    let mut found = None;
+    let mut i = 0;
+    while i < geom.len() {
+        if geom[i].op == VT_MOVETO {
+            let mut j = i + 1;
+            while j < geom.len() && geom[j].op == VT_LINETO {
+                j += 1;
+            }
+            if j >= i + 4 {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(i..j);
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    let range = found?;
+    Some(
+        geom[range]
+            .iter()
+            .map(|g| Point::new((g.x as f64 * scale) as i64, (g.y as f64 * scale) as i64))
+            .collect(),
+    )
+}
+
 pub fn clean_or_clip_poly(
     geom: &mut DrawVec,
     z: i32,
@@ -61,8 +91,19 @@ pub fn clean_or_clip_poly(
 
     let mut again = true;
     while again {
-        let mut wagyu = Wagyu::new();
         again = false;
+
+        // A single ring that is already simple comes out of wagyu as it went
+        // in, which wagyu::union_of_simple_ring tells without the sweep.
+        if !clip
+            && let Some(r) =
+                single_ring(geom, scale).and_then(|lr| wagyu::union_of_simple_ring(&lr))
+        {
+            result = r;
+            break;
+        }
+
+        let mut wagyu = Wagyu::new();
 
         let mut i = 0;
         while i < geom.len() {

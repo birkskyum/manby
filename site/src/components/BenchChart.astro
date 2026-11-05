@@ -2,7 +2,10 @@
 // The benchmarks on Linux (reference/benchmarks): seconds to make each
 // tileset as PMTiles, medians of three runs, by dataset. manby's bars are the
 // accent, tippecanoe's the gray they are measured against; both colors were
-// checked for contrast and colorblind separation.
+// checked for contrast and colorblind separation. The figures are in
+// src/data/benchmarks.ts, with the rest of the benchmarks.
+import { linux } from '../data/benchmarks';
+
 const datasets = [
 	{
 		name: '4 million random points',
@@ -11,26 +14,26 @@ const datasets = [
 			{
 				name: 'dropping the densest as needed',
 				options: '-zg --drop-densest-as-needed',
-				manby: [5.86, 994],
-				tippecanoe: [88.5, 1088],
+				manby: linux.points.manby,
+				tippecanoe: linux.points.tippecanoe,
 			},
 			{
 				name: 'clustered within 10 pixels, values summed',
 				options: '-zg -r1 --cluster-distance=10 --cluster-densest-as-needed --accumulate-attribute=value:sum',
-				manby: [6.02, 974],
-				tippecanoe: [82.5, 1028],
+				manby: linux['points-cluster'].manby,
+				tippecanoe: linux['points-cluster'].tippecanoe,
 			},
 			{
 				name: 'clustering the densest as needed',
 				options: '-zg --cluster-densest-as-needed',
-				manby: [6.37, 1000],
-				tippecanoe: [89.6, 1165],
+				manby: linux['cluster-densest'].manby,
+				tippecanoe: linux['cluster-densest'].tippecanoe,
 			},
 			{
 				name: 'clustered at every zoom, values summed',
 				options: '-zg -r1 --cluster-densest-as-needed --accumulate-attribute=value:sum',
-				manby: [13.9, 1152],
-				tippecanoe: [133.6, 1498],
+				manby: linux['cluster-r1-sum'].manby,
+				tippecanoe: linux['cluster-r1-sum'].tippecanoe,
 			},
 		],
 	},
@@ -41,8 +44,8 @@ const datasets = [
 			{
 				name: 'to z14, 122,725 tiles',
 				options: '-z14 -Z0 --drop-densest-as-needed',
-				manby: [1.51, 236],
-				tippecanoe: [59.0, 240],
+				manby: linux['roads-z14'].manby,
+				tippecanoe: linux['roads-z14'].tippecanoe,
 			},
 		],
 	},
@@ -53,14 +56,14 @@ const datasets = [
 			{
 				name: 'to z12, 312,073 tiles',
 				options: '-z12 -Z0 --coalesce-densest-as-needed',
-				manby: [7.77, 360],
-				tippecanoe: [196.8, 456],
+				manby: linux['tracts-z12'].manby,
+				tippecanoe: linux['tracts-z12'].tippecanoe,
 			},
 			{
 				name: 'coalescing the densest as needed',
 				options: '-zg --coalesce-densest-as-needed',
-				manby: [4.46, 379],
-				tippecanoe: [36.1, 451],
+				manby: linux.tracts.manby,
+				tippecanoe: linux.tracts.tippecanoe,
 			},
 		],
 	},

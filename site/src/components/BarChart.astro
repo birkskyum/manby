@@ -1,0 +1,106 @@
+---
+// A benchmark chart for the docs: for each run, a bar per program on one
+// linear scale from zero, the value at its tip, and for time against
+// tippecanoe how many times faster manby is. manby's bar is the accent and
+// the other program's the gray it is measured against, always in that order
+// and named in the legend, so the colors never carry identity alone. The
+// figures are under the chart as a table too.
+import type { Chart } from '../data/benchmarks';
+
+interface Props {
+	chart: Chart;
+}
+
+const { chart } = Astro.props;
+const at = chart.measure === 'time' ? 0 : 1;
+const max = Math.max(
+	...chart.rows.flatMap((r) => chart.programs.map((p) => r.values[p.key][at])),
+);
+const color = { manby: 'bg-vp-bar-manby', other: 'bg-vp-bar-other' };
+const value = (v: number) =>
+	chart.measure === 'time'
+		? `${v.toLocaleString('en', { maximumFractionDigits: 2 })} s`
+		: `${v.toLocaleString('en')} MB`;
+const other = chart.programs.find((p) => p.key !== 'manby')!;
+const speedup = (values: Record<string, [number, number]>) =>
+	`${(values[other.key][0] / values.manby[0]).toFixed(1)}x`;
+---
+
+<figure class="not-content my-8">
+	<figcaption class="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
+		<span class="font-semibold text-vp-text-1">{chart.title}</span>
+		<span class="flex gap-4 text-sm text-vp-text-2">
+			{
+				chart.programs.map((p) => (
+					<span class="flex items-center gap-1.5">
+						<span class:list={['inline-block h-3 w-3 rounded-[2px]', color[p.tone]]} />
+						{p.label}
+					</span>
+				))
+			}
+		</span>
+	</figcaption>
+	<div class="mt-4 flex flex-col gap-3">
+		{
+			chart.rows.map((r) => (
+				<div class="grid grid-cols-1 items-center gap-x-4 gap-y-1 sm:grid-cols-[15rem_1fr]">
+					<span class="text-sm leading-snug text-vp-text-1 sm:text-right">{r.label}</span>
+					<div class="flex flex-col gap-0.5 border-l border-vp-border">
+						{chart.programs.map((p) => (
+							<div
+								class="flex items-center gap-2"
+								title={`${p.label}, ${r.label}: ${value(r.values[p.key][0])}, ${value(r.values[p.key][1])}`}
+							>
+								<div
+									class:list={['h-3.5 rounded-r-[4px]', color[p.tone]]}
+									style={`width: calc((100% - 7.5rem) * ${r.values[p.key][at] / max})`}
+								/>
+								<span class="text-xs whitespace-nowrap text-vp-text-2 tabular-nums">
+									{value(r.values[p.key][at])}
+									{chart.speedup && p.key === 'manby' && (
+										<span class="text-vp-text-1">, {speedup(r.values)} faster</span>
+									)}
+								</span>
+							</div>
+						))}
+					</div>
+				</div>
+			))
+		}
+	</div>
+	<details class="mt-4 text-sm">
+		<summary class="cursor-pointer text-vp-text-2 hover:text-vp-text-1">
+			The figures as a table
+		</summary>
+		<div class="mt-2 overflow-x-auto">
+			<table class="w-full text-left tabular-nums">
+				<thead class="text-vp-text-2">
+					<tr class="border-b border-vp-divider">
+						<th class="py-1.5 pr-4 font-medium">Benchmark</th>
+						{
+							chart.programs
+								.toReversed()
+								.map((p) => <th class="py-1.5 pr-4 text-right font-medium">{p.label}</th>)
+						}
+						{chart.speedup && <th class="py-1.5 text-right font-medium">Speedup</th>}
+					</tr>
+				</thead>
+				<tbody class="text-vp-text-1">
+					{
+						chart.rows.map((r) => (
+							<tr class="border-b border-vp-divider">
+								<td class="py-1.5 pr-4">{r.label}</td>
+								{chart.programs.toReversed().map((p) => (
+									<td class="py-1.5 pr-4 text-right whitespace-nowrap">
+										{value(r.values[p.key][at])}
+									</td>
+								))}
+								{chart.speedup && <td class="py-1.5 text-right">{speedup(r.values)}</td>}
+							</tr>
+						))
+					}
+				</tbody>
+			</table>
+		</div>
+	</details>
+</figure>

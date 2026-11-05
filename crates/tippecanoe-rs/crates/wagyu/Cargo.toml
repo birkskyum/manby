@@ -1,0 +1,8 @@
+[package]
+name = "wagyu"
+version = "0.5.0"
+description = "A Rust port of mapbox/wagyu, the polygon clipping and cleaning library vendored by tippecanoe"
+edition.workspace = true
+license = "ISC"
+
+[dependencies]

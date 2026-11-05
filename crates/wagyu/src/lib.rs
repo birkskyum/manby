@@ -59,6 +59,7 @@ mod process_maxima;
 mod ring;
 mod ring_util;
 mod scanbeam;
+mod simple;
 mod snap_rounding;
 mod stable_sort;
 mod topology_correction;
@@ -69,4 +70,5 @@ mod wagyu;
 
 pub use config::{ClipType, Error, FillType, PolygonType};
 pub use geometry::{BoundingBox, LinearRing, MultiPolygon, Point, Polygon};
+pub use simple::union_of_simple_ring;
 pub use wagyu::Wagyu;

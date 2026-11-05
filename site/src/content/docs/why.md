@@ -27,31 +27,31 @@ description: What manby is for, how it compares with tippecanoe and the other wa
 
 ### tippecanoe
 
-[tippecanoe](https://github.com/felt/tippecanoe) is the reference. [Erica Fischer](https://github.com/e-n-f) started it in 2014 and wrote nearly all of it, at Mapbox and then at Felt. It is a mature, well-tested program, and the way it thins features so that every tile fits, evenly across a zoom level, is what makes its tilesets look right at every zoom. manby keeps all of that, and owes it to her. If tippecanoe is fast enough for you, there is no need to switch.
+[tippecanoe](https://github.com/felt/tippecanoe) is the reference. [Erica Fischer](https://github.com/e-n-f) started it in 2014 and wrote nearly all of it, at Mapbox and then at Felt. Its way of thinning features evenly across a zoom level until every tile fits is what manby keeps, and owes to her. If tippecanoe is fast enough for you, there is no need to switch.
 
 ### tippecanoe-rs
 
-Before manby, tippecanoe was ported to Rust line by line, as [tippecanoe-rs](https://github.com/birkskyum/manby/tree/main/crates/tippecanoe-rs), which lives in manby's repository. It passes tippecanoe's test suite, makes the same tiles, and runs at the speed of the C++. So porting tippecanoe to Rust has been tried, and it is no faster. manby's speed comes from doing the work differently, and its geometry comes from the port, which is why the tiles are the same.
+A line-by-line Rust port of tippecanoe, in [manby's repository](https://github.com/birkskyum/manby/tree/main/crates/tippecanoe-rs). It makes the same tiles at the speed of the C++, so a port alone is no faster. manby takes its geometry from the port, which is why the tiles are the same, and its speed from doing the work differently.
 
 ### tylertoo
 
-[tylertoo](https://github.com/geoparquet-io/tylertoo) tiles GeoParquet into PMTiles, from the command line or from Python, and can read from remote storage and split a build across machines. It takes tippecanoe as its model rather than its output. Each oversized tile gets a threshold of its own, where tippecanoe raises one for the whole zoom level, and it thins and simplifies in its own way, so its tiles are not tippecanoe's. Its own benchmarks have it 8.6 to 21 times faster than tippecanoe at its default settings, and 5.9 to 16 times with its thinning off, with more memory on three of four datasets. On [manby's benchmarks](../reference/benchmarks/#against-tylertoo) it is faster than manby on the census tracts and slower on points and roads, with three to eight times manby's memory. For GeoParquet whose tiles need not be tippecanoe's, it saves the conversion step.
+[tylertoo](https://github.com/geoparquet-io/tylertoo) tiles GeoParquet into PMTiles, from the command line or from Python, with remote reads and builds split across machines. It fits each tile on its own rather than a zoom level at a time, so its tiles are not tippecanoe's. On [manby's benchmarks](../reference/benchmarks/#against-tylertoo) it is faster on the census tracts and slower on points and roads, with three to eight times manby's memory.
 
 ### planetiler
 
-[planetiler](https://github.com/onthegomap/planetiler) builds basemaps, OpenMapTiles above all, from OpenStreetMap and other sources, and makes the whole planet in hours on one machine. A profile says which features each zoom level keeps. It is the tool for a basemap. manby is for tiling your own features as they are.
+[planetiler](https://github.com/onthegomap/planetiler) builds basemaps such as OpenMapTiles from OpenStreetMap, the whole planet in hours on one machine, with a profile deciding what each zoom level keeps. manby tiles your own features as they are.
 
 ### GDAL
 
-GDAL's `ogr2ogr` writes vector tiles from anything GDAL reads, zoom levels 0 to 5 by default. Each tile is made on its own, so a tile over 500 kB is written at a lower resolution and then cut down to its largest features, and nothing keeps the density even across a zoom level. GDAL is also the usual way into manby for the formats manby does not read, converting them to FlatGeobuf first.
+`ogr2ogr` writes vector tiles from anything GDAL reads, each tile on its own, cutting tiles over 500 kB down to their largest features. It is also the usual way into manby for the formats manby does not read.
 
 ### freestiler
 
-[freestiler](https://github.com/walkerke/freestiler) is a Rust tiler for R and Python. It works on data frames and DuckDB queries, with tippecanoe's drop rate and base zoom, clustering and coalescing, but does not drop features to fit a size limit. It fits best inside an R or Python session.
+[freestiler](https://github.com/walkerke/freestiler) tiles data frames and DuckDB queries from R and Python, with tippecanoe's drop rate, clustering and coalescing, but without fitting tiles to a size limit.
 
 ### geojson-vt
 
-[geojson-vt](https://github.com/maplibre/geojson-vt) slices GeoJSON into tiles in the browser as the map asks for them, and MapLibre GL JS uses it for GeoJSON sources. For data small enough to send to the browser whole, no tileset is needed.
+[geojson-vt](https://github.com/maplibre/geojson-vt) slices GeoJSON into tiles in the browser, as MapLibre GL JS does for GeoJSON sources. For data small enough to send whole, no tileset is needed.
 
 ## When to use something else
 

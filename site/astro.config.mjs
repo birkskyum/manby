@@ -18,7 +18,7 @@ const card = [
 		tag: 'meta',
 		attrs: {
 			property: 'og:image:alt',
-			content: 'manby, vector tiles, fast. 4 million points take tippecanoe 61.4 seconds and manby 3.44.',
+			content: 'manby, 8 to 18 times faster than tippecanoe. Same options, same tiles, less memory. Tiling 4 million points takes tippecanoe 61.4 seconds and manby 3.44.',
 		},
 	},
 	{ tag: 'meta', attrs: { name: 'twitter:image', content: `${site}${base}/og.png` } },

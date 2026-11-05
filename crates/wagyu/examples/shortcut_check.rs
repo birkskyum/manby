@@ -22,7 +22,11 @@ fn main() {
         for _ in 0..nrings {
             let n = u32_at(&b, i + 1) as usize;
             i += 5;
-            rings.push((0..n).map(|k| Point::new(i64_at(&b, i + 16 * k), i64_at(&b, i + 16 * k + 8))).collect::<Vec<_>>());
+            rings.push(
+                (0..n)
+                    .map(|k| Point::new(i64_at(&b, i + 16 * k), i64_at(&b, i + 16 * k + 8)))
+                    .collect::<Vec<_>>(),
+            );
             i += 16 * n;
         }
         if nrings != 1 {

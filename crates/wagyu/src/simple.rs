@@ -145,7 +145,11 @@ pub fn union_of_simple_ring(ring: &[Point]) -> Option<MultiPolygon> {
             crate::FillType::Positive,
             crate::FillType::Positive,
         );
-        debug_assert_eq!(swept.as_ref().ok(), Some(&result), "the shortcut for {ring:?}");
+        debug_assert_eq!(
+            swept.as_ref().ok(),
+            Some(&result),
+            "the shortcut for {ring:?}"
+        );
     }
 
     Some(result)

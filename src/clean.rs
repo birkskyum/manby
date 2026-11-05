@@ -95,7 +95,10 @@ pub fn clean_or_clip_poly(
 
         // A single ring that is already simple comes out of wagyu as it went
         // in, which wagyu::union_of_simple_ring tells without the sweep.
-        if !clip && let Some(r) = single_ring(geom, scale).and_then(|lr| wagyu::union_of_simple_ring(&lr)) {
+        if !clip
+            && let Some(r) =
+                single_ring(geom, scale).and_then(|lr| wagyu::union_of_simple_ring(&lr))
+        {
             result = r;
             break;
         }

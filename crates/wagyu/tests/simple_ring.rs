@@ -22,7 +22,8 @@ impl Rng {
 fn swept(ring: &[Point]) -> Option<Vec<Vec<Vec<Point>>>> {
     let mut w = Wagyu::new();
     w.add_ring(ring, PolygonType::Subject);
-    w.execute(ClipType::Union, FillType::Positive, FillType::Positive).ok()
+    w.execute(ClipType::Union, FillType::Positive, FillType::Positive)
+        .ok()
 }
 
 fn star(rng: &mut Rng, scale: i64) -> Vec<Point> {

@@ -136,6 +136,10 @@ manby -zg --drop-densest-as-needed --tile-format=mlt -o places.pmtiles places.ge
 
 DESIGN.md describes the choices behind the tiles, and `make test-golden-mlt` checks them against the MVT tiles of the same runs.
 
+## Thanks
+
+manby is built on tippecanoe. [Erica Fischer](https://github.com/e-n-f) started it in 2014 and, over twelve years at Mapbox and then at Felt, wrote nearly all of it. The way it thins features evenly across a zoom level until every tile fits, and the test suite that pins all of that down, are what manby keeps, and they are her work. Thank you, Erica.
+
 ## License
 
 BSD 2-Clause, see [LICENSE.md](LICENSE.md).

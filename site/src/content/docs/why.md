@@ -27,7 +27,7 @@ description: What manby is for, how it compares with tippecanoe and the other wa
 
 ### tippecanoe
 
-[tippecanoe](https://github.com/felt/tippecanoe) is the reference. It is a mature, well-tested program, first by Mapbox and now by Felt, and the way it thins features so that every tile fits, evenly across a zoom level, is what makes its tilesets look right at every zoom. manby keeps all of that. If tippecanoe is fast enough for you, there is no need to switch.
+[tippecanoe](https://github.com/felt/tippecanoe) is the reference. [Erica Fischer](https://github.com/e-n-f) started it in 2014 and wrote nearly all of it, at Mapbox and then at Felt. It is a mature, well-tested program, and the way it thins features so that every tile fits, evenly across a zoom level, is what makes its tilesets look right at every zoom. manby keeps all of that, and owes it to her. If tippecanoe is fast enough for you, there is no need to switch.
 
 ### tippecanoe-rs
 

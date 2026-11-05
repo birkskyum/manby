@@ -30,7 +30,7 @@ description: What manby is for, how it compares with tippecanoe and the other wa
 
 ### tippecanoe-rs
 
-Before manby, tippecanoe was ported to Rust line by line, as tippecanoe-rs. It passes tippecanoe's test suite, makes the same tiles, and runs at the speed of the C++. So porting tippecanoe to Rust has been tried, and it is no faster. manby's speed comes from doing the work differently, and its geometry comes from the port, which is why the tiles are the same.
+Before manby, tippecanoe was ported to Rust line by line, as [tippecanoe-rs](https://github.com/birkskyum/manby/tree/main/crates/tippecanoe-rs), which lives in manby's repository. It passes tippecanoe's test suite, makes the same tiles, and runs at the speed of the C++. So porting tippecanoe to Rust has been tried, and it is no faster. manby's speed comes from doing the work differently, and its geometry comes from the port, which is why the tiles are the same.
 
 ### planetiler
 

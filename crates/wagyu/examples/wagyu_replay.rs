@@ -89,7 +89,7 @@ fn run_port(rings: &Rings) -> Out {
 }
 
 fn run_ours(rings: &Rings) -> Out {
-    use wagyu::{ClipType, FillType, Point, PolygonType, Wagyu};
+    use manby_wagyu::{ClipType, FillType, Point, PolygonType, Wagyu};
     let mut w = Wagyu::new();
     for (t, pts) in rings {
         let lr: Vec<Point> = pts.iter().map(|&(x, y)| Point::new(x, y)).collect();

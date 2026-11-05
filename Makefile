@@ -7,13 +7,13 @@
 #   make test-golden-mlt  the golden tests written as MVT and as MLT, compared
 #                      tile by tile (needs Rust 1.98 for the mlt feature)
 #
-# The golden tests come from tippecanoe-rs (TIPPECANOE_RS), whose
+# The golden tests come from tippecanoe-rs (crates/tippecanoe-rs), whose
 # tippecanoe-decode decodes the output. Tests that manby does not pass yet
 # are listed in golden/skip.txt, with the reason.
 
 CARGO ?= cargo
-TIPPECANOE_RS ?= ../tippecanoe-rs
-RELEASE = $(TIPPECANOE_RS)/target/release
+TIPPECANOE_RS = crates/tippecanoe-rs
+RELEASE = target/release
 DECODE = $(RELEASE)/tippecanoe-decode
 GOLDEN = target/golden
 
@@ -26,7 +26,7 @@ manby:
 
 # tippecanoe-rs's tools that the recipes use
 tools:
-	cd $(TIPPECANOE_RS) && $(CARGO) build --release --bin tippecanoe-decode --bin tippecanoe-enumerate --bin tippecanoe-json-tool --example json2geobuf
+	$(CARGO) build --release -p tippecanoe-rs --bin tippecanoe-decode --bin tippecanoe-enumerate --bin tippecanoe-json-tool --example json2geobuf
 
 unit:
 	$(CARGO) test --release

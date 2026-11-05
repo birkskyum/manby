@@ -16,7 +16,7 @@ their `value` attribute
 `cluster-densest` (`-zg --cluster-densest-as-needed`) and `cluster-r1-sum` (the same with `-r1`
 and the summed `value`) run only when named. The reference is tippecanoe-rs, or tippecanoe's C++ build with
 `TIPPECANOE=../tippecanoe/tippecanoe` (and `TILE_JOIN` for `join.sh`). Build them in release mode
-first (`cargo build --release`, or `make` for the C++). `OUT` keeps the tilesets of runs against
+first (`cargo build --release --workspace`, or `make` for the C++). `OUT` keeps the tilesets of runs against
 different references apart.
 
 `large.sh` runs manby with a memory budget (`BUDGET`, default 1G) on inputs several times

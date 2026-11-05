@@ -856,7 +856,7 @@ fn batches_never_split_a_tile_and_order_by_zlib_bytes() {
     let _g = crate::tiler::oracle::GLOBALS
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let tests = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tippecanoe-rs/tests");
+    let tests = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/tippecanoe-rs/tests");
     let dir = std::env::temp_dir().join(format!("manby-join-batches-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let mut names = Vec::new();

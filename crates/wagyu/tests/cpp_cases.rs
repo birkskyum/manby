@@ -1,13 +1,13 @@
 //! Cases checked against the vendored C++ wagyu.
 //!
-//! `data/cases.txt` holds the inputs in the format of `examples/wagyu_diff.rs`, and
+//! `data/cases.txt` holds the inputs in the format of `examples/manby_wagyu_diff.rs`, and
 //! `data/expected.txt` is what the C++ printed for them, built with
 //! `clang++ -std=c++17 -O3 -DNDEBUG -ffp-contract=off`. The cases come from the random
 //! generators and the tippecanoe GeoJSON fixtures used in the differential runs (see `LABELS`).
 
 use std::fmt::Write as _;
 
-use wagyu::{ClipType, FillType, MultiPolygon, Point, PolygonType, Wagyu};
+use manby_wagyu::{ClipType, FillType, MultiPolygon, Point, PolygonType, Wagyu};
 
 /// Where each case in `data/cases.txt` came from.
 const LABELS: [&str; 39] = [
@@ -94,7 +94,7 @@ fn parse_cases(text: &str) -> Vec<Case> {
 
 /// Mode 0 is an intersection and mode 1 a union, both with positive fills, as tippecanoe
 /// calls wagyu. Mode `100 + clip * 16 + subject_fill * 4 + clip_fill` is any other combination.
-fn run(case: &Case) -> Result<MultiPolygon, wagyu::Error> {
+fn run(case: &Case) -> Result<MultiPolygon, manby_wagyu::Error> {
     let mut w = Wagyu::new();
     for (t, ring) in &case.rings {
         let p_type = if *t == 0 {
@@ -123,7 +123,7 @@ fn run(case: &Case) -> Result<MultiPolygon, wagyu::Error> {
     w.execute(cliptype, subject_fill, clip_fill)
 }
 
-fn format_result(i: usize, result: &Result<MultiPolygon, wagyu::Error>) -> String {
+fn format_result(i: usize, result: &Result<MultiPolygon, manby_wagyu::Error>) -> String {
     let mut out = format!("C {i}\n");
     match result {
         Ok(mp) => {

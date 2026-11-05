@@ -4,11 +4,9 @@ version = "0.5.0"
 description = "manby's copy of tippecanoe-rs's port of mapbox/wagyu, made faster with the same results"
 edition = "2024"
 license = "ISC"
-
-[lib]
-name = "wagyu"
+repository = "https://github.com/birkskyum/manby"
 
 [dependencies]
 
 [dev-dependencies]
-port-wagyu = { package = "wagyu", path = "../../../tippecanoe-rs/crates/wagyu" }
+port-wagyu = { package = "tippecanoe-rs-wagyu", path = "../tippecanoe-rs/crates/wagyu" }

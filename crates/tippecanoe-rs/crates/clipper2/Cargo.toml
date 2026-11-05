@@ -1,0 +1,12 @@
+[package]
+name = "tippecanoe-rs-clipper2"
+version = "1.4.0"
+description = "A Rust port of the parts of Clipper2 that tippecanoe uses"
+edition = "2024"
+license = "BSL-1.0"
+repository = "https://github.com/birkskyum/manby"
+
+[lib]
+name = "clipper2"
+
+[dependencies]

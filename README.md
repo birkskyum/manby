@@ -8,6 +8,8 @@ The `manby` command takes tippecanoe's options:
 manby -zg --drop-densest-as-needed -o places.pmtiles places.geojson
 ```
 
+`cargo install manby` installs it, with Rust 1.89 or later. The [site](https://birkskyum.github.io/manby/) has the guides.
+
 ## Speed
 
 Against tippecanoe 2.82.0 itself, the C++ built with its own Makefile, writing PMTiles. Each figure is the median of three runs, and memory is peak resident memory. tippecanoe's runs and manby's come from separate sessions on the same machine, since tippecanoe's do not change with manby's version.
@@ -40,7 +42,7 @@ On this machine tippecanoe uses 8 of the 12 cores, since it rounds its thread co
 
 For every run the tiles decode to exactly what tippecanoe makes, with one exception. tippecanoe's arm64 builds, from Apple's clang on macOS and from GCC on Linux, fuse multiplications and additions where its x86-64 build does not, and that changes a few tiles near the size limit. On these benchmarks it changes only the census tracts at `-zg`, here and 20 times over below. In the tracts, the zoom 0 tile comes out 6 bytes smaller compressed, so that tippecanoe's retry keeps other features. manby makes the same tiles on macOS and Linux alike, the tiles of tippecanoe's x86-64 build. Built for x86-64, or on arm64 with `-ffp-contract=off`, tippecanoe makes manby's tiles on the tracts too.
 
-[tippecanoe-rs](../tippecanoe-rs), the faithful Rust port that manby takes tippecanoe's algorithms from, runs at about the speed of the C++.
+[tippecanoe-rs](crates/tippecanoe-rs), the faithful Rust port that manby takes tippecanoe's algorithms from, runs at about the speed of the C++. So porting tippecanoe to Rust is not what makes manby fast. Doing the work differently is.
 
 The archives are not tippecanoe's byte for byte, and a little smaller. zlib's exact output decides which features a tile keeps only when the tile could be near the size limit. Every other tile is compressed with libdeflate, which is faster and compresses tiles better. `--compression=zlib` compresses every tile with zlib, as tippecanoe does, for the same archive bytes.
 
@@ -112,7 +114,7 @@ To tile an input file named like a subcommand, such as `decode`, write it as `./
 
 ## Building and testing
 
-manby uses tippecanoe-rs as a library, so it expects that repository next to this one, at `../tippecanoe-rs`.
+manby uses tippecanoe-rs, in `crates/tippecanoe-rs`, as a library. The port has tippecanoe's six programs, built with `cargo build --release -p tippecanoe-rs`, and runs tippecanoe's test suite against them with `make -C crates/tippecanoe-rs test`.
 
 ```sh
 cargo build --release

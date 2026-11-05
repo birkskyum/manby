@@ -1,0 +1,48 @@
+[package]
+name = "tippecanoe-rs"
+version = "2.82.0"
+description = "A faithful Rust port of tippecanoe, which builds vector tilesets from GeoJSON, FlatGeobuf, or CSV features"
+edition = "2024"
+license = "BSD-2-Clause"
+repository = "https://github.com/birkskyum/manby"
+keywords = ["tippecanoe", "vector-tiles", "pmtiles", "mbtiles", "geojson"]
+categories = ["science::geo", "command-line-utilities"]
+include = ["/src/**", "/examples/**", "/README.md", "/PORTING.md", "/LICENSE.md"]
+autobins = false
+
+[lib]
+name = "tippecanoe"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tippecanoe"
+path = "src/bin/tippecanoe.rs"
+
+[[bin]]
+name = "tile-join"
+path = "src/bin/tile-join.rs"
+
+[[bin]]
+name = "tippecanoe-decode"
+path = "src/bin/tippecanoe-decode.rs"
+
+[[bin]]
+name = "tippecanoe-enumerate"
+path = "src/bin/tippecanoe-enumerate.rs"
+
+[[bin]]
+name = "tippecanoe-overzoom"
+path = "src/bin/tippecanoe-overzoom.rs"
+
+[[bin]]
+name = "tippecanoe-json-tool"
+path = "src/bin/tippecanoe-json-tool.rs"
+
+[dependencies]
+wagyu = { package = "tippecanoe-rs-wagyu", version = "0.5.0", path = "crates/wagyu" }
+clipper2 = { package = "tippecanoe-rs-clipper2", version = "1.4.0", path = "crates/clipper2" }
+flate2 = { version = "1.1", default-features = false, features = ["zlib"] }
+libc = "0.2"
+memmap2 = "0.9"
+rusqlite = { version = "0.40", features = ["bundled"] }
+flatbuffers = "25"

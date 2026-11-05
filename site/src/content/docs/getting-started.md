@@ -3,16 +3,21 @@ title: Getting started
 description: Building manby, and making a first tileset with tippecanoe's options.
 ---
 
-manby is not on crates.io yet, so for now it builds from source, with Rust 1.89 or later. It uses [tippecanoe-rs](https://github.com/birkskyum/tippecanoe-rs), the faithful Rust port of tippecanoe, as a library, and expects that repository next to its own.
+manby installs with cargo, with Rust 1.89 or later.
 
 ```sh
-git clone https://github.com/birkskyum/tippecanoe-rs
+cargo install manby
+```
+
+Or from a clone, where the program ends up in `target/release/manby`:
+
+```sh
 git clone https://github.com/birkskyum/manby
 cd manby
 cargo build --release
 ```
 
-The program is `target/release/manby`.
+The repository also has [tippecanoe-rs](https://github.com/birkskyum/manby/tree/main/crates/tippecanoe-rs), the faithful Rust port of tippecanoe that manby uses as a library.
 
 ## A first tileset
 

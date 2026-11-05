@@ -35,7 +35,7 @@ Before manby, tippecanoe was ported to Rust line by line, as [tippecanoe-rs](htt
 
 ### tylertoo
 
-[tylertoo](https://github.com/geoparquet-io/tylertoo) tiles GeoParquet into PMTiles, from the command line or from Python, and can read from remote storage and split a build across machines. It takes tippecanoe as its model rather than its output. Each oversized tile gets a threshold of its own, where tippecanoe raises one for the whole zoom level, and it thins and simplifies in its own way, so its tiles are not tippecanoe's. Its own benchmarks have it 8.6 to 21 times faster than tippecanoe at its default settings, and 5.9 to 16 times with its thinning off, with more memory on three of four datasets. For GeoParquet whose tiles need not be tippecanoe's, it saves the conversion step.
+[tylertoo](https://github.com/geoparquet-io/tylertoo) tiles GeoParquet into PMTiles, from the command line or from Python, and can read from remote storage and split a build across machines. It takes tippecanoe as its model rather than its output. Each oversized tile gets a threshold of its own, where tippecanoe raises one for the whole zoom level, and it thins and simplifies in its own way, so its tiles are not tippecanoe's. Its own benchmarks have it 8.6 to 21 times faster than tippecanoe at its default settings, and 5.9 to 16 times with its thinning off, with more memory on three of four datasets. On [manby's benchmarks](../reference/benchmarks/#against-tylertoo) it is faster than manby on the census tracts and slower on points and roads, with three to eight times manby's memory. For GeoParquet whose tiles need not be tippecanoe's, it saves the conversion step.
 
 ### planetiler
 

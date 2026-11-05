@@ -1,6 +1,6 @@
 ---
 title: Benchmarks
-description: manby against tippecanoe 2.82.0 on macOS and on Linux, with the same tiles, in time and peak memory.
+description: manby against tippecanoe 2.82.0 on macOS and on Linux, with the same tiles, and against tylertoo, in time and peak memory.
 ---
 
 Against tippecanoe 2.82.0 itself, the C++ built with its own Makefile, writing PMTiles. Each figure is the median of three runs, and memory is peak resident memory. tippecanoe's runs and manby's come from separate sessions on the same machine, since tippecanoe's do not change with manby's version. The points are 4 million random points (556 MB of GeoJSON), the roads the 17,522 US primary roads of TIGER/Line 2024, and the tracts the 85,186 US census tracts of the Census cartographic boundaries 2023. The [commands](#the-commands) are below, and the scripts are in [`bench/`](https://github.com/birkskyum/manby/tree/main/bench).
@@ -73,6 +73,21 @@ With `--memory-budget=1G`, on inputs several times larger, once each. [Inputs la
 | | Linux | 1,025 s, 6,379 MB | 121 s, 1,188 MB |
 | The tracts 20 times over (3 GB) | macOS | 564 s, 4,810 MB | 137 s, 1,022 MB |
 | | Linux | 854 s, 3,730 MB | 269 s, 1,206 MB |
+
+## Against tylertoo
+
+[tylertoo](https://github.com/geoparquet-io/tylertoo) tiles GeoParquet, and makes tiles of its own rather than tippecanoe's ([Why manby?](../../why/#tylertoo) has how), so this compares the time each takes on the same features, not the same tiles. tylertoo read the features as GeoParquet and manby as GeoJSON. Both made the same zoom levels, those manby's `-zg` chose, with a 500 kB tile size limit, and tylertoo used its defaults otherwise, from its main branch (6c3cec4), since its release 0.8.0 does not have the size options yet. Each figure is the median of three runs, alternating, on the Mac above, in one session, so manby's figures differ a little from the tables above.
+
+| Benchmark | tylertoo | manby |
+| --- | --: | --: |
+| Points to z6, dropping the densest as needed | 5.61 s, 1,329 MB | 3.98 s, 913 MB |
+| Roads to z14, dropping the densest as needed | 1.85 s, 1,447 MB | 0.89 s, 180 MB |
+| Tracts to z12 | 3.39 s, 1,420 MB | 4.07 s, 342 MB |
+| Tracts to z7, coalescing the densest as needed | 0.90 s, 1,139 MB | 2.69 s, 377 MB |
+
+tylertoo is faster on the tracts, three times at z7 and 1.2 times at z12. It fits each tile to the size limit on its own, where tippecanoe, and so manby, raises one threshold for a whole zoom level and makes the zoom level again until every tile fits, and that is most of manby's time on the tracts at low zoom levels. Its tiles hold more, 61,746 tract polygons at z5 where tippecanoe's hold 17,094, and at its defaults it thins points more, 1,094 at z0 where tippecanoe keeps 16,384. Its size limit is also 512,000 bytes, where tippecanoe's is 500,000. manby took the same time from FlatGeobuf as from GeoJSON.
+
+tylertoo ran as `tylertoo tiles` with `--max-zoom 6 --size-valve drop` for the points, `--max-zoom 14 --size-valve drop` for the roads, and `--max-zoom 12` or `--max-zoom 7` for the tracts, whose default size valve merges the densest polygons. DuckDB made the GeoParquet files from the GeoJSON.
 
 ## Joining
 

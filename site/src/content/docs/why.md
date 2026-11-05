@@ -19,6 +19,7 @@ description: What manby is for, how it compares with tippecanoe and the other wa
 | tippecanoe | C++ | GeoJSON, FlatGeobuf, CSV, Geobuf | Drops, coalesces or clusters features evenly across each zoom level until its tiles fit | In review |
 | <span class="whitespace-nowrap">tippecanoe-rs</span> | Rust | As tippecanoe | As tippecanoe, with its tiles | No |
 | manby | Rust | As tippecanoe, and [other formats by way of GDAL](../guides/other-formats/) | As tippecanoe, with its tiles | Yes |
+| tylertoo | Rust, also from Python | GeoParquet | A size limit on each tile on its own, with its own thinning and simplification, so not tippecanoe's tiles | No |
 | planetiler | Java | OpenStreetMap, Shapefile, GeoPackage, GeoJSON, GeoParquet | A profile, in Java or YAML, decides what each zoom level keeps | Yes |
 | GDAL (ogr2ogr) | C++ | Almost any vector format | Each tile on its own, at a lower resolution past 500 kB, then only its largest features | No |
 | freestiler | Rust, from R and Python | Data frames, GeoParquet, DuckDB queries | A drop rate below a base zoom, clustering and coalescing, not fitted to a size limit | Experimental |
@@ -31,6 +32,10 @@ description: What manby is for, how it compares with tippecanoe and the other wa
 ### tippecanoe-rs
 
 Before manby, tippecanoe was ported to Rust line by line, as [tippecanoe-rs](https://github.com/birkskyum/manby/tree/main/crates/tippecanoe-rs), which lives in manby's repository. It passes tippecanoe's test suite, makes the same tiles, and runs at the speed of the C++. So porting tippecanoe to Rust has been tried, and it is no faster. manby's speed comes from doing the work differently, and its geometry comes from the port, which is why the tiles are the same.
+
+### tylertoo
+
+[tylertoo](https://github.com/geoparquet-io/tylertoo) tiles GeoParquet into PMTiles, from the command line or from Python, and can read from remote storage and split a build across machines. It takes tippecanoe as its model rather than its output. Each oversized tile gets a threshold of its own, where tippecanoe raises one for the whole zoom level, and it thins and simplifies in its own way, so its tiles are not tippecanoe's. Its own benchmarks have it 8.6 to 21 times faster than tippecanoe at its default settings, and 5.9 to 16 times with its thinning off, with more memory on three of four datasets. For GeoParquet whose tiles need not be tippecanoe's, it saves the conversion step.
 
 ### planetiler
 
@@ -54,6 +59,7 @@ GDAL's `ogr2ogr` writes vector tiles from anything GDAL reads, zoom levels 0 to 
 - **Tiles that follow a live database.** PostGIS's `ST_AsMVT`, served by [Martin](https://maplibre.org/martin/), makes each tile when it is asked for.
 - **Small GeoJSON in a web map.** MapLibre's GeoJSON source, with geojson-vt.
 - **Data frames in R or Python.** freestiler.
+- **GeoParquet, without tippecanoe's tiles.** tylertoo reads it directly, from remote storage too.
 - **Small inputs.** They take seconds with tippecanoe too, and tippecanoe is the reference.
 
 ## When manby fits

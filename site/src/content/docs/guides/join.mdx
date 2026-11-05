@@ -3,6 +3,10 @@ title: Joining tilesets
 description: manby join is tippecanoe's tile-join, with the same tiles, two to thirty-five times faster.
 ---
 
+import BarChart from '../../../components/BarChart.astro';
+import { charts } from '../../../data/benchmarks';
+
+
 `manby join` takes tile-join's options, prints its messages, exits as it does, and makes the same tiles, with their features in the same order. It merges tilesets, joins attributes from a CSV file, filters and renames layers, filters features, overzooms, and converts between MBTiles, PMTiles and directories.
 
 ```sh
@@ -16,39 +20,9 @@ manby join -c tracts.csv -o joined.pmtiles tracts.pmtiles
 
 Median of three runs, against tile-join 2.82.0. For every run the tiles decode to exactly what tile-join makes.
 
-### Time
+<BarChart chart={charts.joinTime} />
 
-| Benchmark | System | tile-join | manby join | Speedup |
-| --- | --- | --: | --: | --: |
-| Copy to PMTiles | macOS | 21.9 s | 0.63 s | 34.8x |
-|  | Linux | 24.2 s | 1.05 s | 23.1x |
-| Copy to MBTiles | macOS | 16.6 s | 1.19 s | 13.9x |
-|  | Linux | 20.4 s | 1.28 s | 16.0x |
-| Join a CSV | macOS | 22.6 s | 1.09 s | 20.7x |
-|  | Linux | 25.9 s | 1.92 s | 13.5x |
-| Merge to PMTiles | macOS | 1.20 s | 0.38 s | 3.2x |
-|  | Linux | 1.62 s | 0.68 s | 2.4x |
-| Merge to MBTiles | macOS | 1.15 s | 0.40 s | 2.9x |
-|  | Linux | 1.51 s | 0.69 s | 2.2x |
-| Overzoom | macOS | 3.87 s | 0.39 s | 9.9x |
-|  | Linux | 5.99 s | 0.72 s | 8.3x |
-
-### Peak memory
-
-| Benchmark | System | tile-join | manby join |
-| --- | --- | --: | --: |
-| Copy to PMTiles | macOS | 589 MB | 161 MB |
-|  | Linux | 461 MB | 185 MB |
-| Copy to MBTiles | macOS | 560 MB | 380 MB |
-|  | Linux | 463 MB | 371 MB |
-| Join a CSV | macOS | 652 MB | 296 MB |
-|  | Linux | 556 MB | 325 MB |
-| Merge to PMTiles | macOS | 701 MB | 269 MB |
-|  | Linux | 573 MB | 249 MB |
-| Merge to MBTiles | macOS | 707 MB | 273 MB |
-|  | Linux | 567 MB | 258 MB |
-| Overzoom | macOS | 592 MB | 182 MB |
-|  | Linux | 440 MB | 196 MB |
+<BarChart chart={charts.joinMemory} />
 
 The copies take the census tracts at `-z12` (312,073 tiles), and the CSV join joins them to a CSV keyed on `GEOID`. The merges take the 4 million points and the tracts, both at `-zg`. The overzoom takes counties at `-z5` and tracts at `-z9`, with `--overzoom`. The [benchmarks](../../reference/benchmarks/) describe the machines.
 

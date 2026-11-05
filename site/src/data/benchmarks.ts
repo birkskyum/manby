@@ -71,6 +71,22 @@ export const tylertoo: { name: string; tylertoo: Figures; manby: Figures }[] = [
 	{ name: 'Tracts to z7, coalescing the densest as needed', tylertoo: [0.9, 1139], manby: [2.69, 377] },
 ];
 
+/** manby join against tile-join 2.82.0, medians of three runs. */
+export const join: { name: string; system: string; tileJoin: Figures; manby: Figures }[] = [
+	{ name: 'Copy to PMTiles', system: 'macOS', tileJoin: [21.9, 589], manby: [0.63, 161] },
+	{ name: 'Copy to PMTiles', system: 'Linux', tileJoin: [24.2, 461], manby: [1.05, 185] },
+	{ name: 'Copy to MBTiles', system: 'macOS', tileJoin: [16.6, 560], manby: [1.19, 380] },
+	{ name: 'Copy to MBTiles', system: 'Linux', tileJoin: [20.4, 463], manby: [1.28, 371] },
+	{ name: 'Join a CSV', system: 'macOS', tileJoin: [22.6, 652], manby: [1.09, 296] },
+	{ name: 'Join a CSV', system: 'Linux', tileJoin: [25.9, 556], manby: [1.92, 325] },
+	{ name: 'Merge to PMTiles', system: 'macOS', tileJoin: [1.2, 701], manby: [0.38, 269] },
+	{ name: 'Merge to PMTiles', system: 'Linux', tileJoin: [1.62, 573], manby: [0.68, 249] },
+	{ name: 'Merge to MBTiles', system: 'macOS', tileJoin: [1.15, 707], manby: [0.4, 273] },
+	{ name: 'Merge to MBTiles', system: 'Linux', tileJoin: [1.51, 567], manby: [0.69, 258] },
+	{ name: 'Overzoom', system: 'macOS', tileJoin: [3.87, 592], manby: [0.39, 182] },
+	{ name: 'Overzoom', system: 'Linux', tileJoin: [5.99, 440], manby: [0.72, 196] },
+];
+
 export type Program = { key: string; label: string; tone: 'manby' | 'other' };
 
 export type Chart = {
@@ -90,6 +106,26 @@ const againstTippecanoe: Program[] = [
 
 const fromRuns = (figures: Record<Run, Pair>) =>
 	(Object.keys(runs) as Run[]).map((k) => ({ label: runs[k].name, values: figures[k] }));
+
+const againstTileJoin: Program[] = [
+	{ key: 'manby', label: 'manby join', tone: 'manby' },
+	{ key: 'tileJoin', label: 'tile-join', tone: 'other' },
+];
+
+const largerRows = larger.map((r) => ({
+	label: `${r.name}, ${r.system}`,
+	values: { manby: r.manby, tippecanoe: r.tippecanoe },
+}));
+
+const tylertooRows = tylertoo.map((r) => ({
+	label: r.name,
+	values: { manby: r.manby, tylertoo: r.tylertoo },
+}));
+
+const joinRows = join.map((r) => ({
+	label: `${r.name}, ${r.system}`,
+	values: { manby: r.manby, tileJoin: r.tileJoin },
+}));
 
 export const charts = {
 	macosTime: {
@@ -122,14 +158,14 @@ export const charts = {
 		title: 'Seconds, with a 1 GB memory budget for manby',
 		measure: 'time',
 		programs: againstTippecanoe,
-		rows: larger.map((r) => ({ label: `${r.name}, ${r.system}`, values: r })),
+		rows: largerRows,
 		speedup: true,
 	},
 	largerMemory: {
 		title: 'Peak memory in MB, with a 1 GB memory budget for manby',
 		measure: 'memory',
 		programs: againstTippecanoe,
-		rows: larger.map((r) => ({ label: `${r.name}, ${r.system}`, values: r })),
+		rows: largerRows,
 	},
 	tylertooTime: {
 		title: 'Seconds to make each tileset, on macOS',
@@ -138,7 +174,7 @@ export const charts = {
 			{ key: 'manby', label: 'manby', tone: 'manby' },
 			{ key: 'tylertoo', label: 'tylertoo', tone: 'other' },
 		],
-		rows: tylertoo.map((r) => ({ label: r.name, values: r })),
+		rows: tylertooRows,
 	},
 	tylertooMemory: {
 		title: 'Peak memory in MB, on macOS',
@@ -147,6 +183,19 @@ export const charts = {
 			{ key: 'manby', label: 'manby', tone: 'manby' },
 			{ key: 'tylertoo', label: 'tylertoo', tone: 'other' },
 		],
-		rows: tylertoo.map((r) => ({ label: r.name, values: r })),
+		rows: tylertooRows,
+	},
+	joinTime: {
+		title: 'Seconds to join or copy each tileset',
+		measure: 'time',
+		programs: againstTileJoin,
+		rows: joinRows,
+		speedup: true,
+	},
+	joinMemory: {
+		title: 'Peak memory in MB',
+		measure: 'memory',
+		programs: againstTileJoin,
+		rows: joinRows,
 	},
 } satisfies Record<string, Chart>;

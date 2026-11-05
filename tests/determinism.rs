@@ -8,7 +8,7 @@ use std::sync::Mutex;
 static GLOBALS: Mutex<()> = Mutex::new(());
 
 fn tests_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tippecanoe-rs/tests")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("crates/tippecanoe-rs/tests")
 }
 
 #[test]

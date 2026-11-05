@@ -540,7 +540,7 @@ fn compare(
 }
 
 fn tests_dir() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tippecanoe-rs/tests")
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/tippecanoe-rs/tests")
 }
 
 /// The arguments of a golden test, decoded from its file name as the Makefile does.

@@ -1,6 +1,8 @@
 # tippecanoe-rs
 
-A faithful Rust port of [tippecanoe](https://github.com/felt/tippecanoe) v2.82.0, which builds vector tilesets from GeoJSON, FlatGeobuf, CSV or Geobuf features.
+A faithful Rust port of [tippecanoe](https://github.com/felt/tippecanoe) v2.82.0, which builds vector tilesets from GeoJSON, FlatGeobuf, CSV or Geobuf features. It matches tippecanoe as of [4f26211](https://github.com/felt/tippecanoe/commit/4f2621186acfec33b63ddf636f665623c0fef2dd) (2026-08-13), and follows tippecanoe's later changes one commit at a time.
+
+It lives in [manby](https://github.com/birkskyum/manby)'s repository. manby uses it as a library, and it shows that porting tippecanoe to Rust as it is gives tippecanoe's speed, not manby's.
 
 It has the same six programs (`tippecanoe`, `tile-join`, `tippecanoe-decode`, `tippecanoe-enumerate`, `tippecanoe-overzoom` and `tippecanoe-json-tool`), the same options and the same messages, and it makes the same tiles.
 The options are documented in the [tippecanoe README](https://github.com/felt/tippecanoe#readme).
@@ -8,10 +10,10 @@ The options are documented in the [tippecanoe README](https://github.com/felt/ti
 ## Building
 
 ```sh
-cargo build --release
+cargo build --release -p tippecanoe-rs
 ```
 
-The programs end up in `target/release`. `make` also copies them to the repository root, where the test recipes expect them.
+The programs end up in the workspace's `target/release`. `make` in this directory also copies them here, where the test recipes expect them.
 
 ## Testing
 

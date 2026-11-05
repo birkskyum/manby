@@ -13,7 +13,7 @@
 //! - the `DEBUG` printing helpers and a few unused ring helpers (see `ring.rs` and `util.rs`).
 //!
 //! ```
-//! use wagyu::{ClipType, FillType, Point, PolygonType, Wagyu};
+//! use manby_wagyu::{ClipType, FillType, Point, PolygonType, Wagyu};
 //!
 //! let square = vec![Point::new(0, 0), Point::new(10, 0), Point::new(10, 10), Point::new(0, 10), Point::new(0, 0)];
 //! let mut w = Wagyu::new();

@@ -19,14 +19,14 @@
 # then see. For those two, the script also checks the whole pipeline: manby join
 # on inputs that manby made against tile-join on inputs that tippecanoe made.
 #
-# TILE_JOIN, TIPPECANOE, DECODE: tippecanoe-rs's programs (default ../tippecanoe-rs/target/release)
+# TILE_JOIN, TIPPECANOE, DECODE: tippecanoe-rs's programs (default target/release)
 # MANBY: the manby to test (default target/release/manby)
 # ROUNDS: runs per program (default 3); the summary has their medians
 # OUT: the directory for the tilesets and the inputs it makes (default: bench/out)
 # MANBY_ONLY: run only manby join, and check its tiles against tile-join's
 #   tilesets that an earlier run left in OUT
 cd "$(dirname "$0")/.."
-RS=../tippecanoe-rs/target/release
+RS=target/release
 TILE_JOIN=${TILE_JOIN:-$RS/tile-join}
 TIPPECANOE=${TIPPECANOE:-$RS/tippecanoe}
 DECODE=${DECODE:-$RS/tippecanoe-decode}

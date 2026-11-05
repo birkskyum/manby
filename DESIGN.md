@@ -5,7 +5,7 @@ It is named after the Aaron Manby, the first iron steamship.
 
 ## Baseline
 
-tippecanoe and its faithful Rust port, [tippecanoe-rs](../tippecanoe-rs), run at about the same speed.
+tippecanoe and its faithful Rust port, [tippecanoe-rs](crates/tippecanoe-rs), run at about the same speed.
 On an Apple M5 Max (18 cores, 128 GB):
 
 | Benchmark | Command (after `tippecanoe -f -o out.pmtiles`) | tippecanoe | Target |

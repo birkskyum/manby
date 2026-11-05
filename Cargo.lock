@@ -109,10 +109,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
-name = "clipper2"
-version = "1.4.0"
-
-[[package]]
 name = "compact_str"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -581,7 +577,7 @@ dependencies = [
  "rusqlite",
  "rustc-hash",
  "tikv-jemallocator",
- "tippecanoe",
+ "tippecanoe-rs",
  "xxhash-rust",
 ]
 
@@ -589,7 +585,7 @@ dependencies = [
 name = "manby-wagyu"
 version = "0.5.0"
 dependencies = [
- "wagyu",
+ "tippecanoe-rs-wagyu",
 ]
 
 [[package]]
@@ -1050,17 +1046,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "tippecanoe"
+name = "tippecanoe-rs"
 version = "2.82.0"
 dependencies = [
- "clipper2",
  "flatbuffers",
  "flate2",
  "libc",
  "memmap2",
  "rusqlite",
- "wagyu",
+ "tippecanoe-rs-clipper2",
+ "tippecanoe-rs-wagyu",
 ]
+
+[[package]]
+name = "tippecanoe-rs-clipper2"
+version = "1.4.0"
+
+[[package]]
+name = "tippecanoe-rs-wagyu"
+version = "0.5.0"
 
 [[package]]
 name = "toml_datetime"
@@ -1115,10 +1119,6 @@ name = "vcpkg"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
-
-[[package]]
-name = "wagyu"
-version = "0.5.0"
 
 [[package]]
 name = "wasm-bindgen"

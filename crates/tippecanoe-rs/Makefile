@@ -4,6 +4,8 @@
 
 CARGO ?= cargo
 PROFILE ?= release
+# manby's workspace builds into the target directory at its root.
+TARGET_DIR ?= ../../target
 SHELL = /bin/sh
 
 OS := $(shell uname -s)
@@ -22,7 +24,7 @@ cargo-build:
 	$(CARGO) build --profile $(PROFILE)
 	# Replace rather than overwrite, since macOS kills a signed program
 	# that was rewritten in place.
-	for b in $(BINS); do rm -f $$b && cp target/$(PROFILE)/$$b $$b; done
+	for b in $(BINS); do rm -f $$b && cp $(TARGET_DIR)/$(PROFILE)/$$b $$b; done
 
 $(BINS): cargo-build ;
 
@@ -85,8 +87,8 @@ fewer-tests: tippecanoe tippecanoe-decode geobuf-test raw-tiles-test parallel-te
 # XXX Use proper makefile rules instead of a for loop
 %.json.checkbuf:
 	$(CARGO) build --profile $(PROFILE) --example json2geobuf
-	for i in $(wildcard $(subst $(SPACE),/,$(wordlist 1,2,$(subst /, ,$@)))/*.json); do ./tippecanoe-json-tool -w $$i | target/$(PROFILE)/examples/json2geobuf > $$i.geobuf; done
-	for i in $(wildcard $(subst $(SPACE),/,$(wordlist 1,2,$(subst /, ,$@)))/*.json.gz); do gzip -dc $$i | ./tippecanoe-json-tool -w | target/$(PROFILE)/examples/json2geobuf > $$i.geobuf; done
+	for i in $(wildcard $(subst $(SPACE),/,$(wordlist 1,2,$(subst /, ,$@)))/*.json); do ./tippecanoe-json-tool -w $$i | $(TARGET_DIR)/$(PROFILE)/examples/json2geobuf > $$i.geobuf; done
+	for i in $(wildcard $(subst $(SPACE),/,$(wordlist 1,2,$(subst /, ,$@)))/*.json.gz); do gzip -dc $$i | ./tippecanoe-json-tool -w | $(TARGET_DIR)/$(PROFILE)/examples/json2geobuf > $$i.geobuf; done
 	./tippecanoe -q -a@ -f -o $@.mbtiles $(call testargs,$(patsubst %.json.checkbuf,%,$(word 4,$(subst /, ,$@)))) $(foreach suffix,$(suffixes),$(addsuffix .geobuf,$(sort $(wildcard $(subst $(SPACE),/,$(wordlist 1,2,$(subst /, ,$@)))/*.$(suffix))))) < /dev/null
 	./tippecanoe-decode -x generator $@.mbtiles | sed 's/checkbuf/check/g' | sed 's/\.geobuf//g' > $@.out
 	cmp $@.out $(patsubst %.checkbuf,%,$@)

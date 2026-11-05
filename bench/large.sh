@@ -17,8 +17,8 @@
 #   the one before (default 0)
 # TIPPECANOE, DECODE, MANBY, OUT: as in run.sh
 cd "$(dirname "$0")/.."
-TIPPECANOE=${TIPPECANOE:-../tippecanoe-rs/target/release/tippecanoe}
-DECODE=${DECODE:-../tippecanoe-rs/target/release/tippecanoe-decode}
+TIPPECANOE=${TIPPECANOE:-target/release/tippecanoe}
+DECODE=${DECODE:-target/release/tippecanoe-decode}
 MANBY=${MANBY:-target/release/manby}
 BUDGET=${BUDGET:-1G}
 PAUSE=${PAUSE:-0}

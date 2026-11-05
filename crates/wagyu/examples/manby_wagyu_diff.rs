@@ -10,7 +10,7 @@
 use std::fmt::Write as _;
 use std::io::{Read, Write};
 
-use wagyu::{ClipType, FillType, Point, PolygonType, Wagyu};
+use manby_wagyu::{ClipType, FillType, Point, PolygonType, Wagyu};
 
 const CLIP_TYPES: [ClipType; 4] = [
     ClipType::Intersection,

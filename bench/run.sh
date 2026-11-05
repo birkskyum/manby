@@ -13,7 +13,7 @@
 # cluster-densest  the points, -zg --cluster-densest-as-needed
 # cluster-r1-sum   the points, -zg -r1 --cluster-densest-as-needed, summing value
 #
-# TIPPECANOE: the reference tippecanoe (default: ../tippecanoe-rs/target/release/tippecanoe),
+# TIPPECANOE: the reference tippecanoe (default: target/release/tippecanoe),
 #   or tippecanoe's own C++ build
 # DECODE: the tippecanoe-decode that compares the tiles (default: tippecanoe-rs's)
 # MANBY: the manby to test (default: target/release/manby)
@@ -25,8 +25,8 @@
 # MANBY_ONLY: run only manby, and check its tiles against the reference's
 #   tilesets that an earlier run left in OUT
 cd "$(dirname "$0")/.."
-TIPPECANOE=${TIPPECANOE:-../tippecanoe-rs/target/release/tippecanoe}
-DECODE=${DECODE:-../tippecanoe-rs/target/release/tippecanoe-decode}
+TIPPECANOE=${TIPPECANOE:-target/release/tippecanoe}
+DECODE=${DECODE:-target/release/tippecanoe-decode}
 MANBY=${MANBY:-target/release/manby}
 ROUNDS=${ROUNDS:-3}
 PAUSE=${PAUSE:-0}

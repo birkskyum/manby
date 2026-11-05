@@ -1,8 +1,12 @@
 [package]
-name = "wagyu"
+name = "tippecanoe-rs-wagyu"
 version = "0.5.0"
 description = "A Rust port of mapbox/wagyu, the polygon clipping and cleaning library vendored by tippecanoe"
-edition.workspace = true
+edition = "2024"
 license = "ISC"
+repository = "https://github.com/birkskyum/manby"
+
+[lib]
+name = "wagyu"
 
 [dependencies]

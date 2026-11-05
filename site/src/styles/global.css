@@ -6,8 +6,10 @@
 @import './tokens.css';
 
 /* Starlight's colors, as VitePress's: dark at the root, light under
-   data-theme='light', as Starlight sets them. */
+   data-theme='light', as Starlight sets them. The text column is wider than
+   Starlight's 45rem, for the tables and charts. */
 :root {
+	--sl-content-width: 56rem;
 	--sl-color-white: #dfdfd6;
 	--sl-color-gray-1: #dfdfd6;
 	--sl-color-gray-2: #dfdfd6;

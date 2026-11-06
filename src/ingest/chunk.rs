@@ -4,9 +4,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use tippecanoe::geometry::{Draw, VT_MOVETO};
 use tippecanoe::mbtiles::{LayermapEntry, Tilestat};
 use tippecanoe::mvt::{MVT_DOUBLE, MVT_NULL};
-use tippecanoe::serial::SerialVal;
+use tippecanoe::serial::{SerialVal, Vertex};
 
 use crate::buf::Buf;
 use crate::store::{Attr, Feature};
@@ -16,6 +17,51 @@ pub const SHARDS: usize = 64;
 
 pub fn hash_bytes(type_: i32, s: &[u8]) -> u64 {
     xxhash_rust::xxh3::xxh3_64_with_seed(s, type_ as u64)
+}
+
+/// The vertices of `--no-simplification-of-shared-nodes`, tippecanoe's vertex
+/// file. A `Vertex` takes 72 bytes, one for every vertex of every line and
+/// polygon. Where all three of its points are on the world grid (x and y in
+/// 0..2^32), it is kept as three `u64`s instead, mid, p1 and p2, each with y in
+/// the high half: they sort as `Vertex` does, by mid, p1 and p2, each by y and
+/// then x, so the nodes found in the sorted vertices are the same.
+#[derive(Default)]
+pub struct SharedVertices {
+    pub packed: Vec<[u64; 3]>,
+    /// Vertices with a point off the grid.
+    pub wide: Vec<Vertex>,
+}
+
+impl SharedVertices {
+    pub fn push(&mut self, v: Vertex) {
+        match (pack(v.mid), pack(v.p1), pack(v.p2)) {
+            (Some(mid), Some(p1), Some(p2)) => self.packed.push([mid, p1, p2]),
+            _ => self.wide.push(v),
+        }
+    }
+}
+
+/// A point on the world grid as a `u64` that sorts as the point does.
+pub fn pack(d: Draw) -> Option<u64> {
+    let grid = 0..1i64 << 32;
+    if grid.contains(&d.x) && grid.contains(&d.y) {
+        Some(((d.y as u64) << 32) | d.x as u64)
+    } else {
+        None
+    }
+}
+
+pub fn unpack(p: u64) -> Draw {
+    Draw::new(VT_MOVETO, (p & 0xFFFF_FFFF) as i64, (p >> 32) as i64)
+}
+
+/// A packed vertex as a `Vertex` again.
+pub fn unpack_vertex(&[mid, p1, p2]: &[u64; 3]) -> Vertex {
+    Vertex {
+        p1: unpack(p1),
+        mid: unpack(mid),
+        p2: unpack(p2),
+    }
 }
 
 /// An interned string or typed value: its type and the bytes of its string.
@@ -291,7 +337,7 @@ pub struct Chunk {
     /// `--no-simplification-of-shared-nodes`: the vertices with their
     /// neighbors, and the nodes that must be kept, as tippecanoe writes them
     /// to its vertex and node files.
-    pub vertices: Vec<tippecanoe::serial::Vertex>,
+    pub vertices: SharedVertices,
     pub nodes: Vec<u64>,
     /// Features that `--generate-ids` gives the id seq + 1.
     pub generate_ids: Vec<u32>,
@@ -399,6 +445,50 @@ pub fn layermap_entry(id: usize, l: &ChunkLayer) -> LayermapEntry {
 mod tests {
     use super::*;
     use tippecanoe::mvt::MVT_STRING;
+
+    /// Packed vertices sort as `Vertex` does, and points off the grid stay
+    /// whole.
+    #[test]
+    fn packed_vertices_sort_as_vertices() {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        // few distinct coordinates, so that points and mids repeat
+        let mut coord = || match next() % 4 {
+            0 => 0,
+            1 => (1i64 << 32) - 1,
+            _ => (next() % 5) as i64 * 0x3FFF_FFFF,
+        };
+        let mut point = || Draw::new(VT_MOVETO, coord(), coord());
+
+        let mut vertices = SharedVertices::default();
+        let mut whole = Vec::new();
+        for _ in 0..5000 {
+            let v = Vertex::new(point(), point(), point());
+            vertices.push(v);
+            whole.push(v);
+        }
+        assert!(vertices.wide.is_empty());
+        vertices.packed.sort_unstable();
+        whole.sort_unstable();
+        for (p, w) in vertices.packed.iter().zip(&whole) {
+            assert_eq!(unpack(p[0]), w.mid);
+            assert_eq!(unpack(p[1]), w.p1);
+            assert_eq!(unpack(p[2]), w.p2);
+        }
+
+        let off = Draw::new(VT_MOVETO, -1, 5);
+        let far = Draw::new(VT_MOVETO, 3, 1i64 << 32);
+        assert_eq!(pack(off), None);
+        assert_eq!(pack(far), None);
+        vertices.push(Vertex::new(off, point(), point()));
+        vertices.push(Vertex::new(point(), far, point()));
+        assert_eq!(vertices.wide.len(), 2);
+    }
 
     #[test]
     fn interning() {

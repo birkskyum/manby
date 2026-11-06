@@ -136,6 +136,10 @@ manby -zg --drop-densest-as-needed --tile-format=mlt -o places.pmtiles places.ge
 
 DESIGN.md describes the choices behind the tiles, and `make test-golden-mlt` checks them against the MVT tiles of the same runs.
 
+## Fitting each tile on its own
+
+When a tile is too big, tippecanoe raises its threshold for dropping, coalescing or clustering until it fits, then makes the whole zoom level again with the highest threshold any tile needed. `--as-needed-per-tile` keeps each tile's own threshold instead. Only the tiles that are too big are thinned, so the others keep more, but neighboring tiles can be thinned differently, which can show at tile edges. On the census tracts, the tiles of z5 keep 67,163 tract polygons rather than 17,094, and the run is 1.2 times faster. The tiles are not tippecanoe's.
+
 ## Thanks
 
 manby is built on tippecanoe. [Erica Fischer](https://github.com/e-n-f) started it in 2014 and, over twelve years at Mapbox and then at Felt, wrote nearly all of it. The way it thins features evenly across a zoom level until every tile fits, and the test suite that pins all of that down, are what manby keeps, and they are her work. Thank you, Erica.

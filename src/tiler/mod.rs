@@ -113,6 +113,9 @@ pub struct TileOptions {
     pub threads: usize,
     /// Compress with libdeflate instead of zlib (different tiles).
     pub fast: bool,
+    /// `--as-needed-per-tile`: each tile keeps its own thresholds, and no
+    /// zoom level is made again (different tiles).
+    pub as_needed_per_tile: bool,
     /// Store every tile as zlib compresses it, as tippecanoe does.
     pub zlib_tiles: bool,
     /// Report each zoom level's passes and compression to stderr.
@@ -184,6 +187,7 @@ impl Default for TileOptions {
             quiet: true,
             threads: 0,
             fast: false,
+            as_needed_per_tile: false,
             zlib_tiles: false,
             timing: false,
             trace: false,
@@ -247,6 +251,7 @@ impl TileOptions {
             quiet: o.quiet,
             threads: o.threads,
             fast: o.fast,
+            as_needed_per_tile: o.as_needed_per_tile,
             zlib_tiles: o.zlib_tiles,
             timing: false,
             trace: false,

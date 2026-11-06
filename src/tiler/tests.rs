@@ -384,6 +384,58 @@ fn points_drop_densest_with_retries() {
     assert!(check(&store, &o) > 50);
 }
 
+/// Tiles `store` with `--as-needed-per-tile` and checks that every tile fits,
+/// that the tiles are the same on 1 and 18 threads, and that each tile keeps
+/// at least what it keeps when its zoom level is made again with the highest
+/// threshold, and some keep more.
+fn check_per_tile(store: &FeatureStore, o: &TileOptions) {
+    let _g = GLOBALS.lock().unwrap_or_else(|e| e.into_inner());
+    let run = |as_needed_per_tile: bool, threads: usize| {
+        set_globals(o);
+        let sink = MemorySink::default();
+        let topts = TileOptions {
+            threads,
+            as_needed_per_tile,
+            ..o.clone()
+        };
+        tile_with(store, &topts, &sink).expect("tiling failed");
+        sink.tiles.into_inner().unwrap()
+    };
+    let zoom = run(false, 4);
+    let tile = run(true, 1);
+    assert!(tile == run(true, 18), "per tile differs with 18 threads");
+    assert_eq!(
+        zoom.keys().collect::<Vec<_>>(),
+        tile.keys().collect::<Vec<_>>()
+    );
+    let mut more = 0;
+    for (k, v) in &tile {
+        assert!(v.len() <= o.max_tile_size, "tile {:?} is too big", k);
+        let (a, b) = (decoded(v).len(), decoded(&zoom[k]).len());
+        assert!(a >= b, "tile {:?} keeps less per tile", k);
+        more += (a > b) as usize;
+    }
+    assert!(more > 0, "no tile keeps more per tile");
+}
+
+#[test]
+fn points_drop_densest_per_tile() {
+    let store = points(20000, 11, 18, 10);
+    let mut o = options(10);
+    flag(&mut o, A_DROP_DENSEST_AS_NEEDED);
+    o.max_tile_size = 20000;
+    check_per_tile(&store, &o);
+}
+
+#[test]
+fn polygons_coalesce_densest_per_tile() {
+    let store = polygons(3000, 41, 18, 10);
+    let mut o = options(10);
+    flag(&mut o, A_COALESCE_DENSEST_AS_NEEDED);
+    o.max_tile_size = 30000;
+    check_per_tile(&store, &o);
+}
+
 #[test]
 fn points_drop_fraction_and_feature_limit() {
     let store = points(20000, 13, 18, 9);

@@ -95,6 +95,10 @@ pub struct Options {
     pub memory_budget: Option<u64>,
     /// Make different tiles from tippecanoe's where that is faster. See DESIGN.md.
     pub fast: bool,
+    /// `--as-needed-per-tile`: a tile too big keeps the thresholds it raised
+    /// for itself, rather than its zoom level being made again with the
+    /// highest. Different tiles from tippecanoe's.
+    pub as_needed_per_tile: bool,
     /// `--compression=zlib`: store every tile as zlib compresses it, so the
     /// archive is byte for byte tippecanoe's. Otherwise tiles that fit
     /// whatever zlib does are stored compressed with libdeflate.
@@ -219,6 +223,7 @@ impl Default for Options {
             threads: 0,
             memory_budget: None,
             fast: false,
+            as_needed_per_tile: false,
             zlib_tiles: false,
             tile_format: crate::mlt::TileFormat::Mvt,
             mlt_profile: crate::mlt::MltProfile::Web,
@@ -1124,6 +1129,7 @@ fn long_options_orig() -> Vec<LongOption> {
         opt("version", NO, b'v'),
         heading("manby"),
         opt("fast", NO, b'~'),
+        opt("as-needed-per-tile", NO, b'~'),
         opt("compression", REQ, b'~'),
         opt("threads", REQ, b'~'),
         opt("memory-budget", REQ, b'~'),
@@ -1382,6 +1388,7 @@ pub fn parse_args(argv: &[String]) -> crate::Result<Options> {
                                 as usize
                     }
                     "fast" => o.fast = true,
+                    "as-needed-per-tile" => o.as_needed_per_tile = true,
                     "compression" => match arg {
                         "zlib" => o.zlib_tiles = true,
                         "libdeflate" => o.zlib_tiles = false,
@@ -1772,10 +1779,10 @@ mod tests {
         assert_eq!(o.inputs, vec!["in.geojsonl".to_string()]);
 
         let mut o = parse_args(&args(
-            "tippecanoe -f -o out.mbtiles -z12 -Z0 --coalesce-densest-as-needed --fast in.json",
+            "tippecanoe -f -o out.mbtiles -z12 -Z0 --coalesce-densest-as-needed --fast --as-needed-per-tile in.json",
         ))
         .unwrap();
-        assert!(o.fast);
+        assert!(o.fast && o.as_needed_per_tile);
         assert!(matches!(o.output, Output::Mbtiles(_)));
         o.tippecanoe_cpus = 4;
         o.resolve().unwrap();

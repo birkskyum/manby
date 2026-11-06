@@ -94,6 +94,10 @@ Opt-in changes that make different tiles, measured against the default mode for 
 - Predicting each feature's share of the tile size and choosing the drop threshold in one pass, instead of encode-and-retry.
 - Reading the features of a low zoom tile in drop-priority order, so a zoom 0 tile touches only the features it keeps.
 
+## Thresholds per tile
+
+`--as-needed-per-tile` keeps the thresholds each tile raised for itself, rather than folding the highest into its level's and making the level again. It is tippecanoe's `--force-feature-limit` for every `-as-needed` strategy, and it is how tylertoo fits its tiles. It is 1.1 to 1.2 times faster on the tracts and the points, and no faster on the roads. Most of what remains is the attempts at the tiles that are too big, each of which makes the tile again (99 attempts at the 52 tiles of z5 on the tracts at z7). Letting more zoom levels run ahead of the finished ones (`LOOKAHEAD` 64 instead of 3) saved 0.1 s of 1.8 there, as the low zoom tiles then share the threads, and was left out.
+
 ## MapLibre Tiles (MLT)
 
 `--tile-format=mlt` writes MapLibre Tiles instead of Mapbox Vector Tiles. It is manby's first output beyond tippecanoe, so it is opt-in, and the default output does not change.

@@ -940,8 +940,14 @@ impl<'d, 's> Driver<'d, 's> {
         let fresh = Totals::new(level.z, level.th);
         let totals = std::mem::replace(&mut level.totals, fresh);
         let z = totals.z;
-        let next = totals.next;
         let th = level.th;
+        // With --as-needed-per-tile, each tile keeps the thresholds it raised
+        // for itself, and the level is not made again with the highest.
+        let next = if o.as_needed_per_tile {
+            th
+        } else {
+            totals.next
+        };
         let again = next.gamma > th.gamma
             || next.mingap > th.mingap
             || next.minextent > th.minextent

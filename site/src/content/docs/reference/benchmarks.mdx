@@ -44,8 +44,8 @@ With [`--memory-budget=1G`](../../guides/memory/) for manby, once each.
 
 <BarChart chart={charts.tylertooMemory} />
 
-- tylertoo is faster on the tracts, three times at z7 and 1.2 times at z12. It fits each tile on its own, where tippecanoe, and so manby, keeps one threshold for a whole zoom level and makes the level again until every tile fits.
-- Its tiles hold more. At z5 they have 61,746 tract polygons, where tippecanoe's have 17,094.
+- tylertoo is faster on the tracts, three times at z7 and 1.2 times at z12. It fits each tile on its own, where tippecanoe, and so manby, keeps one threshold for a whole zoom level and makes the level again until every tile fits. That is only part of the difference. manby fits each tile on its own too with [`--as-needed-per-tile`](../../guides/per-tile/), and is then 1.2 times faster on the tracts.
+- Its tiles hold more. At z5 they have 61,746 tract polygons, where tippecanoe's have 17,094, and manby's with `--as-needed-per-tile` 67,163.
 - At its defaults it thins points more, keeping 1,094 at z0 where tippecanoe keeps 16,384.
 
 ## Joining

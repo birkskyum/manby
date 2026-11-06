@@ -18,7 +18,7 @@ description: What manby is for, how it compares with tippecanoe and the other wa
 | --- | --- | --- | --- | --- |
 | tippecanoe | C++ | GeoJSON, FlatGeobuf, CSV, Geobuf | Drops, coalesces or clusters features evenly across each zoom level until its tiles fit | In review |
 | <span class="whitespace-nowrap">tippecanoe-rs</span> | Rust | As tippecanoe | As tippecanoe, with its tiles | No |
-| manby | Rust | As tippecanoe, and [other formats by way of GDAL](../guides/other-formats/) | As tippecanoe, with its tiles | Yes |
+| manby | Rust | As tippecanoe, and [other formats by way of GDAL](../guides/other-formats/) | As tippecanoe, with its tiles, or [each tile on its own](../guides/per-tile/) | Yes |
 | tylertoo | Rust, also from Python | GeoParquet | A size limit on each tile on its own, with its own thinning and simplification, so not tippecanoe's tiles | No |
 | planetiler | Java | OpenStreetMap, Shapefile, GeoPackage, GeoJSON, GeoParquet | A profile, in Java or YAML, decides what each zoom level keeps | Yes |
 | GDAL (ogr2ogr) | C++ | Almost any vector format | Each tile on its own, at a lower resolution past 500 kB, then only its largest features | No |
@@ -35,7 +35,7 @@ A line-by-line Rust port of tippecanoe, in [manby's repository](https://github.c
 
 ### tylertoo
 
-[tylertoo](https://github.com/geoparquet-io/tylertoo) tiles GeoParquet into PMTiles, from the command line or from Python, with remote reads and builds split across machines. It fits each tile on its own rather than a zoom level at a time, so its tiles are not tippecanoe's. On [manby's benchmarks](../reference/benchmarks/#against-tylertoo) it is faster on the census tracts and slower on points and roads, with three to eight times manby's memory.
+[tylertoo](https://github.com/geoparquet-io/tylertoo) tiles GeoParquet into PMTiles, from the command line or from Python, with remote reads and builds split across machines. It fits each tile on its own rather than a zoom level at a time, so its tiles are not tippecanoe's. manby does that too with [`--as-needed-per-tile`](../guides/per-tile/). On [manby's benchmarks](../reference/benchmarks/#against-tylertoo) it is faster on the census tracts and slower on points and roads, with three to eight times manby's memory.
 
 ### planetiler
 

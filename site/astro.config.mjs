@@ -50,6 +50,7 @@ export default defineConfig({
 					items: [
 						{ label: 'Inputs larger than memory', slug: 'guides/memory' },
 						{ label: 'Joining tilesets', slug: 'guides/join' },
+						{ label: 'Fitting each tile on its own', slug: 'guides/per-tile' },
 						{ label: "tippecanoe's other programs", slug: 'guides/programs' },
 						{ label: 'MapLibre Tiles', slug: 'guides/mlt' },
 						{ label: 'Other formats', slug: 'guides/other-formats' },

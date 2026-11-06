@@ -310,6 +310,8 @@ pub fn serialize_feature(
     }
 
     if o.prevent.get(P_SIMPLIFY_SHARED_NODES) {
+        // can leave no geometry, for a line or polygon whose points all fall
+        // on one point of the world grid; the feature is kept, as in the C++
         scaled_geometry = remove_noop(scaled_geometry, t, 0);
         shared_nodes(chunk, cfg, t, &scaled_geometry);
     }
@@ -411,6 +413,11 @@ pub fn serialize_feature(
         let scaled_center = center_of_mass_mp(&scaled_geometry);
         midx = cfg.SHIFT_LEFT(scaled_center.x) & ((1i64 << 32) - 1);
         midy = cfg.SHIFT_LEFT(scaled_center.y) & ((1i64 << 32) - 1);
+    } else if scaled_geometry.is_empty() {
+        // Emptied by --no-simplification-of-shared-nodes. The C++ reads past the
+        // end of the empty geometry here; the bbox center is a defined stand-in.
+        midx = (sf_bbox[0] / 2 + sf_bbox[2] / 2) & ((1i64 << 32) - 1);
+        midy = (sf_bbox[1] / 2 + sf_bbox[3] / 2) & ((1i64 << 32) - 1);
     } else {
         // An arbitrary but predictable point from the geometry, chosen by a
         // hash of the geometry, as the index point.

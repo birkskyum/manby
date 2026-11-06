@@ -32,7 +32,7 @@ use std::io::{Read, Write};
 use rayon::prelude::*;
 use tippecanoe::errors::*;
 
-use chunk::{Chunk, Interner, Message, MessageKind, SHARDS, Stat};
+use chunk::{Chunk, Interner, Message, MessageKind, SHARDS, SharedVertices, Stat};
 use serialize::Config;
 
 use crate::Error;
@@ -1076,6 +1076,17 @@ fn merge(
     let mut ids = join_sparse(&mut parts, &feature_counts, |c| &mut c.ids);
     let extents = join_sparse(&mut parts, &feature_counts, |c| &mut c.extents);
     let label_points = join_sparse(&mut parts, &feature_counts, |c| &mut c.label_points);
+    // Taken out, so that each chunk's part is freed as it is merged.
+    let (shared_vertices, chunk_nodes): (Vec<SharedVertices>, Vec<Vec<u64>>) = parts
+        .chunks
+        .iter_mut()
+        .map(|a| {
+            (
+                std::mem::take(&mut a.chunk.vertices),
+                std::mem::take(&mut a.chunk.nodes),
+            )
+        })
+        .unzip();
     let chunks: Vec<&Chunk> = parts.chunks.iter().map(|a| &a.chunk).collect();
 
     // Layers, by name, in the order they first appear.
@@ -1253,7 +1264,7 @@ fn merge(
         .prevent
         .get(tippecanoe::options::P_SIMPLIFY_SHARED_NODES)
     {
-        shared_nodes(&chunks, options.geometry_scale)
+        shared_nodes(shared_vertices, chunk_nodes, options.geometry_scale)
     } else {
         (Vec::new(), Vec::new())
     };
@@ -1384,19 +1395,32 @@ fn renamed_layers(numbers: &[Vec<i64>], layers: &[Layer]) -> Option<Vec<Vec<u32>
 /// middle points of vertices whose neighbors differ between features. Sorted
 /// and without duplicates, with tippecanoe's bloom filter of them.
 fn shared_nodes(
-    chunks: &[&Chunk],
+    parts: Vec<SharedVertices>,
+    chunk_nodes: Vec<Vec<u64>>,
     geometry_scale: i32,
 ) -> (Vec<tippecanoe::serial::Node>, Vec<u8>) {
-    let mut vertices: Vec<tippecanoe::serial::Vertex> = chunks
-        .iter()
-        .flat_map(|c| c.vertices.iter().copied())
-        .collect();
-    vertices.par_sort_unstable();
+    let mut nodes: Vec<u64> = chunk_nodes.concat();
 
-    let mut nodes: Vec<u64> = chunks
-        .iter()
-        .flat_map(|c| c.nodes.iter().copied())
-        .collect();
+    // Each part is freed as soon as it is copied, so the vertices are held
+    // about once, not twice. The packed and the wide ones are sorted apart and
+    // walked together in Vertex order, so a few wide ones keep the rest packed.
+    let mut packed: Vec<[u64; 3]> = Vec::with_capacity(parts.iter().map(|p| p.packed.len()).sum());
+    let mut wide: Vec<tippecanoe::serial::Vertex> = Vec::new();
+    for part in parts {
+        packed.extend_from_slice(&part.packed);
+        wide.extend_from_slice(&part.wide);
+    }
+    packed.par_sort_unstable();
+    wide.par_sort_unstable();
+    let mut packed = packed.iter().map(chunk::unpack_vertex).peekable();
+    let mut wide = wide.into_iter().peekable();
+    let vertices = std::iter::from_fn(|| match (packed.peek(), wide.peek()) {
+        (Some(p), Some(w)) if w < p => wide.next(),
+        (Some(_), _) => packed.next(),
+        (None, _) => wide.next(),
+    });
+
+    // tippecanoe starts from a vertex with all three points at 0, 0
     let zero = tippecanoe::geometry::Draw::new(tippecanoe::geometry::VT_MOVETO, 0, 0);
     let mut prev = tippecanoe::serial::Vertex::new(zero, zero, zero);
     for v in vertices {
@@ -1433,6 +1457,60 @@ fn shared_nodes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tippecanoe::geometry::{Draw, VT_MOVETO};
+    use tippecanoe::serial::Vertex;
+
+    /// shared_nodes() over packed and wide vertices finds the nodes that sorting
+    /// every vertex as a `Vertex`, as tippecanoe does, finds.
+    #[test]
+    fn shared_nodes_same_with_wide_vertices() {
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for off_grid in [false, true] {
+            // few distinct coordinates, so that mids repeat with different neighbors
+            let mut coord = || match next() % 8 {
+                0 if off_grid => -3,
+                1 if off_grid => (1i64 << 32) + 5,
+                _ => (next() % 6) as i64 * 0x3000_0000,
+            };
+            let mut point = || Draw::new(VT_MOVETO, coord(), coord());
+            let vertices: Vec<Vertex> = (0..20_000)
+                .map(|_| Vertex::new(point(), point(), point()))
+                .collect();
+
+            let mut reference = vertices.clone();
+            reference.sort_unstable();
+            let zero = Draw::new(VT_MOVETO, 0, 0);
+            let mut prev = Vertex::new(zero, zero, zero);
+            let mut want = Vec::new();
+            for v in reference {
+                if v.mid == prev.mid && (v.p1 != prev.p1 || v.p2 != prev.p2) {
+                    want.push(tippecanoe::projection::encode_vertex(
+                        v.mid.x as u32,
+                        v.mid.y as u32,
+                    ));
+                }
+                prev = v;
+            }
+            want.sort_unstable();
+            want.dedup();
+
+            let mut parts: Vec<SharedVertices> =
+                (0..3).map(|_| SharedVertices::default()).collect();
+            for (i, v) in vertices.into_iter().enumerate() {
+                parts[i % 3].push(v);
+            }
+            assert_eq!(parts.iter().any(|p| !p.wide.is_empty()), off_grid);
+            let (got, _) = shared_nodes(parts, Vec::new(), 0);
+            let got: Vec<u64> = got.into_iter().map(|n| n.index).collect();
+            assert_eq!(got, want, "off grid: {}", off_grid);
+        }
+    }
 
     #[test]
     fn layer_names() {

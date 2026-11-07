@@ -60,6 +60,16 @@ import manby
 manby.tile("places.geojson", "places.pmtiles", maximum_zoom="g", drop_densest_as_needed=True)
 ```
 
+## From R
+
+The R package tiles files, sf data frames and DuckDB tables. [From R](../guides/r/) has more.
+
+```r
+install.packages("manby", repos = c("https://birkskyum.r-universe.dev", "https://cloud.r-project.org"))
+
+manby::tile(sf::st_read("places.gpkg"), "places.pmtiles", maximum_zoom = "g", drop_densest_as_needed = TRUE)
+```
+
 ## Testing
 
 ```sh

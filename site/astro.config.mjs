@@ -54,6 +54,7 @@ export default defineConfig({
 						{ label: "tippecanoe's other programs", slug: 'guides/programs' },
 						{ label: 'MapLibre Tiles', slug: 'guides/mlt' },
 						{ label: 'GeoParquet, DuckDB and Python', slug: 'guides/python' },
+						{ label: 'From R', slug: 'guides/r' },
 						{ label: 'Other formats', slug: 'guides/other-formats' },
 					],
 				},

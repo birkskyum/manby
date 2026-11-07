@@ -3,8 +3,8 @@
 # (release-plz.toml). Merging that PR publishes the crates that changed to
 # crates.io, and tags and makes manby's GitHub release. The jobs after that build
 # manby for macOS and Linux, run each build on its own platform, and publish the
-# wheels to PyPI and the binaries to the release. Run by hand, it only builds
-# and runs.
+# wheels to PyPI and the binaries to the release, from which the R package
+# downloads manby. Run by hand, it only builds and runs.
 #
 # crates.io and PyPI trust this workflow in the `release` environment, so no
 # tokens are kept here.
@@ -51,14 +51,26 @@ jobs:
           command: release-pr
         env:
           GITHUB_TOKEN: ${{ github.token }}
-      # A PR that this workflow's token opens or updates starts no workflows, so
-      # its checks are started here.
+      # The R package downloads the manby of its own version, so it takes the
+      # version that the release PR gives manby. A PR that this workflow's
+      # token opens or updates starts no workflows, so its checks are started
+      # here.
       - env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ steps.release-plz.outputs.pr }}
         run: |
           branch=$(jq -r '.head_branch // empty' <<< "${PR:-null}")
           if [ -n "$branch" ]; then
+            git fetch origin "$branch"
+            git checkout FETCH_HEAD
+            version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "manby") | .version')
+            sed -i "s/^Version: .*/Version: $version/" r/DESCRIPTION
+            if ! git diff --quiet; then
+              git -c user.name='github-actions[bot]' \
+                -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+                commit -am "chore: version the R package $version"
+              git push "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" "HEAD:$branch"
+            fi
             gh workflow run ci.yml -R "$GITHUB_REPOSITORY" --ref "$branch"
             gh workflow run pr-title.yml -R "$GITHUB_REPOSITORY" --ref "$branch"
           fi

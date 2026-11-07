@@ -1,6 +1,6 @@
 # manby
 
-manby builds vector tilesets from GeoJSON, FlatGeobuf, CSV, Geobuf, GeoParquet or Arrow features, and from DuckDB queries and data frames in Python. It makes the same tiles as [tippecanoe](https://github.com/felt/tippecanoe), in less memory, ten to eighteen times faster on a Mac and eight to fifteen times faster on Linux, more where tippecanoe's disk slows it down. `manby join` is tippecanoe's tile-join, two to thirty-five times faster.
+manby builds vector tilesets from GeoJSON, FlatGeobuf, CSV, Geobuf, GeoParquet or Arrow features, and from DuckDB queries and data frames in Python and R. It makes the same tiles as [tippecanoe](https://github.com/felt/tippecanoe), in less memory, ten to eighteen times faster on a Mac and eight to fifteen times faster on Linux, more where tippecanoe's disk slows it down. `manby join` is tippecanoe's tile-join, two to thirty-five times faster.
 
 The `manby` command takes tippecanoe's options:
 
@@ -17,6 +17,12 @@ import duckdb, manby
 
 places = duckdb.sql("SELECT name, geometry FROM 'places.parquet' WHERE country = 'DE'")
 manby.tile(places, "places.pmtiles", maximum_zoom="g", drop_densest_as_needed=True)
+```
+
+The R package, from [R-universe](https://birkskyum.r-universe.dev/manby), tiles sf data frames and DuckDB tables the same way.
+
+```r
+manby::tile(sf::st_read("places.gpkg"), "places.pmtiles", maximum_zoom = "g", drop_densest_as_needed = TRUE)
 ```
 
 ## Speed

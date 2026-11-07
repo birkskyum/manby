@@ -1,0 +1,30 @@
+# A pull request's title becomes its commit on main, and its type decides the
+# next version and the changelog (release-plz.toml), so it has to have one.
+name: PR title
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  title:
+    runs-on: ubuntu-24.04
+    steps:
+      - env:
+          TITLE: ${{ github.event.pull_request.title }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # run by hand on a pull request's branch, as for the release PR
+          if [ -z "$TITLE" ]; then
+            TITLE=$(gh pr view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --json title --jq .title)
+          fi
+          echo "$TITLE"
+          if ! printf '%s\n' "$TITLE" | grep -Eq '^(feat|fix|perf|refactor|docs|test|build|ci|chore|revert|style)(\([a-z0-9_-]+\))?!?: [^ ]'; then
+            echo "::error::Start the title with its type, such as feat:, fix:, perf:, docs: or chore: (https://www.conventionalcommits.org)."
+            exit 1
+          fi

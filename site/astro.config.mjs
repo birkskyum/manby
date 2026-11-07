@@ -62,6 +62,7 @@ export default defineConfig({
 						{ label: 'Benchmarks', slug: 'reference/benchmarks' },
 						{ label: 'How it works', slug: 'reference/how' },
 						{ label: 'Differences from tippecanoe', slug: 'reference/differences' },
+						{ label: 'Changelog', slug: 'reference/changelog' },
 					],
 				},
 			],
@@ -69,5 +70,7 @@ export default defineConfig({
 	],
 	vite: {
 		plugins: [tailwindcss()],
+		// the changelog page shows the repository's CHANGELOG.md
+		server: { fs: { allow: ['..'] } },
 	},
 });

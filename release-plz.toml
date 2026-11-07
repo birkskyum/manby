@@ -12,6 +12,7 @@ changelog_update = false
 git_tag_enable = false
 git_release_enable = false
 pr_labels = ["release"]
+repo_url = "https://github.com/birkskyum/manby"
 
 [[package]]
 name = "manby"
@@ -26,8 +27,19 @@ git_release_name = "manby {{ version }}"
 [changelog]
 header = """
 The changes in each version of manby, from the titles of the pull requests that made them.
-
 """
+body = """
+## [{{ version }}]{%- if release_link -%}({{ release_link }}){% endif %} - {{ timestamp | date(format="%Y-%m-%d") }}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group }}
+{% for commit in commits %}
+- {% if commit.scope %}*({{ commit.scope }})* {% endif %}{% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message | upper_first }}
+{%- endfor %}
+{% endfor %}"""
+commit_preprocessors = [
+    # the pull request a squash merge names, as a link
+    { pattern = '\(#([0-9]+)\)', replace = "([#${1}](https://github.com/birkskyum/manby/pull/${1}))" },
+]
 commit_parsers = [
     { message = "^feat", group = "Added" },
     { message = "^fix", group = "Fixed" },
@@ -36,3 +48,4 @@ commit_parsers = [
     { message = ".*", group = "Changed" },
 ]
 protect_breaking_commits = true
+trim = false

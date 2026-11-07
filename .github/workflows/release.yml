@@ -1,0 +1,165 @@
+# Builds manby for macOS and Linux and runs each build on its own platform. On a
+# version tag it then publishes the wheels to PyPI, the binaries to a GitHub
+# release and the crate to crates.io. Run by hand, it only builds and runs.
+#
+# PyPI and crates.io trust this workflow in the `release` environment, so no
+# tokens are kept here.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # zlib's exact output decides which features a tile near the size limit keeps,
+  # so every build has the same zlib, built in.
+  LIBZ_SYS_STATIC: '1'
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-26
+          - target: x86_64-apple-darwin
+            runner: macos-26
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            manylinux: '2_28'
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            manylinux: '2_28'
+            # jemalloc for pages up to 64 kB, so it runs on kernels with 16 kB
+            # pages, such as Asahi's
+            docker: -e JEMALLOC_SYS_WITH_LG_PAGE=16
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+            manylinux: musllinux_1_2
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04
+            manylinux: musllinux_1_2
+            docker: -e JEMALLOC_SYS_WITH_LG_PAGE=16
+    steps:
+      - uses: actions/checkout@v7
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux || 'auto' }}
+          docker-options: -e LIBZ_SYS_STATIC=1 ${{ matrix.docker }}
+          rust-toolchain: 1.98.1
+          maturin-version: v1.16.0
+          args: --release --locked --out dist
+      - name: Binary
+        run: |
+          d=manby-${{ matrix.target }}
+          mkdir $d
+          unzip -j dist/*.whl '*.data/scripts/manby' -d $d
+          chmod +x $d/manby
+          cp LICENSE.md README.md $d/
+          tar -czf $d.tar.gz $d
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheel-${{ matrix.target }}
+          path: dist/*.whl
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bin-${{ matrix.target }}
+          path: manby-${{ matrix.target }}.tar.gz
+
+  run:
+    name: run ${{ matrix.target }}
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-26
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: bin-${{ matrix.target }}
+      - name: Tile
+        run: |
+          tar -xzf manby-${{ matrix.target }}.tar.gz
+          m=./manby-${{ matrix.target }}/manby
+          $m --version
+          cat > in.geojson <<'EOF'
+          {"type":"Feature","properties":{"n":1},"geometry":{"type":"Point","coordinates":[11.4,48.2]}}
+          {"type":"Feature","properties":{"n":2},"geometry":{"type":"LineString","coordinates":[[11.4,48.2],[11.5,48.3]]}}
+          EOF
+          $m -q -z8 -o out.pmtiles in.geojson
+          $m -q -z8 --tile-format=mlt -o out-mlt.pmtiles in.geojson
+          ls -l out.pmtiles out-mlt.pmtiles
+
+  pypi:
+    needs: run
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: wheel-*
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github:
+    needs: run
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: bin-*
+          path: bin
+          merge-multiple: true
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd bin
+          sha256sum *.tar.gz > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" *.tar.gz SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --title "manby ${GITHUB_REF_NAME#v}" \
+            --generate-notes --verify-tag
+
+  crates-io:
+    needs: run
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal
+          cargo +1.98.1 publish -p manby --locked

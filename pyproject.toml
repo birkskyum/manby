@@ -1,0 +1,32 @@
+# The manby command as a Python wheel, as ruff and uv ship theirs, so that
+# `pip install manby` or `uvx manby` runs it without Rust. The wheels are built
+# by .github/workflows/release.yml.
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "manby"
+description = "Builds vector tilesets from geographic features, like tippecanoe, several times faster"
+readme = "README.md"
+license = "BSD-2-Clause"
+license-files = ["LICENSE.md"]
+requires-python = ">=3.8"
+keywords = ["tippecanoe", "vector-tiles", "pmtiles", "mbtiles", "geojson"]
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering :: GIS",
+]
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://birkskyum.github.io/manby/"
+Repository = "https://github.com/birkskyum/manby"
+
+[tool.maturin]
+bindings = "bin"
+features = ["mlt"]
+strip = true

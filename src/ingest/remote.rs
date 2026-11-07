@@ -144,15 +144,30 @@ mod imp {
         std::env::var_os(name).is_some_and(|v| !v.is_empty())
     }
 
+    /// The HTTP client's options: Mozilla's root certificates as well as the
+    /// system's, as a container may have none, and plain HTTP for `http://`.
+    fn client_options(allow_http: bool) -> object_store::ClientOptions {
+        let mut o = object_store::ClientOptions::new().with_allow_http(allow_http);
+        for cert in webpki_root_certs::TLS_SERVER_ROOT_CERTS {
+            if let Ok(c) = object_store::Certificate::from_der(cert.as_ref()) {
+                o = o.with_root_certificate(c);
+            }
+        }
+        o
+    }
+
     /// The store of a URL, and the path in it.
     async fn store(url: &Url) -> std::result::Result<(Arc<dyn ObjectStore>, Path), String> {
         let (scheme, path) = ObjectStoreScheme::parse(url).map_err(|e| e.to_string())?;
         let path = Path::from_url_path(path).map_err(|e| e.to_string())?;
         let bucket = url.host_str().unwrap_or_default().to_string();
+        let options = client_options(url.scheme() == "http");
         let store: Arc<dyn ObjectStore> = match scheme {
             ObjectStoreScheme::AmazonS3 => {
                 use object_store::aws::AmazonS3Builder;
-                let mut b = AmazonS3Builder::from_env().with_url(url.as_str());
+                let mut b = AmazonS3Builder::from_env()
+                    .with_url(url.as_str())
+                    .with_client_options(options.clone());
                 let signed = [
                     "AWS_ACCESS_KEY_ID",
                     "AWS_WEB_IDENTITY_TOKEN_FILE",
@@ -166,7 +181,6 @@ mod imp {
                     b = b.with_skip_signature(true);
                 }
                 if !set("AWS_REGION") && !set("AWS_DEFAULT_REGION") && !set("AWS_ENDPOINT") {
-                    let options = object_store::ClientOptions::default();
                     if let Ok(region) =
                         object_store::aws::resolve_bucket_region(&bucket, &options).await
                     {
@@ -177,7 +191,9 @@ mod imp {
             }
             ObjectStoreScheme::GoogleCloudStorage => {
                 use object_store::gcp::GoogleCloudStorageBuilder;
-                let mut b = GoogleCloudStorageBuilder::from_env().with_url(url.as_str());
+                let mut b = GoogleCloudStorageBuilder::from_env()
+                    .with_url(url.as_str())
+                    .with_client_options(options);
                 let adc = std::env::var_os("HOME").is_some_and(|h| {
                     std::path::Path::new(&h)
                         .join(".config/gcloud/application_default_credentials.json")
@@ -199,7 +215,9 @@ mod imp {
             }
             ObjectStoreScheme::MicrosoftAzure => {
                 use object_store::azure::MicrosoftAzureBuilder;
-                let mut b = MicrosoftAzureBuilder::from_env().with_url(url.as_str());
+                let mut b = MicrosoftAzureBuilder::from_env()
+                    .with_url(url.as_str())
+                    .with_client_options(options);
                 let signed = [
                     "AZURE_STORAGE_ACCOUNT_KEY",
                     "AZURE_STORAGE_ACCESS_KEY",
@@ -217,9 +235,6 @@ mod imp {
             }
             ObjectStoreScheme::Http => {
                 let origin = &url[..url::Position::BeforePath];
-                // plain http too, as for a server on the local network
-                let options =
-                    object_store::ClientOptions::new().with_allow_http(url.scheme() == "http");
                 Arc::new(
                     object_store::http::HttpBuilder::new()
                         .with_url(origin)

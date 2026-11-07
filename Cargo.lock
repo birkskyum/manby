@@ -1516,6 +1516,7 @@ dependencies = [
  "tippecanoe-rs",
  "tokio",
  "url",
+ "webpki-root-certs",
  "xxhash-rust",
 ]
 

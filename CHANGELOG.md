@@ -1,5 +1,22 @@
 The changes in each version of manby, from the titles of the pull requests that made them.
 
+## [0.1.5](https://github.com/birkskyum/manby/compare/v0.1.4...v0.1.5) - 2026-11-07
+
+### Added
+
+- Tile sf data frames and DuckDB tables from R ([#15](https://github.com/birkskyum/manby/pull/15))
+- Read GeoParquet and Arrow, and tile DuckDB queries and data frames from Python ([#13](https://github.com/birkskyum/manby/pull/13))
+
+### Fixed
+
+- Read GeoJSON with a third coordinate in linear time ([#11](https://github.com/birkskyum/manby/pull/11))
+
+### Dependencies
+
+- Bump rusqlite from 0.40.2 to 0.41.1 ([#6](https://github.com/birkskyum/manby/pull/6))
+- Bump the cargo group with 2 updates ([#5](https://github.com/birkskyum/manby/pull/5))
+- Bump tikv-jemallocator from 0.6.1 to 0.7.0 ([#7](https://github.com/birkskyum/manby/pull/7))
+
 ## [0.1.4](https://github.com/birkskyum/manby/compare/v0.1.3...v0.1.4) - 2026-11-07
 
 ### Added

@@ -355,6 +355,9 @@ pub struct Chunk {
     pub area_terms: Buf<f64>,
 
     pub messages: Vec<Message>,
+    /// The once-only messages the chunk has made. Only a chunk's first can be
+    /// printed, and making one can stringify a whole feature.
+    pub once: Vec<&'static str>,
     /// A problem that stops tippecanoe: its exit status and message.
     pub fatal: Option<Fatal>,
     /// Whether this chunk took a bare geometry before it found any feature,
@@ -417,6 +420,16 @@ impl Chunk {
     }
 
     /// A message of one line.
+    /// Whether the chunk has yet to make the once-only message `key`, which it
+    /// then makes.
+    pub fn first(&mut self, key: &'static str) -> bool {
+        if self.once.contains(&key) {
+            return false;
+        }
+        self.once.push(key);
+        true
+    }
+
     pub fn message(&mut self, kind: MessageKind, line: Option<i32>, text: impl Into<Vec<u8>>) {
         self.messages.push(Message {
             kind,

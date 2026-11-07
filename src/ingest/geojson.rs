@@ -391,7 +391,7 @@ fn parse_coordinates(
         let lat = j.array_get(1).number();
         let (x, y) = (r.cfg.project)(lon, lat, 32);
 
-        if j.array_len() > 2 {
+        if j.array_len() > 2 && chunk.first("dimensions") {
             chunk.messages.push(Message {
                 kind: MessageKind::Once("dimensions"),
                 parts: vec![
@@ -469,11 +469,13 @@ fn serialize_geojson_feature1(
     let geometry_type = match geometry.hash_get(b"type") {
         Some(t) => t,
         None => {
-            let m = cat(
-                b"null geometry (additional not reported): ",
-                &json_context(feature),
-            );
-            chunk.message(MessageKind::Once("null geometry"), Some(line), m);
+            if chunk.first("null geometry") {
+                let m = cat(
+                    b"null geometry (additional not reported): ",
+                    &json_context(feature),
+                );
+                chunk.message(MessageKind::Once("null geometry"), Some(line), m);
+            }
             return Ok(());
         }
     };
@@ -663,4 +665,48 @@ fn serialize_geojson_feature1(
 
     serialize_feature(chunk, r.cfg, &mut sf, &tippecanoe_layername);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::options::parse_args;
+
+    /// The messages that `input` makes, by kind.
+    fn messages(input: &str) -> Vec<MessageKind> {
+        let argv: Vec<String> = ["tippecanoe", "-o", "out.pmtiles"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let o = parse_args(&argv).unwrap();
+        let cfg = Config::new(&o);
+        let r = Reading {
+            cfg: &cfg,
+            fname: "in.geojson",
+            layer: 0,
+            layername: "in",
+        };
+        let mut chunk = Chunk::new(&["in".to_string()]);
+        parse(input.as_bytes(), &r, &mut chunk, 0);
+        chunk.messages.iter().map(|m| m.kind).collect()
+    }
+
+    /// A once-only message is made once per chunk, not for each vertex or
+    /// feature: each stringifies its feature (#9).
+    #[test]
+    fn once_only_messages_made_once() {
+        let coords: Vec<String> = (0..1000)
+            .map(|i| format!("[{},{},0]", 10.0 + i as f64 * 1e-5, 50.0))
+            .collect();
+        let line = format!(
+            r#"{{"type":"Feature","properties":{{}},"geometry":{{"type":"LineString","coordinates":[{}]}}}}"#,
+            coords.join(",")
+        );
+        let input = format!("{}\n{}\n", line, line);
+        assert_eq!(messages(&input), [MessageKind::Once("dimensions")]);
+
+        let null = r#"{"type":"Feature","properties":{},"geometry":{}}"#;
+        let input = format!("{}\n{}\n", null, null);
+        assert_eq!(messages(&input), [MessageKind::Once("null geometry")]);
+    }
 }

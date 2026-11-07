@@ -377,8 +377,17 @@ fn reference(o: &Options) -> Reference {
             assert_eq!(x.t() as i8, sf.t);
             assert_eq!(x.seq(), sf.seq as u64 & ((1 << 46) - 1));
         }
-        std::mem::forget(geomf);
-        std::mem::forget(indexf);
+        // The reader's files are read, so they are closed, or the golden cases
+        // together run out of descriptors (256 at macOS's default limit).
+        drop(geomf);
+        drop(indexf);
+        // SAFETY: the reader's descriptors, which nothing else closes.
+        unsafe {
+            drop(File::from_raw_fd(r.vertexfd));
+            drop(File::from_raw_fd(r.nodefd));
+        }
+        tippecanoe::memfile::memfile_close(rs.poolfile.take().unwrap());
+        tippecanoe::memfile::memfile_close(rs.treefile.take().unwrap());
     }
     features.sort_by_key(|f| f.seq);
 

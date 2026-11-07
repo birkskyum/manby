@@ -1,14 +1,18 @@
-# Builds manby for macOS and Linux and runs each build on its own platform. On a
-# version tag it then publishes the wheels to PyPI, the binaries to a GitHub
-# release and the crate to crates.io. Run by hand, it only builds and runs.
+# Releases manby. On each push to main, release-plz opens or updates the release
+# PR, with the versions and the changelog that the merged PR titles call for
+# (release-plz.toml). Merging that PR publishes the crates that changed to
+# crates.io, and tags and makes manby's GitHub release. The jobs after that build
+# manby for macOS and Linux, run each build on its own platform, and publish the
+# wheels to PyPI and the binaries to the release. Run by hand, it only builds
+# and runs.
 #
-# PyPI and crates.io trust this workflow in the `release` environment, so no
+# crates.io and PyPI trust this workflow in the `release` environment, so no
 # tokens are kept here.
 name: Release
 
 on:
   push:
-    tags: ['v*']
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -20,8 +24,72 @@ env:
   LIBZ_SYS_STATIC: '1'
 
 jobs:
+  release-pr:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: release-pr
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: rustup toolchain install 1.98.1 --profile minimal && rustup default 1.98.1
+      - uses: release-plz/action@v0.5
+        id: release-plz
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      # A PR that this workflow's token opens or updates starts no workflows, so
+      # its checks are started here.
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.release-plz.outputs.pr }}
+        run: |
+          branch=$(jq -r '.head_branch // empty' <<< "${PR:-null}")
+          if [ -n "$branch" ]; then
+            gh workflow run ci.yml -R "$GITHUB_REPOSITORY" --ref "$branch"
+            gh workflow run pr-title.yml -R "$GITHUB_REPOSITORY" --ref "$branch"
+          fi
+
+  release:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    outputs:
+      tag: ${{ steps.manby.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: rustup toolchain install 1.98.1 --profile minimal && rustup default 1.98.1
+      - uses: release-plz/action@v0.5
+        id: release-plz
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - id: manby
+        env:
+          RELEASES: ${{ steps.release-plz.outputs.releases }}
+        run: |
+          tag=$(jq -r '.[] | select(.package_name == "manby") | .tag' <<< "${RELEASES:-[]}")
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
   build:
     name: build ${{ matrix.target }}
+    needs: release
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.release.outputs.tag != '') }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -49,6 +117,8 @@ jobs:
             docker: -e JEMALLOC_SYS_WITH_LG_PAGE=16
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release.outputs.tag || github.sha }}
       - uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
@@ -112,8 +182,8 @@ jobs:
           ls -l out.pmtiles out-mlt.pmtiles
 
   pypi:
-    needs: run
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [release, run]
+    if: needs.release.outputs.tag != ''
     runs-on: ubuntu-24.04
     environment: release
     permissions:
@@ -126,9 +196,9 @@ jobs:
           merge-multiple: true
       - uses: pypa/gh-action-pypi-publish@release/v1
 
-  github:
-    needs: run
-    if: startsWith(github.ref, 'refs/tags/v')
+  binaries:
+    needs: [release, run]
+    if: needs.release.outputs.tag != ''
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -140,26 +210,8 @@ jobs:
           merge-multiple: true
       - env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release.outputs.tag }}
         run: |
           cd bin
           sha256sum *.tar.gz > SHA256SUMS
-          gh release create "$GITHUB_REF_NAME" *.tar.gz SHA256SUMS \
-            --repo "$GITHUB_REPOSITORY" --title "manby ${GITHUB_REF_NAME#v}" \
-            --generate-notes --verify-tag
-
-  crates-io:
-    needs: run
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-24.04
-    environment: release
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/checkout@v7
-      - uses: rust-lang/crates-io-auth-action@v1
-        id: auth
-      - env:
-          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-        run: |
-          rustup toolchain install 1.98.1 --profile minimal
-          cargo +1.98.1 publish -p manby --locked
+          gh release upload "$TAG" *.tar.gz SHA256SUMS --clobber -R "$GITHUB_REPOSITORY"

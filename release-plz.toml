@@ -1,0 +1,51 @@
+# release-plz, run by .github/workflows/release.yml. It versions and publishes
+# the crates from the titles of the pull requests merged into main: `feat` and
+# `fix` make a patch release while manby is 0.x, and `feat!` a minor one.
+#
+# Each crate is published when its files change. Only manby has a changelog, a
+# tag and a GitHub release, and its changelog includes the other crates' changes.
+# tippecanoe-rs and its vendored crates keep upstream's version numbers: when
+# the port follows an upstream release, that pull request sets the version.
+[workspace]
+semver_check = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+pr_labels = ["release"]
+repo_url = "https://github.com/birkskyum/manby"
+
+[[package]]
+name = "manby"
+changelog_update = true
+changelog_path = "CHANGELOG.md"
+changelog_include = ["manby-wagyu", "tippecanoe-rs", "tippecanoe-rs-wagyu", "tippecanoe-rs-clipper2"]
+git_tag_enable = true
+git_tag_name = "v{{ version }}"
+git_release_enable = true
+git_release_name = "manby {{ version }}"
+
+[changelog]
+header = """
+The changes in each version of manby, from the titles of the pull requests that made them.
+"""
+body = """
+## [{{ version }}]{%- if release_link -%}({{ release_link }}){% endif %} - {{ timestamp | date(format="%Y-%m-%d") }}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group }}
+{% for commit in commits %}
+- {% if commit.scope %}*({{ commit.scope }})* {% endif %}{% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message | upper_first }}
+{%- endfor %}
+{% endfor %}"""
+commit_preprocessors = [
+    # the pull request a squash merge names, as a link
+    { pattern = '\(#([0-9]+)\)', replace = "([#${1}](https://github.com/birkskyum/manby/pull/${1}))" },
+]
+commit_parsers = [
+    { message = "^feat", group = "Added" },
+    { message = "^fix", group = "Fixed" },
+    { message = "^perf", group = "Faster or smaller" },
+    { message = "^(build|chore|ci|docs|refactor|style|test)", skip = true },
+    { message = ".*", group = "Changed" },
+]
+protect_breaking_commits = true
+trim = false

@@ -5,7 +5,9 @@
 # Each crate is published when its files change. Only manby has a changelog, a
 # tag and a GitHub release, and its changelog includes the other crates' changes.
 # tippecanoe-rs and its vendored crates keep upstream's version numbers: when
-# the port follows an upstream release, that pull request sets the version.
+# the port follows an upstream release, that pull request sets the version. A
+# dependency update still makes a patch release of each crate it touches, as
+# manby and tippecanoe-rs must be published with the same SQLite.
 [workspace]
 semver_check = false
 changelog_update = false
@@ -33,7 +35,7 @@ body = """
 {% for group, commits in commits | group_by(attribute="group") %}
 ### {{ group }}
 {% for commit in commits %}
-- {% if commit.scope %}*({{ commit.scope }})* {% endif %}{% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message | upper_first }}
+- {% if commit.scope and commit.scope != "deps" %}*({{ commit.scope }})* {% endif %}{% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message | upper_first }}
 {%- endfor %}
 {% endfor %}"""
 commit_preprocessors = [
@@ -44,6 +46,7 @@ commit_parsers = [
     { message = "^feat", group = "Added" },
     { message = "^fix", group = "Fixed" },
     { message = "^perf", group = "Faster or smaller" },
+    { message = "^chore\\(deps\\)", group = "Dependencies" },
     { message = "^(build|chore|ci|docs|refactor|style|test)", skip = true },
     { message = ".*", group = "Changed" },
 ]

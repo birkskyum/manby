@@ -880,7 +880,7 @@ dependencies = [
 
 [[package]]
 name = "manby"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -1471,7 +1471,7 @@ dependencies = [
 
 [[package]]
 name = "tippecanoe-rs"
-version = "2.82.0"
+version = "2.82.1"
 dependencies = [
  "flatbuffers",
  "flate2",

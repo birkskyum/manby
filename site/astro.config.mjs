@@ -53,6 +53,7 @@ export default defineConfig({
 						{ label: 'Fitting each tile on its own', slug: 'guides/per-tile' },
 						{ label: "tippecanoe's other programs", slug: 'guides/programs' },
 						{ label: 'MapLibre Tiles', slug: 'guides/mlt' },
+						{ label: 'GeoParquet, DuckDB and Python', slug: 'guides/python' },
 						{ label: 'Other formats', slug: 'guides/other-formats' },
 					],
 				},

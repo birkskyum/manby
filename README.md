@@ -1,6 +1,6 @@
 # manby
 
-manby builds vector tilesets from GeoJSON, FlatGeobuf, CSV or Geobuf features. It makes the same tiles as [tippecanoe](https://github.com/felt/tippecanoe), in less memory, ten to eighteen times faster on a Mac and eight to fifteen times faster on Linux, more where tippecanoe's disk slows it down. `manby join` is tippecanoe's tile-join, two to thirty-five times faster.
+manby builds vector tilesets from GeoJSON, FlatGeobuf, CSV, Geobuf, GeoParquet or Arrow features, and from DuckDB queries and data frames in Python. It makes the same tiles as [tippecanoe](https://github.com/felt/tippecanoe), in less memory, ten to eighteen times faster on a Mac and eight to fifteen times faster on Linux, more where tippecanoe's disk slows it down. `manby join` is tippecanoe's tile-join, two to thirty-five times faster.
 
 The `manby` command takes tippecanoe's options:
 
@@ -8,7 +8,16 @@ The `manby` command takes tippecanoe's options:
 manby -zg --drop-densest-as-needed -o places.pmtiles places.geojson
 ```
 
-`pip install manby` installs it on macOS and Linux, `uvx manby` runs it without installing, and the [releases](https://github.com/birkskyum/manby/releases) have the program alone. `cargo install manby` builds it, with Rust 1.89 or later. The [site](https://birkskyum.github.io/manby/) has the guides.
+`pip install manby` installs it on macOS and Linux, with a Python module, `uvx manby` runs it without installing, and the [releases](https://github.com/birkskyum/manby/releases) have the program alone. `cargo install manby` builds it, with Rust 1.89 or later. The [site](https://birkskyum.github.io/manby/) has the guides.
+
+From Python, a DuckDB query streams to manby in Arrow batches.
+
+```python
+import duckdb, manby
+
+places = duckdb.sql("SELECT name, geometry FROM 'places.parquet' WHERE country = 'DE'")
+manby.tile(places, "places.pmtiles", maximum_zoom="g", drop_densest_as_needed=True)
+```
 
 ## Speed
 

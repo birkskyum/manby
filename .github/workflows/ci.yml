@@ -1,5 +1,6 @@
 # Checks every pull request and main: the formatting, the unit tests,
-# tippecanoe's golden tests as MVT and as MLT on Linux and macOS, and the site.
+# tippecanoe's golden tests as MVT and as MLT on Linux and macOS, the Python
+# module, and the site.
 name: CI
 
 on:
@@ -40,6 +41,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: make test
       - run: make test-golden-mlt
+
+  python:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install 1.98.1 --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v10
+      - run: uvx --from 'maturin>=1.9,<2' maturin build --out dist
+      - run: |
+          uv venv
+          uv pip install dist/*.whl duckdb geopandas polars pyarrow shapely
+          .venv/bin/python tests/python/test_tile.py
 
   site:
     runs-on: ubuntu-24.04

@@ -107,6 +107,11 @@ pub struct Options {
     pub tile_format: crate::mlt::TileFormat,
     /// `--mlt-profile`: which encodings MLT tiles may use.
     pub mlt_profile: crate::mlt::MltProfile,
+    /// `--bbox`: only the rows of GeoParquet and Arrow inputs whose
+    /// geometries' bounding boxes overlap this longitude and latitude box,
+    /// as minimum longitude, minimum latitude, maximum longitude, maximum
+    /// latitude.
+    pub bbox: Option<[f64; 4]>,
 
     /// `argv[0]`, for messages.
     pub program: String,
@@ -227,6 +232,7 @@ impl Default for Options {
             zlib_tiles: false,
             tile_format: crate::mlt::TileFormat::Mvt,
             mlt_profile: crate::mlt::MltProfile::Web,
+            bbox: None,
             program: "manby".to_string(),
             commandline: String::new(),
             sources: Vec::new(),
@@ -1135,6 +1141,7 @@ fn long_options_orig() -> Vec<LongOption> {
         opt("memory-budget", REQ, b'~'),
         opt("tile-format", REQ, b'~'),
         opt("mlt-profile", REQ, b'~'),
+        opt("bbox", REQ, b'~'),
         heading(""),
         opt("prevent", REQ, b'p'),
         opt("additional", REQ, b'a'),
@@ -1419,6 +1426,15 @@ pub fn parse_args(argv: &[String]) -> crate::Result<Options> {
                         None => {
                             return err_args(format!(
                                 "{}: --tile-format must be mvt or mlt, not {}",
+                                argv0, arg
+                            ));
+                        }
+                    },
+                    "bbox" => match sscanf_f64x4(arg) {
+                        Some(b) if b[0] < b[2] && b[1] < b[3] => o.bbox = Some(b),
+                        _ => {
+                            return err_args(format!(
+                                "{}: --bbox must be minlon,minlat,maxlon,maxlat, with the minimums below the maximums, not {}",
                                 argv0, arg
                             ));
                         }

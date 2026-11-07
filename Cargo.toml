@@ -40,6 +40,13 @@ xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
 rustc-hash = "2.1"
 # manby serve
 tiny_http = "0.12"
+# GeoParquet in object storage or on the web
+object_store = { version = "0.14", default-features = false, features = ["aws", "gcp", "azure", "http"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
+futures = { version = "0.3", optional = true }
+url = { version = "2", optional = true }
+bytes = { version = "1", optional = true }
+arrow-select = "60.1"
 
 [dev-dependencies]
 libz-sys = "1.1"
@@ -48,6 +55,8 @@ libz-sys = "1.1"
 # MapLibre Tile output (`--tile-format=mlt`). mlt-core needs Rust 1.98:
 # cargo +1.98.1 build --release --features mlt
 mlt = ["dep:mlt-core"]
+# GeoParquet read from s3://, gs://, az:// and https:// URLs
+remote = ["dep:object_store", "dep:tokio", "dep:futures", "dep:url", "dep:bytes", "parquet/object_store"]
 
 [[example]]
 name = "mlt_sizes"

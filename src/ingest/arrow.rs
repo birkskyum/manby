@@ -89,24 +89,189 @@ pub fn without_extension(name: &str) -> &str {
     name
 }
 
-/// A GeoParquet file's batches and schema, with only the columns `columns`
-/// picks from the file's schema.
+/// The row groups a reader kept, of how many, where `--bbox` picked them.
+pub type Kept = Option<(usize, usize)>;
+
+/// A GeoParquet file's batches and schema, with only the columns that the
+/// features use, and with `bbox` only the row groups that may overlap it.
 pub fn open_parquet(
     file: File,
     fname: &str,
-    columns: impl Fn(&Schema) -> crate::Result<Vec<usize>>,
-) -> crate::Result<(SchemaRef, Batches)> {
+    cfg: &Config<'_>,
+    bbox: Option<&WorldBox>,
+) -> crate::Result<(SchemaRef, Batches, Kept)> {
     let builder =
         ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| read_error(fname, e))?;
-    let wanted = columns(builder.schema())?;
-    let mask = ProjectionMask::roots(builder.parquet_schema(), wanted);
-    let reader = builder
-        .with_projection(mask)
-        .with_batch_size(BATCH_ROWS)
-        .build()
-        .map_err(|e| read_error(fname, e))?;
+    let full = Table::new(builder.schema(), fname, cfg)?;
+    let mask = ProjectionMask::roots(builder.parquet_schema(), full.columns.clone());
+    let mut kept = None;
+    let mut builder = builder.with_projection(mask).with_batch_size(BATCH_ROWS);
+    if let Some(b) = bbox {
+        let groups = row_groups(builder.metadata(), builder.schema(), &full, b);
+        kept = Some((groups.len(), builder.metadata().num_row_groups()));
+        builder = builder.with_row_groups(groups);
+    }
+    let reader = builder.build().map_err(|e| read_error(fname, e))?;
     let schema = arrow_array::RecordBatchReader::schema(&reader);
-    Ok((schema, Box::new(reader)))
+    Ok((schema, Box::new(reader), kept))
+}
+
+/// `--bbox` in tippecanoe's world coordinates at zoom 32, where y grows to
+/// the south, as the minimum and maximum x and y.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorldBox {
+    pub x0: i64,
+    pub y0: i64,
+    pub x1: i64,
+    pub y1: i64,
+}
+
+impl WorldBox {
+    /// The box of longitudes and latitudes `[minlon, minlat, maxlon, maxlat]`.
+    pub fn new(b: [f64; 4]) -> WorldBox {
+        let project = PROJECTIONS[0].project;
+        WorldBox::of(project(b[0], b[1], 32), project(b[2], b[3], 32))
+    }
+
+    fn of(a: (i64, i64), b: (i64, i64)) -> WorldBox {
+        WorldBox {
+            x0: a.0.min(b.0),
+            y0: a.1.min(b.1),
+            x1: a.0.max(b.0),
+            y1: a.1.max(b.1),
+        }
+    }
+
+    fn overlaps(&self, o: &WorldBox) -> bool {
+        self.x0 <= o.x1 && o.x0 <= self.x1 && self.y0 <= o.y1 && o.y0 <= self.y1
+    }
+}
+
+/// The geometry's bounding box in world coordinates, or None for an empty
+/// or null geometry. A geometry manby can't read counts as overlapping, so
+/// that reading it reports it.
+fn geometry_box(table: &Table, g: &dyn Array, row: usize, dv: &mut DrawVec) -> Option<WorldBox> {
+    if g.is_null(row) {
+        return None;
+    }
+    dv.clear();
+    let read = if table.encoding == Encoding::Wkb {
+        let mut w = Wkb {
+            b: wkb_bytes(g, row),
+            pos: 0,
+            project: table.project,
+        };
+        w.geometry(dv).is_ok()
+    } else {
+        geoarrow(g, row, table.encoding, table.project, dv).is_some()
+    };
+    if !read {
+        return Some(WorldBox {
+            x0: i64::MIN,
+            y0: i64::MIN,
+            x1: i64::MAX,
+            y1: i64::MAX,
+        });
+    }
+    let mut points = dv.iter().filter(|d| d.op != VT_CLOSEPATH);
+    let first = points.next()?;
+    let mut b = WorldBox {
+        x0: first.x,
+        y0: first.y,
+        x1: first.x,
+        y1: first.y,
+    };
+    for d in points {
+        b.x0 = b.x0.min(d.x);
+        b.y0 = b.y0.min(d.y);
+        b.x1 = b.x1.max(d.x);
+        b.y1 = b.y1.max(d.y);
+    }
+    Some(b)
+}
+
+/// The rows of a batch whose geometries' bounding boxes overlap `bbox`.
+pub fn filter_batch(
+    table: &Table,
+    batch: &RecordBatch,
+    bbox: &WorldBox,
+) -> Result<RecordBatch, ArrowError> {
+    let g = batch.column(table.geometry).as_ref();
+    let mut dv = DrawVec::new();
+    let keep: arrow_array::BooleanArray = (0..batch.num_rows())
+        .map(|row| Some(geometry_box(table, g, row, &mut dv).is_some_and(|b| b.overlaps(bbox))))
+        .collect();
+    arrow_select::filter::filter_record_batch(batch, &keep)
+}
+
+/// The statistics of a column of a row group as f64: its minimum or maximum.
+fn statistic(s: Option<&parquet::file::statistics::Statistics>, max: bool) -> Option<f64> {
+    use parquet::file::statistics::Statistics;
+    match s? {
+        Statistics::Double(v) => if max { v.max_opt() } else { v.min_opt() }.copied(),
+        Statistics::Float(v) => if max { v.max_opt() } else { v.min_opt() }.map(|f| *f as f64),
+        _ => None,
+    }
+}
+
+/// The row groups of a GeoParquet file that may overlap `bbox`: by the
+/// statistics of its GeoParquet 1.1 bounding box columns, or of its geometry
+/// column's Parquet geospatial statistics, or all where there are neither.
+pub fn row_groups(
+    metadata: &parquet::file::metadata::ParquetMetaData,
+    schema: &Schema,
+    table: &Table,
+    bbox: &WorldBox,
+) -> Vec<usize> {
+    let descr = metadata.file_metadata().schema_descr();
+    let leaf =
+        |path: &str| (0..descr.num_columns()).find(|&i| descr.column(i).path().string() == path);
+    let geometry = schema.field(table.geometry).name();
+    // the bounding box columns' paths, as `bbox.xmin`
+    let covering: Option<[usize; 4]> = schema.metadata().get("geo").and_then(|geo| {
+        let tree = json_tree(geo)?;
+        let bbox = tree
+            .root()
+            .hash_get("columns")?
+            .hash_get(geometry)?
+            .hash_get("covering")?
+            .hash_get("bbox")?;
+        let path = |k: &str| -> Option<usize> {
+            let parts = bbox.hash_get(k)?;
+            let names: Vec<&str> = parts.array_iter().map(|p| p.string()).collect();
+            leaf(&names.join("."))
+        };
+        Some([path("xmin")?, path("ymin")?, path("xmax")?, path("ymax")?])
+    });
+    let native = leaf(geometry);
+    (0..metadata.num_row_groups())
+        .filter(|&g| {
+            let rg = metadata.row_group(g);
+            let stats = if let Some([x0, y0, x1, y1]) = covering {
+                (|| {
+                    Some([
+                        statistic(rg.column(x0).statistics(), false)?,
+                        statistic(rg.column(y0).statistics(), false)?,
+                        statistic(rg.column(x1).statistics(), true)?,
+                        statistic(rg.column(y1).statistics(), true)?,
+                    ])
+                })()
+            } else {
+                native
+                    .and_then(|i| rg.column(i).geo_statistics())
+                    .and_then(|s| s.bounding_box())
+                    .map(|b| [b.get_xmin(), b.get_ymin(), b.get_xmax(), b.get_ymax()])
+            };
+            match stats {
+                // across the antimeridian, or no statistics: read it
+                Some(s) if s[0] <= s[2] && s.iter().all(|v| v.is_finite()) => {
+                    let p = table.project;
+                    WorldBox::of(p(s[0], s[1], 32), p(s[2], s[3], 32)).overlaps(bbox)
+                }
+                _ => true,
+            }
+        })
+        .collect()
 }
 
 /// An Arrow IPC file's batches and schema, or a stream's from `r`.

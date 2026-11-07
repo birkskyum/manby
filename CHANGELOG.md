@@ -1,5 +1,11 @@
 The changes in each version of manby, from the titles of the pull requests that made them.
 
+## [0.1.6](https://github.com/birkskyum/manby/compare/v0.1.5...v0.1.6) - 2026-11-07
+
+### Added
+
+- Serve tilesets with a map of them, from the command line, R and Python ([#18](https://github.com/birkskyum/manby/pull/18))
+
 ## [0.1.5](https://github.com/birkskyum/manby/compare/v0.1.4...v0.1.5) - 2026-11-07
 
 ### Added

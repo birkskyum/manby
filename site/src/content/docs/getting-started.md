@@ -1,15 +1,29 @@
 ---
 title: Getting started
-description: Building manby, and making a first tileset with tippecanoe's options.
+description: Installing manby, and making a first tileset with tippecanoe's options.
 ---
 
-manby installs with cargo, with Rust 1.89 or later.
+manby runs on macOS and Linux, and on Windows in WSL. pip installs it.
+
+```sh
+pip install manby
+```
+
+uv runs it without installing.
+
+```sh
+uvx manby -zg --drop-densest-as-needed -o places.pmtiles places.geojson
+```
+
+The [releases](https://github.com/birkskyum/manby/releases) have the program alone, for macOS on Apple silicon and Intel, and for Linux on x86-64 and arm64, built for glibc 2.28 or later, or for musl, which runs on any Linux.
+
+cargo builds it, with Rust 1.89 or later, but without [MapLibre Tiles](../guides/mlt/).
 
 ```sh
 cargo install manby
 ```
 
-Or from a clone, where the program ends up in `target/release/manby`:
+From a clone, the program ends up in `target/release/manby`.
 
 ```sh
 git clone https://github.com/birkskyum/manby

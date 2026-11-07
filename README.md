@@ -8,7 +8,7 @@ The `manby` command takes tippecanoe's options:
 manby -zg --drop-densest-as-needed -o places.pmtiles places.geojson
 ```
 
-`cargo install manby` installs it, with Rust 1.89 or later. The [site](https://birkskyum.github.io/manby/) has the guides.
+`pip install manby` installs it on macOS and Linux, `uvx manby` runs it without installing, and the [releases](https://github.com/birkskyum/manby/releases) have the program alone. `cargo install manby` builds it, with Rust 1.89 or later. The [site](https://birkskyum.github.io/manby/) has the guides.
 
 ## Speed
 
@@ -127,12 +127,13 @@ manby is a library first. `manby::run(&Options)` reads, tiles and writes a tiles
 
 ## MapLibre Tiles
 
-`--tile-format=mlt` writes [MapLibre Tiles](https://maplibre.org/maplibre-tile-spec/) instead of Mapbox Vector Tiles, with the same features, into PMTiles, MBTiles or a directory. The tiles are 2 to 45% smaller than MVT on the benchmarks, and MapLibre GL JS 5.12 and later reads them from a vector source with `encoding: "mlt"`. The encoder, mlt-core, needs Rust 1.98, so MLT output is a cargo feature.
+`--tile-format=mlt` writes [MapLibre Tiles](https://maplibre.org/maplibre-tile-spec/) instead of Mapbox Vector Tiles, with the same features, into PMTiles, MBTiles or a directory. The tiles are 2 to 45% smaller than MVT on the benchmarks, and MapLibre GL JS 5.12 and later reads them from a vector source with `encoding: "mlt"`.
 
 ```sh
-cargo +1.98.1 build --release --features mlt
 manby -zg --drop-densest-as-needed --tile-format=mlt -o places.pmtiles places.geojson
 ```
+
+The wheels and the release binaries write MLT. The encoder, mlt-core, needs Rust 1.98, so from source MLT output is a cargo feature, `cargo +1.98.1 build --release --features mlt`.
 
 DESIGN.md describes the choices behind the tiles, and `make test-golden-mlt` checks them against the MVT tiles of the same runs.
 

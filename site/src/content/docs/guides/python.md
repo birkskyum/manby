@@ -87,7 +87,7 @@ manby.tile({"roads": roads, "places": "places.parquet"}, "map.pmtiles", maximum_
 
 ### Viewing
 
-`manby.serve` serves tilesets with a map of them, in a browser or in a notebook. [Viewing tilesets](../serve/) has more.
+`manby.serve` serves tilesets with a map of them, in a browser or in a notebook, and `manby.stats` reports their tiles' sizes and features. [Looking at tilesets](../serve/) has more.
 
 ```python
 server = manby.serve("roads.pmtiles")

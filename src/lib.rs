@@ -18,6 +18,7 @@ pub mod options;
 pub mod order;
 pub mod serve;
 pub mod sink;
+pub mod stats;
 pub mod store;
 pub mod tiler;
 

@@ -12,6 +12,7 @@ BugReports: https://github.com/birkskyum/manby/issues
 Depends:
     R (>= 4.0)
 Imports:
+    jsonlite,
     nanoarrow,
     processx,
     stats,
@@ -23,7 +24,6 @@ Suggests:
     dbplyr,
     dplyr,
     duckdb,
-    jsonlite,
     sf,
     testthat (>= 3.0.0),
     withr

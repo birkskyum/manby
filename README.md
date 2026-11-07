@@ -19,7 +19,7 @@ places = duckdb.sql("SELECT name, geometry FROM 'places.parquet' WHERE country =
 manby.tile(places, "places.pmtiles", maximum_zoom="g", drop_densest_as_needed=True)
 ```
 
-The R package, from [R-universe](https://birkskyum.r-universe.dev/manby), tiles sf data frames and DuckDB tables the same way. `manby serve` serves tilesets with a map of them, from the command line, R or Python.
+The R package, from [R-universe](https://birkskyum.r-universe.dev/manby), tiles sf data frames and DuckDB tables the same way. `manby serve` serves tilesets with a map of them, and `manby stats` reports their tiles' sizes, from the command line, R or Python.
 
 ```r
 manby::tile(sf::st_read("places.gpkg"), "places.pmtiles", maximum_zoom = "g", drop_densest_as_needed = TRUE)

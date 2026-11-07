@@ -8,7 +8,7 @@ The `manby` command takes tippecanoe's options:
 manby -zg --drop-densest-as-needed -o places.pmtiles places.geojson
 ```
 
-`pip install manby` installs it on macOS and Linux, with a Python module, `uvx manby` runs it without installing, and the [releases](https://github.com/birkskyum/manby/releases) have the program alone. `cargo install manby` builds it, with Rust 1.89 or later. The [site](https://birkskyum.github.io/manby/) has the guides.
+`pip install manby` installs it on macOS and Linux, with a Python module, and `uvx manby` runs it without installing. `brew install birkskyum/tap/manby` and `mise use -g github:birkskyum/manby` install the program alone from the [releases](https://github.com/birkskyum/manby/releases). `cargo install manby` builds it, with Rust 1.89 or later. The [site](https://birkskyum.github.io/manby/) has the guides.
 
 From Python, a DuckDB query streams to manby in Arrow batches.
 

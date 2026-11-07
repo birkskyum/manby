@@ -15,6 +15,13 @@ uv runs it without installing.
 uvx manby -zg --drop-densest-as-needed -o places.pmtiles places.geojson
 ```
 
+Homebrew and mise install the program alone, from the releases.
+
+```sh
+brew install birkskyum/tap/manby
+mise use -g github:birkskyum/manby
+```
+
 The [releases](https://github.com/birkskyum/manby/releases) have the program alone, for macOS on Apple silicon and Intel, and for Linux on x86-64 and arm64, built for glibc 2.28 or later, or for musl, which runs on any Linux.
 
 cargo builds it, with Rust 1.89 or later, but without [MapLibre Tiles](../guides/mlt/).

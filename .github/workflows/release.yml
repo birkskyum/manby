@@ -8,11 +8,16 @@
 #
 # crates.io and PyPI trust this workflow in the `release` environment, so no
 # tokens are kept here.
+#
+# A merge by auto-merge, which the Dependabot workflow turns on with this
+# repository's token, starts no workflows, so a daily run catches up with them.
 name: Release
 
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: '41 5 * * *'
   workflow_dispatch:
 
 permissions:
@@ -25,7 +30,7 @@ env:
 
 jobs:
   release-pr:
-    if: github.event_name == 'push'
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-24.04
     permissions:
       actions: write
@@ -59,7 +64,7 @@ jobs:
           fi
 
   release:
-    if: github.event_name == 'push'
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-24.04
     environment: release
     permissions:

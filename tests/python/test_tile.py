@@ -10,6 +10,7 @@ import os
 import struct
 import sys
 import tempfile
+import urllib.request
 
 import duckdb
 import geopandas
@@ -94,6 +95,13 @@ def main():
     except manby.ManbyError as e:
         assert e.returncode != 0
     print("an error from manby raises ManbyError")
+
+    with manby.serve(path_out := os.path.join(d, "geopandas", "points.pmtiles"), port=0, open=False) as server:
+        tilejson = json.load(urllib.request.urlopen(server.tilejson["points"]))
+        assert tilejson["vector_layers"][0]["id"] == "points", tilejson
+        assert urllib.request.urlopen(server.url).status == 200
+    assert server.process.poll() is not None
+    print("serves %s" % path_out)
 
     manby.run("--version")
     return 0

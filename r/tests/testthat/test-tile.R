@@ -104,6 +104,18 @@ test_that("options become tippecanoe's long options", {
   )
 })
 
+test_that("serve serves a tileset and its map", {
+  server <- serve(file.path(dir, "fgb", "points.pmtiles"), port = 0, open = FALSE)
+  on.exit(server$stop())
+  expect_s3_class(server, "manby_server")
+  expect_equal(names(server$tilejson), "points")
+  expect_equal(jsonlite::fromJSON(server$tilejson[["points"]])$vector_layers$id, "points")
+  expect_true(any(grepl("maplibre-gl", readLines(server$url, warn = FALSE))))
+  server$stop()
+  expect_false(server$process$is_alive())
+  expect_error(serve(file.path(dir, "nothing.pmtiles"), port = 0, open = FALSE), class = "manby_error")
+})
+
 test_that("manby runs", {
   expect_match(paste(capture.output(manby("--version"), type = "message"), collapse = ""), "^manby ")
 })

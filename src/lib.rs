@@ -16,6 +16,7 @@ pub mod mem;
 pub mod mlt;
 pub mod options;
 pub mod order;
+pub mod serve;
 pub mod sink;
 pub mod store;
 pub mod tiler;

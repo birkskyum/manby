@@ -56,6 +56,15 @@ A named list makes a layer of each table or file.
 tile(list(roads = roads, places = "places.parquet"), "map.pmtiles", maximum_zoom = 14)
 ```
 
+### Viewing
+
+`serve()` serves tilesets with a map of them, in the viewer pane. [Viewing tilesets](../serve/) has more.
+
+```r
+server <- serve("roads.pmtiles")
+server$stop()
+```
+
 ### Other commands
 
 `manby()` runs manby with arguments as on the command line, such as `manby join`.

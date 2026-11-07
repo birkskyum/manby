@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>manby serve</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@6.15.0/dist/maplibre-gl.css">
+<style>
+  html, body, #map { margin: 0; height: 100%; }
+  body { font: 13px/1.4 system-ui, -apple-system, sans-serif; color: #222; }
+  #panel {
+    position: absolute; top: 10px; left: 10px; z-index: 1; width: 240px; max-height: calc(100% - 40px);
+    overflow: auto; background: #fff; border-radius: 6px; box-shadow: 0 1px 4px rgba(0,0,0,.25); padding: 10px 12px;
+  }
+  #panel h1 { font-size: 14px; margin: 0 0 6px; }
+  #panel select { width: 100%; margin-bottom: 6px; }
+  #panel label { display: flex; align-items: center; gap: 6px; margin: 3px 0; cursor: pointer; }
+  #panel .swatch { width: 12px; height: 12px; border-radius: 2px; flex: none; }
+  #panel .muted { color: #777; }
+  #panel hr { border: 0; border-top: 1px solid #eee; margin: 8px 0; }
+  #error { color: #b00020; white-space: pre-wrap; }
+  .maplibregl-popup-content { max-height: 320px; overflow: auto; font: 12px/1.35 system-ui, sans-serif; }
+  .maplibregl-popup-content table { border-collapse: collapse; }
+  .maplibregl-popup-content td { padding: 1px 6px 1px 0; vertical-align: top; }
+  .maplibregl-popup-content td:first-child { color: #666; }
+  .maplibregl-popup-content h2 { font-size: 12px; margin: 6px 0 2px; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <h1 id="title">manby serve</h1>
+  <select id="tilesets" hidden></select>
+  <div id="error"></div>
+  <div id="layers"></div>
+  <hr>
+  <label><input type="checkbox" id="basemap" checked> Basemap</label>
+  <label><input type="checkbox" id="boundaries"> Tile boundaries</label>
+  <div class="muted" id="zoom"></div>
+</div>
+<script type="module">
+import * as maplibregl from 'https://unpkg.com/maplibre-gl@6.15.0/dist/maplibre-gl.mjs';
+
+const COLORS = ['#e6194b', '#3c8c3c', '#4363d8', '#f58231', '#911eb4', '#2ab7ca', '#d81b9a', '#469990', '#9a6324', '#800000'];
+const BASEMAP = 'https://tiles.openfreemap.org/styles/positron';
+const BLANK = { version: 8, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#f4f4f2' } }] };
+const POLYGON = ['match', ['geometry-type'], ['Polygon', 'MultiPolygon'], true, false];
+const LINE = ['match', ['geometry-type'], ['LineString', 'MultiLineString', 'Polygon', 'MultiPolygon'], true, false];
+const POINT = ['match', ['geometry-type'], ['Point', 'MultiPoint'], true, false];
+
+const $ = id => document.getElementById(id);
+const escape = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+
+// read before the map writes its position into the hash
+const startHash = location.hash;
+const startTileset = new URLSearchParams(location.search).get('tileset');
+
+let tilesets = [];
+let current = null;   // the tileset shown
+let tilejson = null;  // its TileJSON
+let hidden = new Set();
+let styleReady = false;  // set on style.load, as isStyleLoaded() waits for the basemap's tiles too
+let fitted = !!startHash;  // a position in the address wins over the tileset's bounds
+
+const map = new maplibregl.Map({ container: 'map', style: BASEMAP, center: [0, 20], zoom: 1, hash: true });
+map.addControl(new maplibregl.NavigationControl(), 'top-right');
+map.addControl(new maplibregl.ScaleControl(), 'bottom-left');
+
+function layerIds(id) {
+  return [`manby-${id}-fill`, `manby-${id}-line`, `manby-${id}-circle`];
+}
+
+function addTileset() {
+  if (!current || !tilejson) return;
+  const source = 'manby';
+  if (map.getSource(source)) {
+    for (const l of map.getStyle().layers) if (l.source === source) map.removeLayer(l.id);
+    map.removeSource(source);
+  }
+  map.addSource(source, {
+    type: 'vector',
+    tiles: tilejson.tiles,
+    minzoom: tilejson.minzoom,
+    maxzoom: tilejson.maxzoom,
+    bounds: tilejson.bounds,
+    encoding: current.format === 'mlt' ? 'mlt' : 'mvt',
+  });
+  (tilejson.vector_layers || []).forEach((vl, i) => {
+    const color = COLORS[i % COLORS.length];
+    const [fill, line, circle] = layerIds(vl.id);
+    const visibility = hidden.has(vl.id) ? 'none' : 'visible';
+    map.addLayer({ id: fill, type: 'fill', source, 'source-layer': vl.id, filter: POLYGON,
+      layout: { visibility }, paint: { 'fill-color': color, 'fill-opacity': 0.2 } });
+    map.addLayer({ id: line, type: 'line', source, 'source-layer': vl.id, filter: LINE,
+      layout: { visibility }, paint: { 'line-color': color, 'line-width': ['interpolate', ['linear'], ['zoom'], 0, 0.6, 14, 1.6] } });
+    map.addLayer({ id: circle, type: 'circle', source, 'source-layer': vl.id, filter: POINT,
+      layout: { visibility }, paint: { 'circle-color': color, 'circle-radius': ['interpolate', ['linear'], ['zoom'], 0, 2, 14, 4.5],
+        'circle-stroke-color': '#fff', 'circle-stroke-width': 0.6 } });
+  });
+}
+
+function showLayers() {
+  const box = $('layers');
+  box.innerHTML = '';
+  (tilejson.vector_layers || []).forEach((vl, i) => {
+    const label = document.createElement('label');
+    const zooms = vl.minzoom !== undefined ? ` <span class="muted">z${vl.minzoom}-${vl.maxzoom}</span>` : '';
+    label.innerHTML = `<input type="checkbox" ${hidden.has(vl.id) ? '' : 'checked'}>` +
+      `<span class="swatch" style="background:${COLORS[i % COLORS.length]}"></span>${escape(vl.id)}${zooms}`;
+    label.querySelector('input').addEventListener('change', e => {
+      if (e.target.checked) hidden.delete(vl.id); else hidden.add(vl.id);
+      for (const id of layerIds(vl.id)) {
+        if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', e.target.checked ? 'visible' : 'none');
+      }
+    });
+    box.appendChild(label);
+  });
+}
+
+async function load(t) {
+  current = t;
+  $('error').textContent = t.error || '';
+  if (t.error) return;
+  tilejson = await (await fetch(t.tilejson, { cache: 'no-store' })).json();
+  $('title').textContent = tilejson.name || t.name;
+  document.title = `${tilejson.name || t.name} - manby serve`;
+  showLayers();
+  if (styleReady) addTileset();
+  if (!fitted && tilejson.bounds) {
+    map.fitBounds([[tilejson.bounds[0], tilejson.bounds[1]], [tilejson.bounds[2], tilejson.bounds[3]]], { padding: 30, animate: false });
+  }
+  fitted = true;
+}
+
+async function poll() {
+  try {
+    const now = await (await fetch('/tilesets.json', { cache: 'no-store' })).json();
+    const select = $('tilesets');
+    if (now.map(t => t.name).join() !== tilesets.map(t => t.name).join()) {
+      select.innerHTML = now.map(t => `<option>${escape(t.name)}</option>`).join('');
+      select.hidden = now.length < 2;
+    }
+    const before = current && tilesets.find(t => t.name === current.name);
+    tilesets = now;
+    const shown = now.find(t => t.name === (current ? current.name : startTileset)) || now[0];
+    select.value = shown.name;
+    if (!current || !before || before.version !== shown.version || before.error !== shown.error) await load(shown);
+  } catch (e) {
+    $('error').textContent = 'manby serve is not answering';
+  }
+}
+
+$('tilesets').addEventListener('change', e => {
+  hidden = new Set();
+  fitted = false;
+  history.replaceState(null, '', `?tileset=${encodeURIComponent(e.target.value)}`);
+  load(tilesets.find(t => t.name === e.target.value));
+});
+$('basemap').addEventListener('change', e => {
+  styleReady = false;
+  map.setStyle(e.target.checked ? BASEMAP : BLANK);
+});
+$('boundaries').addEventListener('change', e => { map.showTileBoundaries = e.target.checked; });
+map.on('style.load', () => {
+  styleReady = true;
+  addTileset();
+});
+map.on('zoomend', () => {
+  $('zoom').textContent = `Zoom ${map.getZoom().toFixed(1)}` + (tilejson ? `, tiles to z${tilejson.maxzoom}` : '');
+});
+
+map.on('click', e => {
+  const layers = map.getStyle().layers.filter(l => l.source === 'manby').map(l => l.id);
+  const features = map.queryRenderedFeatures(e.point, { layers }).slice(0, 8);
+  if (!features.length) return;
+  const html = features.map(f => {
+    const rows = Object.entries(f.properties).map(([k, v]) => `<tr><td>${escape(k)}</td><td>${escape(v)}</td></tr>`).join('');
+    return `<h2>${escape(f.sourceLayer)}${f.id !== undefined ? ` <span class="muted">#${escape(f.id)}</span>` : ''}</h2><table>${rows}</table>`;
+  }).join('');
+  new maplibregl.Popup({ maxWidth: '360px' }).setLngLat(e.lngLat).setHTML(html).addTo(map);
+});
+map.on('mousemove', e => {
+  const layers = map.getStyle().layers.filter(l => l.source === 'manby').map(l => l.id);
+  map.getCanvas().style.cursor = layers.length && map.queryRenderedFeatures(e.point, { layers }).length ? 'pointer' : '';
+});
+
+poll();
+setInterval(poll, 1500);
+</script>
+</body>
+</html>

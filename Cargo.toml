@@ -20,6 +20,12 @@ categories = ["science::geo", "command-line-utilities"]
 include = ["/src/**", "/README.md", "/DESIGN.md", "/LICENSE.md"]
 
 [dependencies]
+# GeoParquet and Arrow input
+arrow-array = "60.1"
+arrow-buffer = "60.1"
+arrow-ipc = { version = "60.1", default-features = false, features = ["lz4", "zstd"] }
+arrow-schema = "60.1"
+parquet = { version = "60.1", default-features = false, features = ["arrow", "snap", "zstd", "lz4", "brotli", "flate2-zlib-rs"] }
 flate2 = { version = "1.1", default-features = false, features = ["zlib"] }
 libc = "0.2.191"
 libdeflater = "1.26.1"

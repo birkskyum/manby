@@ -1,9 +1,9 @@
 ---
 title: Other formats
-description: Tiling GeoPackage, GeoParquet, Shapefile and OpenStreetMap data, converted to FlatGeobuf with GDAL's ogr2ogr.
+description: Tiling GeoPackage, Shapefile and OpenStreetMap data, converted to FlatGeobuf with GDAL's ogr2ogr.
 ---
 
-manby reads what tippecanoe reads, GeoJSON, FlatGeobuf, CSV and Geobuf. Convert other formats to FlatGeobuf first, which manby reads in parallel. The examples use GDAL's `ogr2ogr`, and other converters that write FlatGeobuf, such as DuckDB's spatial extension or terrio, work the same way.
+manby reads what tippecanoe reads, GeoJSON, FlatGeobuf, CSV and Geobuf, and also [GeoParquet and Arrow](../python/). Convert other formats to FlatGeobuf first, which manby reads in parallel. The examples use GDAL's `ogr2ogr`, and other converters that write FlatGeobuf, such as DuckDB's spatial extension or terrio, work the same way.
 
 ## Shapefile
 
@@ -39,13 +39,6 @@ manby -z14 --drop-densest-as-needed -o liechtenstein.pmtiles \
   -L points:points.fgb -L lines:lines.fgb -L areas:areas.fgb
 ```
 
-## GeoParquet
-
-```sh
-ogr2ogr -t_srs EPSG:4326 water.fgb ns-water_water-poly_geo.parquet
-manby -zg --coalesce-densest-as-needed -o water.pmtiles water.fgb
-```
-
 ## Without a file in between
 
 `ogr2ogr` can write newline-delimited GeoJSON to its standard output, which manby reads in parallel with `-P`. It is a little slower, as GDAL writes GeoJSON more slowly than FlatGeobuf, 5.9 s against 5.0 s on the census tracts.
@@ -68,12 +61,10 @@ Converting with `ogr2ogr`, then tiling, once each on an Apple M5 Max with GDAL 3
 | Census tracts, Shapefile (82 MB) | 2.48 + 2.49 = 4.97 s | 2.48 + 24.2 = 26.7 s |
 | Natural Earth, GeoPackage, 3 layers | 0.90 + 0.95 = 1.85 s | 0.90 + 5.75 = 6.65 s |
 | Liechtenstein, OpenStreetMap, 3 layers | 0.75 + 0.37 = 1.12 s | 0.75 + 4.28 = 5.03 s |
-| Nova Scotia water, GeoParquet (226 MB) | 9.31 + 23.9 = 33.2 s | 9.31 + 185 = 194 s |
 
 - manby's tiles decode to exactly tippecanoe's from the same FlatGeobuf file.
-- With manby, the conversion is half the time or more on the three smaller inputs.
-- The water polygons take longest, as a few tiles at zoom levels 4 to 9 stay over the size limit after coalescing, and each retry cleans their large polygons again.
-- The tracts are the 85,186 of the Census cartographic boundaries 2023, and the water the 169,852 polygons of the Nova Scotia hydrographic network.
+- With manby, the conversion is half the time or more.
+- The tracts are the 85,186 of the Census cartographic boundaries 2023.
 
 ## Feature order
 

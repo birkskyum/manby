@@ -47,6 +47,8 @@ input files ──► ingest ──► FeatureStore ──► order ──► ti
 
 The input is split into byte ranges at line or feature boundaries, and each thread parses its range into its own part of the store, with its own interned keys and values. The parts are then joined and the interned ids remapped. Parsing follows tippecanoe's rules for what counts as a feature and how attribute values are typed and written, by reusing tippecanoe-rs's `jsonpull`, `read_json` and `serial` code where that is fast enough, or a faster parser where it is not.
 
+GeoParquet and Arrow, which tippecanoe does not read, are read as tippecanoe reads the FlatGeobuf file that GDAL would make of the same table (`src/ingest/arrow.rs`). The rows are numbered in tippecanoe's FlatGeobuf batches of `CPUS * 500 + 1`, each parsed in `CPUS` ranges, and the attributes are typed as tippecanoe types FlatGeobuf's columns, so the tiles are the same as from that file. Record batches stream in, and are parsed in parallel a window of whole batches at a time.
+
 ### FeatureStore (`src/store.rs`)
 
 All features as fixed-size `Feature` records, with their geometry and attributes in shared arrays. Keys and values are interned once. A record holds what tippecanoe serializes for a feature (index, sequence, bbox, extent, label point, id, layer, type, minimum and maximum zoom).

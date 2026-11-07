@@ -41,13 +41,23 @@ manby takes [tippecanoe's options](https://github.com/felt/tippecanoe#readme), a
 manby -zg --drop-densest-as-needed -o places.pmtiles places.geojson
 ```
 
-The input can be GeoJSON, newline-delimited GeoJSON (read in parallel with `-P`), FlatGeobuf, CSV or Geobuf. GeoPackage, GeoParquet, Shapefile and OpenStreetMap data can be [converted to FlatGeobuf](../guides/other-formats/) with GDAL first. The output is a PMTiles archive, an MBTiles database, or a directory of tiles with `-e`.
+The input can be GeoJSON, newline-delimited GeoJSON (read in parallel with `-P`), FlatGeobuf, CSV, Geobuf, [GeoParquet or Arrow](../guides/python/). GeoPackage, Shapefile and OpenStreetMap data can be [converted to FlatGeobuf](../guides/other-formats/) with GDAL first. The output is a PMTiles archive, an MBTiles database, or a directory of tiles with `-e`.
 
 Points can be clustered as tippecanoe clusters them, with their attributes accumulated.
 
 ```sh
 manby -zg -r1 --cluster-distance=10 --cluster-densest-as-needed \
   --accumulate-attribute=value:sum -o clusters.pmtiles points.geojsonl
+```
+
+## From Python
+
+`pip install manby` also installs a Python module, which tiles files, DuckDB queries and data frames. [GeoParquet, DuckDB and Python](../guides/python/) has more.
+
+```python
+import manby
+
+manby.tile("places.geojson", "places.pmtiles", maximum_zoom="g", drop_densest_as_needed=True)
 ```
 
 ## Testing

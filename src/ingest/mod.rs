@@ -17,6 +17,7 @@
 //! bare geometry the unit's parse would have refused, is read again as part
 //! of the unit, so the result is always what the unit's own parse gives.
 
+pub mod arrow;
 pub mod chunk;
 pub mod csv;
 pub mod flatgeobuf;
@@ -29,6 +30,7 @@ pub mod serialized;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Write};
 
+use arrow_array::RecordBatch;
 use rayon::prelude::*;
 use tippecanoe::errors::*;
 
@@ -453,7 +455,13 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
 
     for (l, s) in sources.iter_mut().enumerate() {
         if s.layer.is_empty() {
-            s.layer = layer_name_for(&s.file, &fname, l);
+            let file =
+                if arrow::is_parquet(&s.format, &s.file) || arrow::is_arrow(&s.format, &s.file) {
+                    arrow::without_extension(&s.file)
+                } else {
+                    &s.file
+                };
+            s.layer = layer_name_for(file, &fname, l);
             if !options.quiet {
                 stderr.extend_from_slice(
                     format!("For layer {}, using name \"{}\"\n", l, s.layer).as_bytes(),
@@ -506,6 +514,59 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
 
         let format = src.format.as_str();
         let name = src.file.as_str();
+        let parquet = arrow::is_parquet(format, name);
+        if parquet || arrow::is_arrow(format, name) {
+            drop(map);
+            let opened = match (file, parquet) {
+                (Some(f), true) => arrow::open_parquet(f, &reading_name, |schema| {
+                    arrow::Table::columns_of(schema, &reading_name, &cfg)
+                }),
+                (None, true) => Err(Error::new(
+                    EXIT_OPEN,
+                    format!(
+                        "{}: GeoParquet can't be read from standard input; give its file name, or send an Arrow stream",
+                        options.program
+                    ),
+                )),
+                (Some(f), false) => match f.metadata() {
+                    Ok(m) if m.is_file() => arrow::open_ipc(f, true, &reading_name),
+                    _ => arrow::open_ipc_stream(f, &reading_name),
+                },
+                (None, false) => arrow::open_ipc_stream(std::io::stdin(), &reading_name),
+            };
+            let (schema, batches) = match opened {
+                Ok(o) => o,
+                Err(e) => {
+                    flush(&mut stderr);
+                    return Err(e);
+                }
+            };
+            let table = match arrow::Table::new(&schema, &reading_name, &cfg) {
+                Ok(t) => t,
+                Err(e) => {
+                    flush(&mut stderr);
+                    return Err(e);
+                }
+            };
+            let layername = sources[layer].layer.clone();
+            let reading = ArrowReading {
+                cfg: &cfg,
+                table: &table,
+                reading_name: &reading_name,
+                layername: &layername,
+                layer_names: &layer_names,
+            };
+            read_arrow(
+                &mut parts,
+                batches,
+                &reading,
+                cpus,
+                &mut overall_offset,
+                &mut once,
+                &mut stderr,
+            )?;
+            continue;
+        }
         if format == "fgb" || (name.len() > 4 && name.ends_with(".fgb")) {
             let Some(map) = map else {
                 flush(&mut stderr);
@@ -733,6 +794,93 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
     Ok(merge(parts, &sources, &layer_names, &layer_source, options))
 }
 
+/// tippecanoe's numbering of the features of a FlatGeobuf file. It runs its
+/// queue of features when it holds more than `CPUS * 500`, parsing each such
+/// batch in `CPUS` ranges, each numbered from its own offset into the batch,
+/// and it adds up the `-zg` sums of each range's reader.
+struct Batched {
+    cpus: usize,
+    seg_dist: Vec<f64>,
+    seg_area: Vec<f64>,
+    /// The `seq` of the next batch's first feature.
+    base: i64,
+}
+
+impl Batched {
+    fn new(cpus: usize, overall_offset: i64) -> Batched {
+        Batched {
+            cpus,
+            seg_dist: vec![0.0; cpus],
+            seg_area: vec![0.0; cpus],
+            base: overall_offset,
+        }
+    }
+
+    /// The features in a batch.
+    fn batch(&self) -> usize {
+        self.cpus * 500 + 1
+    }
+
+    /// The ranges that tippecanoe parses `n` features in, from the start of a
+    /// batch, with the reader that parses each.
+    fn ranges(&self, n: usize) -> Vec<(usize, usize, usize)> {
+        let cpus = self.cpus;
+        let mut ranges = Vec::new();
+        let mut start = 0;
+        while start < n {
+            let end = (start + self.batch()).min(n);
+            let size = end - start;
+            for i in 0..cpus {
+                ranges.push((start + size * i / cpus, start + size * (i + 1) / cpus, i));
+            }
+            start = end;
+        }
+        ranges
+    }
+
+    /// Numbers the chunks read from `ranges`, one for each range.
+    fn number<'c>(
+        &mut self,
+        parts: &mut Parts,
+        ranges: &[(usize, usize, usize)],
+        chunks: impl Iterator<Item = &'c Chunk>,
+    ) {
+        let chunks: Vec<&Chunk> = chunks.collect();
+        let mut k = 0;
+        while k < ranges.len() {
+            let size_start = ranges[k].0;
+            let mut last_end = self.base;
+            for (j, chunk) in chunks[k..k + self.cpus].iter().enumerate() {
+                let (a, _, i) = ranges[k + j];
+                let base = self.base + (a - size_start) as i64;
+                parts.seq_base.push(base);
+                parts.segment.push(i as u16);
+                last_end = base + chunk.features.len() as i64;
+                for t in &chunk.dist_terms {
+                    self.seg_dist[i] += t;
+                }
+                for t in &chunk.area_terms {
+                    self.seg_area[i] += t;
+                }
+                parts.dist_count += chunk.dist_count;
+            }
+            self.base = last_end;
+            k += self.cpus;
+        }
+    }
+
+    /// Adds up the `-zg` sums at the end of the file, and gives the `seq`
+    /// after it.
+    fn finish(self, parts: &mut Parts) -> i64 {
+        for i in 0..self.cpus {
+            parts.dist_sum += self.seg_dist[i];
+            // sic: tippecanoe assigns rather than adds the area sums of FlatGeobuf input
+            parts.area_sum = self.seg_area[i];
+        }
+        self.base
+    }
+}
+
 /// Reads a FlatGeobuf file, numbering its features in the batches and ranges
 /// that tippecanoe parses them in, and adding up the `-zg` sums as it does.
 #[allow(clippy::too_many_arguments)]
@@ -750,18 +898,8 @@ fn read_fgb(
 ) -> crate::Result<()> {
     let h = flatgeobuf::read_header(data, cfg.o.quiet)?;
 
-    // The batches: tippecanoe runs its queue when it holds more than CPUS * 500.
-    let batch = cpus * 500 + 1;
-    let mut ranges: Vec<(usize, usize, usize)> = Vec::new();
-    let mut start = 0;
-    while start < h.features.len() {
-        let end = (start + batch).min(h.features.len());
-        let size = end - start;
-        for i in 0..cpus {
-            ranges.push((start + size * i / cpus, start + size * (i + 1) / cpus, i));
-        }
-        start = end;
-    }
+    let mut numbering = Batched::new(cpus, *overall_offset);
+    let ranges = numbering.ranges(h.features.len());
 
     let chunks: Vec<(Chunk, crate::Result<()>)> = ranges
         .par_iter()
@@ -779,36 +917,8 @@ fn read_fgb(
         })
         .collect();
 
-    let mut seg_dist = vec![0.0f64; cpus];
-    let mut seg_area = vec![0.0f64; cpus];
-    let mut batch_base = *overall_offset;
-    let mut k = 0;
-    while k < ranges.len() {
-        let size_start = ranges[k].0;
-        let mut last_end = batch_base;
-        for (j, (chunk, _)) in chunks[k..k + cpus].iter().enumerate() {
-            let (a, _, i) = ranges[k + j];
-            let base = batch_base + (a - size_start) as i64;
-            parts.seq_base.push(base);
-            parts.segment.push(i as u16);
-            last_end = base + chunk.features.len() as i64;
-            for t in &chunk.dist_terms {
-                seg_dist[i] += t;
-            }
-            for t in &chunk.area_terms {
-                seg_area[i] += t;
-            }
-            parts.dist_count += chunk.dist_count;
-        }
-        batch_base = last_end;
-        k += cpus;
-    }
-    *overall_offset = batch_base;
-    for i in 0..cpus {
-        parts.dist_sum += seg_dist[i];
-        // sic: tippecanoe assigns rather than adds the area sums of FlatGeobuf input
-        parts.area_sum = seg_area[i];
-    }
+    numbering.number(parts, &ranges, chunks.iter().map(|(c, _)| c));
+    *overall_offset = numbering.finish(parts);
 
     for (chunk, r) in chunks {
         print_messages(stderr, reading_name, &chunk.messages, 0, once);
@@ -823,6 +933,162 @@ fn read_fgb(
         });
     }
     flush(stderr);
+    Ok(())
+}
+
+/// The first `n` rows of `batches`, and the rest.
+fn split_batches(batches: Vec<RecordBatch>, n: usize) -> (Vec<RecordBatch>, Vec<RecordBatch>) {
+    let mut first = Vec::new();
+    let mut rest = Vec::new();
+    let mut left = n;
+    for b in batches {
+        if left >= b.num_rows() {
+            left -= b.num_rows();
+            first.push(b);
+        } else if left > 0 {
+            first.push(b.slice(0, left));
+            rest.push(b.slice(left, b.num_rows() - left));
+            left = 0;
+        } else {
+            rest.push(b);
+        }
+    }
+    (first, rest)
+}
+
+/// What reading an Arrow table needs besides its batches.
+struct ArrowReading<'a> {
+    cfg: &'a Config<'a>,
+    table: &'a arrow::Table,
+    reading_name: &'a str,
+    layername: &'a str,
+    layer_names: &'a [String],
+}
+
+/// Reads an Arrow table, numbering its rows as tippecanoe numbers the
+/// features of the FlatGeobuf file that GDAL would make of it.
+fn read_arrow(
+    parts: &mut Parts,
+    batches: arrow::Batches,
+    r: &ArrowReading<'_>,
+    cpus: usize,
+    overall_offset: &mut i64,
+    once: &mut HashSet<&'static str>,
+    stderr: &mut Vec<u8>,
+) -> crate::Result<()> {
+    if !r.table.skipped.is_empty() && !r.cfg.o.quiet {
+        stderr.extend_from_slice(
+            format!(
+                "{}: leaving out {}, which vector tiles can't hold\n",
+                r.reading_name,
+                r.table.skipped.join(", ")
+            )
+            .as_bytes(),
+        );
+    }
+    let mut numbering = Batched::new(cpus, *overall_offset);
+    let batch = numbering.batch();
+    // Rows read in parallel at a time: whole batches, so that each window's
+    // ranges are those of the whole table, up to about 256k rows or 256 MB.
+    let window = batch * (1usize << 18).div_ceil(batch);
+    const WINDOW_BYTES: usize = 256 << 20;
+
+    let mut batches = batches;
+    let mut pending: Vec<RecordBatch> = Vec::new();
+    let mut rows = 0;
+    let mut bytes = 0;
+    loop {
+        let done = match batches.next() {
+            Some(Ok(b)) => {
+                rows += b.num_rows();
+                bytes += b.get_array_memory_size();
+                pending.push(b);
+                if (rows < window && bytes < WINDOW_BYTES) || rows < batch {
+                    continue;
+                }
+                false
+            }
+            Some(Err(e)) => {
+                flush(stderr);
+                return Err(Error::new(EXIT_READ, format!("{}: {}", r.reading_name, e)));
+            }
+            None => true,
+        };
+        let take = if done { rows } else { rows / batch * batch };
+        let (now, rest) = split_batches(std::mem::take(&mut pending), take);
+        pending = rest;
+        rows -= take;
+        bytes = pending.iter().map(|b| b.get_array_memory_size()).sum();
+        read_arrow_window(parts, &now, take, r, &mut numbering, once, stderr)?;
+        if done {
+            break;
+        }
+    }
+    *overall_offset = numbering.finish(parts);
+    flush(stderr);
+    Ok(())
+}
+
+/// Reads `n` rows of an Arrow table, from the start of a batch, in parallel.
+fn read_arrow_window(
+    parts: &mut Parts,
+    batches: &[RecordBatch],
+    n: usize,
+    r: &ArrowReading<'_>,
+    numbering: &mut Batched,
+    once: &mut HashSet<&'static str>,
+    stderr: &mut Vec<u8>,
+) -> crate::Result<()> {
+    let resolved: Vec<arrow::Resolved> = batches
+        .iter()
+        .map(|b| arrow::Resolved::new(r.table, b))
+        .collect();
+    let mut starts = vec![0usize];
+    for b in batches {
+        starts.push(starts.last().unwrap() + b.num_rows());
+    }
+    let ranges = numbering.ranges(n);
+
+    let chunks: Vec<(Chunk, crate::Result<()>)> = ranges
+        .par_iter()
+        .map(|&(a, b, _)| {
+            let mut chunk = Chunk::new(r.layer_names);
+            let mut result = Ok(());
+            let mut k = starts.partition_point(|&s| s <= a).saturating_sub(1);
+            for row in a..b {
+                while row >= starts[k + 1] {
+                    k += 1;
+                }
+                result = arrow::read_row(
+                    &mut chunk,
+                    r.cfg,
+                    r.table,
+                    &resolved[k],
+                    row - starts[k],
+                    r.reading_name,
+                    r.layername,
+                );
+                if result.is_err() {
+                    break;
+                }
+            }
+            (chunk, result)
+        })
+        .collect();
+
+    numbering.number(parts, &ranges, chunks.iter().map(|(c, _)| c));
+    for (chunk, result) in chunks {
+        print_messages(stderr, r.reading_name, &chunk.messages, 0, once);
+        if let Err(e) = result {
+            flush(stderr);
+            return Err(e);
+        }
+        parts.chunks.push(Accepted {
+            chunk,
+            unit: usize::MAX,
+            line_offset: 0,
+        });
+    }
     Ok(())
 }
 

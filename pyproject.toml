@@ -1,6 +1,7 @@
 # The manby command as a Python wheel, as ruff and uv ship theirs, so that
-# `pip install manby` or `uvx manby` runs it without Rust. The wheels are built
-# by .github/workflows/release.yml.
+# `pip install manby` or `uvx manby` runs it without Rust, with the `manby`
+# module in python/ to tile files, DataFrames and DuckDB queries from Python.
+# The wheels are built by .github/workflows/release.yml.
 [build-system]
 requires = ["maturin>=1.9,<2"]
 build-backend = "maturin"
@@ -17,6 +18,7 @@ classifiers = [
     "Environment :: Console",
     "Operating System :: MacOS",
     "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
     "Programming Language :: Rust",
     "Topic :: Scientific/Engineering :: GIS",
 ]
@@ -28,5 +30,7 @@ Repository = "https://github.com/birkskyum/manby"
 
 [tool.maturin]
 bindings = "bin"
+python-source = "python"
+module-name = "manby"
 features = ["mlt"]
 strip = true

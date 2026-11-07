@@ -48,7 +48,7 @@ jobs:
       - uses: actions/checkout@v7
       - run: rustup toolchain install 1.98.1 --profile minimal
       - uses: Swatinem/rust-cache@v2
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.3
       - run: uvx --from 'maturin>=1.9,<2' maturin build --out dist
       - run: |
           uv venv

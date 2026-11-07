@@ -158,7 +158,7 @@ Compressing with zlib to compare costs processor time where shared tiles are man
 
 `manby::run(&Options) -> Result<Summary>` is the entry point for tiling, and `manby::join(&JoinOptions) -> Result<JoinSummary>` for joining. Transitionally, the algorithm functions borrowed from tippecanoe-rs read tippecanoe-rs's globals. manby sets those once from `Options` and replaces each borrowed function with its own parameterized copy when it needs to change it.
 
-`manby serve` (`src/serve/`) serves tilesets for looking at them: tiles, TileJSON and PMTiles archives with range requests, over tiny_http, and a page with a MapLibre map (`viewer.html`, compiled in). It reads a tileset with positioned reads rather than a mapping, so an archive rewritten while it is served can't fault the server, and opens it again when its size, time or inode changes.
+`manby serve` (`src/serve/`) serves tilesets for looking at them: tiles, TileJSON and PMTiles archives with range requests, over tiny_http, and a page with a MapLibre map (`viewer.html`, compiled in). It reads a tileset with positioned reads rather than a mapping, so an archive rewritten while it is served can't fault the server, and opens it again when its size, time or inode changes. `manby stats` (`src/stats.rs`) lists the same readers' tiles, a PMTiles archive's from its directories alone, and with `--layers` decodes each distinct tile once, in parallel.
 
 ## Verification
 

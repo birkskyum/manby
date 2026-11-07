@@ -44,5 +44,5 @@ clipper2 = { package = "tippecanoe-rs-clipper2", version = "1.4.0", path = "crat
 flate2 = { version = "1.1", default-features = false, features = ["zlib"] }
 libc = "0.2"
 memmap2 = "0.9"
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 flatbuffers = "25"

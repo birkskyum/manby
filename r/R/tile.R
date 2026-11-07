@@ -119,16 +119,23 @@ run <- function(args) {
     stderr_callback = err
   )$status
   if (status != 0) {
-    stop(structure(
-      class = c("manby_error", "error", "condition"),
-      list(
-        message = paste0("manby exited with status ", status, ": ", paste(args, collapse = " ")),
-        call = NULL,
-        status = status
-      )
-    ))
+    stop(manby_error(status, args))
   }
   invisible()
+}
+
+manby_error <- function(status, args, detail = character()) {
+  structure(
+    class = c("manby_error", "error", "condition"),
+    list(
+      message = paste(
+        c(paste0("manby exited with status ", status, ": ", paste(args, collapse = " ")), detail),
+        collapse = "\n"
+      ),
+      call = NULL,
+      status = status
+    )
+  )
 }
 
 flags <- function(options) {

@@ -85,6 +85,15 @@ A dict names the layers, each a table or a file.
 manby.tile({"roads": roads, "places": "places.parquet"}, "map.pmtiles", maximum_zoom=14)
 ```
 
+### Viewing
+
+`manby.serve` serves tilesets with a map of them, in a browser or in a notebook. [Viewing tilesets](../serve/) has more.
+
+```python
+server = manby.serve("roads.pmtiles")
+server.stop()
+```
+
 ### Other commands
 
 `manby.run` runs manby with arguments as on the command line, such as `manby join`.

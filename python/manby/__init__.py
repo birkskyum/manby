@@ -18,10 +18,13 @@ manby program in Arrow batches, so a query result need not fit in memory.
 The options are tippecanoe's: ``maximum_zoom=14`` is ``--maximum-zoom=14``,
 ``drop_densest_as_needed=True`` is ``--drop-densest-as-needed``, and a list
 repeats an option. Arguments after the output are passed as they are.
+
+``serve`` serves tilesets with a map of them, in the browser or in a notebook.
 """
 
 from __future__ import annotations
 
+import atexit
 import errno
 import json
 import os
@@ -32,9 +35,10 @@ import sysconfig
 import tempfile
 import threading
 import time
+import webbrowser
 from typing import Any, Mapping, Sequence
 
-__all__ = ["tile", "run", "binary", "ManbyError"]
+__all__ = ["tile", "serve", "run", "binary", "Server", "ManbyError"]
 
 
 class ManbyError(RuntimeError):
@@ -241,6 +245,69 @@ def tile(
         if tmp is not None:
             shutil.rmtree(tmp, ignore_errors=True)
     return os.fspath(output)
+
+
+class Server:
+    """A running ``manby serve``. ``url`` is the map, ``tilejson`` the
+    TileJSON of each tileset by name, and ``stop()`` ends it. In a notebook,
+    the server shows as its map."""
+
+    def __init__(self, proc: subprocess.Popen, url: str, tilejson: Mapping[str, str]):
+        self.process = proc
+        self.url = url
+        self.tilejson = dict(tilejson)
+
+    def stop(self) -> None:
+        """Stops serving."""
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(5)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+
+    def __enter__(self) -> "Server":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.stop()
+
+    def __repr__(self) -> str:
+        state = "serving" if self.process.poll() is None else "stopped"
+        return "<manby.Server %s %s>" % (state, self.url)
+
+    def _repr_html_(self) -> str:
+        return '<iframe src="%s" style="width:100%%;height:480px;border:0"></iframe>' % self.url
+
+
+def serve(
+    *tilesets: str | os.PathLike,
+    port: int = 8080,
+    host: str = "127.0.0.1",
+    open: bool | None = None,
+) -> Server:
+    """Serves PMTiles archives, MBTiles databases or directories of tiles
+    until ``stop()``, with a map of them at ``url``. ``open`` opens the map in
+    a browser, as it does by default outside a notebook, where the server
+    shows as its map instead. ``port=0`` takes any free port. A tileset made
+    again while it is served shows when the map is reloaded."""
+    argv = [binary(), "serve", "--port", str(port), "--host", host]
+    argv += [os.fspath(t) for t in tilesets]
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, text=True)
+    url = proc.stdout.readline().strip()
+    if not url:
+        raise ManbyError(proc.wait(), argv[1:])
+    tilejson = {}
+    for _ in tilesets:
+        name, _, address = proc.stdout.readline().strip().partition(": ")
+        tilejson[name] = address
+    server = Server(proc, url, tilejson)
+    atexit.register(server.stop)
+    if open is None:
+        open = "ipykernel" not in sys.modules
+    if open:
+        webbrowser.open(url)
+    return server
 
 
 def main() -> None:

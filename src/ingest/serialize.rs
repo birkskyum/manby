@@ -483,6 +483,20 @@ pub fn serialize_feature(
         }
     }
 
+    // --cluster-categories: the value to count, read before -x and -y
+    let category = o.cluster_categories.as_ref().and_then(|(attr, values)| {
+        let i = sf
+            .full_keys
+            .iter()
+            .position(|k| k.as_ref() == attr.as_str())?;
+        let v = cstr(&sf.full_values[i].s);
+        let v = match values {
+            Some(list) if !list.iter().any(|l| l == v) => "_other",
+            _ => v,
+        };
+        Some(format!("{}:{}", attr, v))
+    });
+
     let mut id = sf.id;
     let mut has_id = sf.has_id;
     let mut i = sf.full_keys.len() as isize - 1;
@@ -562,6 +576,14 @@ pub fn serialize_feature(
             sf.full_values.remove(iu);
             continue;
         }
+    }
+
+    if let Some(key) = category {
+        sf.full_keys.push(Cow::Owned(key));
+        sf.full_values.push(SerialVal {
+            type_: MVT_DOUBLE,
+            s: "1".to_string(),
+        });
     }
 
     let max_samples = o.max_tilestats_sample_values;

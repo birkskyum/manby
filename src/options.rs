@@ -142,6 +142,11 @@ pub struct Options {
     pub h3: bool,
     pub h3_base_zoom: Option<i32>,
     pub h3_categories: Option<String>,
+    /// `--cluster-categories=kind`, or `kind:park,museum`: each feature
+    /// gets `kind:<value>` of 1, which clustering and coalescing add up, so
+    /// a cluster counts the values of its points; values not listed count
+    /// as `kind:_other`.
+    pub cluster_categories: Option<(String, Option<Vec<String>>)>,
 
     pub maxzoom: i32,
     pub minzoom: i32,
@@ -256,6 +261,7 @@ impl Default for Options {
             h3: false,
             h3_base_zoom: None,
             h3_categories: None,
+            cluster_categories: None,
             maxzoom: 14,
             minzoom: 0,
             guess_maxzoom: false,
@@ -1195,6 +1201,7 @@ fn long_options_orig() -> Vec<LongOption> {
         opt("h3", NO, b'~'),
         opt("h3-base-zoom", REQ, b'~'),
         opt("h3-categories", REQ, b'~'),
+        opt("cluster-categories", REQ, b'~'),
         heading(""),
         opt("prevent", REQ, b'p'),
         opt("additional", REQ, b'a'),
@@ -1491,6 +1498,15 @@ pub fn parse_args(argv: &[String]) -> crate::Result<Options> {
                     "h3-categories" => {
                         o.h3 = true;
                         o.h3_categories = Some(arg.to_string())
+                    }
+                    "cluster-categories" => {
+                        o.cluster_categories = Some(match arg.split_once(':') {
+                            Some((attr, values)) => (
+                                attr.to_string(),
+                                Some(values.split(',').map(String::from).collect()),
+                            ),
+                            None => (arg.to_string(), None),
+                        })
                     }
                     "bbox" => match sscanf_f64x4(arg) {
                         Some(b) if b[0] < b[2] && b[1] < b[3] => o.bbox = Some(b),

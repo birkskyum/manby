@@ -1,5 +1,11 @@
 The changes in each version of manby, from the titles of the pull requests that made them.
 
+## [0.1.9](https://github.com/birkskyum/manby/compare/v0.1.8...v0.1.9) - 2026-11-08
+
+### Added
+
+- Count an attribute's values in clusters with --cluster-categories ([#25](https://github.com/birkskyum/manby/pull/25))
+
 ## [0.1.8](https://github.com/birkskyum/manby/compare/v0.1.7...v0.1.8) - 2026-11-08
 
 ### Added

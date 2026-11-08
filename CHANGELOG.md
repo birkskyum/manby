@@ -1,5 +1,12 @@
 The changes in each version of manby, from the titles of the pull requests that made them.
 
+## [0.1.8](https://github.com/birkskyum/manby/compare/v0.1.7...v0.1.8) - 2026-11-08
+
+### Added
+
+- Bin points into H3 hexagons below a base zoom with --h3 ([#24](https://github.com/birkskyum/manby/pull/24))
+- Read coordinates in any EPSG or ESRI CRS, from -s or GeoParquet metadata ([#22](https://github.com/birkskyum/manby/pull/22))
+
 ## [0.1.7](https://github.com/birkskyum/manby/compare/v0.1.6...v0.1.7) - 2026-11-08
 
 ### Added

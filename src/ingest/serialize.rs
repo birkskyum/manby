@@ -28,6 +28,8 @@ pub struct Config<'o> {
     pub o: &'o Options,
     pub project: crate::crs::Project,
     pub projection_alias: String,
+    /// `--h3`: how points are binned into hexagons.
+    pub h3: Option<std::sync::Arc<super::h3::Setup>>,
     pub encode_index: fn(u32, u32) -> u64,
     pub geometry_scale: i32,
     pub want_dist: bool,
@@ -48,6 +50,14 @@ impl<'o> Config<'o> {
             o,
             project: o.project(),
             projection_alias: o.projection_alias(),
+            h3: o.h3.then(|| {
+                std::sync::Arc::new(super::h3::Setup::new(
+                    o.minzoom,
+                    o.h3_base(),
+                    &o.attribute_accum,
+                    o.h3_categories.clone(),
+                ))
+            }),
             encode_index: if a(A_HILBERT) {
                 encode_hilbert
             } else {
@@ -596,6 +606,25 @@ pub fn serialize_feature(
         chunk.generate_ids.push(chunk.features.len() as u32);
     }
 
+    // --h3: a point is counted into its hexagons, and shows from the base zoom
+    let mut tippecanoe_minzoom = sf.tippecanoe_minzoom;
+    if let Some(h3) = &cfg.h3
+        && t == VT_POINT
+    {
+        let points = scaled_geometry
+            .iter()
+            .filter(|g| g.op == VT_MOVETO)
+            .map(|g| (cfg.SHIFT_LEFT(g.x), cfg.SHIFT_LEFT(g.y)));
+        chunk.h3.get_or_insert_with(Default::default).add(
+            h3,
+            layername,
+            points,
+            &sf.full_keys,
+            &sf.full_values,
+        );
+        tippecanoe_minzoom = tippecanoe_minzoom.max(h3.base);
+    }
+
     let seq = chunk.features.len() as u64;
     chunk.features.push(Feature {
         keep_index: cfg.keep_index,
@@ -609,7 +638,7 @@ pub fn serialize_feature(
         t: sf.t,
         has_id,
         feature_minzoom: 0,
-        tippecanoe_minzoom: sf.tippecanoe_minzoom as i8,
+        tippecanoe_minzoom: tippecanoe_minzoom as i8,
         tippecanoe_maxzoom: sf.tippecanoe_maxzoom as i8,
         segment: 0,
     });

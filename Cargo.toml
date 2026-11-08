@@ -38,6 +38,8 @@ tippecanoe-rs = { version = "2.82.1", path = "crates/tippecanoe-rs" }
 wagyu = { package = "manby-wagyu", version = "0.5.1", path = "crates/wagyu" }
 xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
 rustc-hash = "2.1"
+# coordinates in other CRSs, with crs-defs' definitions (src/crs/)
+proj4rs = "0.3"
 # manby serve
 tiny_http = "0.12"
 # GeoParquet in object storage or on the web

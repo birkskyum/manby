@@ -56,7 +56,7 @@ export default defineConfig({
 						{ label: 'GeoParquet, DuckDB and Python', slug: 'guides/python' },
 						{ label: 'From R', slug: 'guides/r' },
 						{ label: 'Looking at tilesets', slug: 'guides/serve' },
-						{ label: 'H3 hexagons', slug: 'guides/h3' },
+						{ label: 'H3 hexagons and categories', slug: 'guides/h3' },
 						{ label: 'Other formats', slug: 'guides/other-formats' },
 					],
 				},

@@ -1,6 +1,6 @@
 # manby
 
-manby builds vector tilesets from GeoJSON, FlatGeobuf, CSV, Geobuf, GeoParquet or Arrow features, and from DuckDB queries and data frames in Python and R. It makes the same tiles as [tippecanoe](https://github.com/felt/tippecanoe), in less memory, ten to eighteen times faster on a Mac and eight to fifteen times faster on Linux, more where tippecanoe's disk slows it down. `manby join` is tippecanoe's tile-join, two to thirty-five times faster.
+manby builds vector tilesets from GeoJSON, FlatGeobuf, CSV, Geobuf, GeoParquet or Arrow features, GeoParquet in object storage, and from DuckDB queries and data frames in Python and R. It makes the same tiles as [tippecanoe](https://github.com/felt/tippecanoe), in less memory, ten to eighteen times faster on a Mac and eight to fifteen times faster on Linux, more where tippecanoe's disk slows it down. `manby join` is tippecanoe's tile-join, two to thirty-five times faster.
 
 The `manby` command takes tippecanoe's options:
 

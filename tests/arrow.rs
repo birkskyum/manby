@@ -5,7 +5,9 @@
 //! written as GeoParquet, and through GDAL as FlatGeobuf without a spatial
 //! index (`LAYER_CREATION_OPTIONS 'SPATIAL_INDEX=NO'`). manby's FlatGeobuf
 //! reader is tippecanoe's, by the golden tests. The Arrow streams are made
-//! here from the GeoParquet files.
+//! here from the GeoParquet files. The `-bbox.fgb` files hold the rows that
+//! overlap -110,30,-90,45, as DuckDB picks them by their geometries' extents,
+//! for `--bbox`.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -99,6 +101,31 @@ fn same_tiles_as_flatgeobuf() {
             assert!(parquet == fgb, "{} {:?}: GeoParquet", case, flags);
             let arrow = tile(&stream, &dir.join("arrow.pmtiles"), flags);
             assert!(arrow == fgb, "{} {:?}: Arrow", case, flags);
+        }
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn bbox_keeps_the_rows_that_overlap_it() {
+    let data = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/arrow");
+    let dir = std::env::temp_dir().join(format!("manby-arrow-bbox-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for case in ["ne_110m_admin_1_states_provinces_lines", "ne_110m_ocean"] {
+        for flags in FLAGS {
+            let fgb = tile(
+                &data.join(format!("{}-bbox.fgb", case)),
+                &dir.join("fgb.pmtiles"),
+                flags,
+            );
+            let mut with_bbox = flags.to_vec();
+            with_bbox.push("--bbox=-110,30,-90,45");
+            let parquet = tile(
+                &data.join(format!("{}.parquet", case)),
+                &dir.join("parquet.pmtiles"),
+                &with_bbox,
+            );
+            assert!(parquet == fgb, "{} {:?}", case, flags);
         }
     }
     std::fs::remove_dir_all(&dir).unwrap();

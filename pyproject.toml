@@ -32,5 +32,5 @@ Repository = "https://github.com/birkskyum/manby"
 bindings = "bin"
 python-source = "python"
 module-name = "manby"
-features = ["mlt"]
+features = ["mlt", "remote"]
 strip = true

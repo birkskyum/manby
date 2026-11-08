@@ -214,10 +214,10 @@ impl Bins {
                 bin.sums.resize(setup.accumulate.len(), Sum::default());
             }
             for (k, v) in keys.iter().zip(values) {
-                if let Ok(i) = setup.accumulate.binary_search_by(|a| a.0.as_str().cmp(k)) {
-                    if let Some(n) = number(v) {
-                        bin.sums[i].add(n);
-                    }
+                if let Ok(i) = setup.accumulate.binary_search_by(|a| a.0.as_str().cmp(k))
+                    && let Some(n) = number(v)
+                {
+                    bin.sums[i].add(n);
                 }
                 if setup.category.as_deref() == Some(k.as_ref()) {
                     let value = v.s.split('\0').next().unwrap_or("").to_string();

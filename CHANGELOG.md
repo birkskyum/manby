@@ -1,5 +1,12 @@
 The changes in each version of manby, from the titles of the pull requests that made them.
 
+## [0.1.7](https://github.com/birkskyum/manby/compare/v0.1.6...v0.1.7) - 2026-11-08
+
+### Added
+
+- Read GeoParquet from object storage and the web, and pick rows with --bbox ([#21](https://github.com/birkskyum/manby/pull/21))
+- Report a tileset's tile sizes and features at each zoom with manby stats ([#19](https://github.com/birkskyum/manby/pull/19))
+
 ## [0.1.6](https://github.com/birkskyum/manby/compare/v0.1.5...v0.1.6) - 2026-11-07
 
 ### Added

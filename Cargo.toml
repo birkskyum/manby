@@ -8,7 +8,7 @@ members = [
 
 [package]
 name = "manby"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2024"
 description = "Builds vector tilesets from geographic features, like tippecanoe, several times faster"
 license = "BSD-2-Clause"

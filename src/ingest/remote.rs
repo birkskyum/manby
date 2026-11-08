@@ -180,12 +180,13 @@ mod imp {
                 if !signed {
                     b = b.with_skip_signature(true);
                 }
-                if !set("AWS_REGION") && !set("AWS_DEFAULT_REGION") && !set("AWS_ENDPOINT") {
-                    if let Ok(region) =
+                if !set("AWS_REGION")
+                    && !set("AWS_DEFAULT_REGION")
+                    && !set("AWS_ENDPOINT")
+                    && let Ok(region) =
                         object_store::aws::resolve_bucket_region(&bucket, &options).await
-                    {
-                        b = b.with_region(region);
-                    }
+                {
+                    b = b.with_region(region);
                 }
                 Arc::new(b.build().map_err(|e| e.to_string())?)
             }

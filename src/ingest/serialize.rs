@@ -16,7 +16,7 @@ use tippecanoe::geometry::{
 use tippecanoe::milo::dtoa_milo;
 use tippecanoe::mvt::{MVT_DOUBLE, MVT_STRING};
 use tippecanoe::options::*;
-use tippecanoe::projection::{PROJECTIONS, encode_hilbert, encode_quadkey, encode_vertex};
+use tippecanoe::projection::{encode_hilbert, encode_quadkey, encode_vertex};
 use tippecanoe::serial::{SerialVal, Vertex, coerce_value};
 
 use super::chunk::{Chunk, MessageKind};
@@ -26,8 +26,8 @@ use crate::store::{Attr, Feature};
 /// What reading needs from the options, worked out once.
 pub struct Config<'o> {
     pub o: &'o Options,
-    pub project: fn(f64, f64, i32) -> (i64, i64),
-    pub projection_alias: &'static str,
+    pub project: crate::crs::Project,
+    pub projection_alias: String,
     pub encode_index: fn(u32, u32) -> u64,
     pub geometry_scale: i32,
     pub want_dist: bool,
@@ -46,8 +46,8 @@ impl<'o> Config<'o> {
         let uses_gamma = o.gamma != 0.0;
         Config {
             o,
-            project: PROJECTIONS[o.projection].project,
-            projection_alias: PROJECTIONS[o.projection].alias,
+            project: o.project(),
+            projection_alias: o.projection_alias(),
             encode_index: if a(A_HILBERT) {
                 encode_hilbert
             } else {

@@ -7,7 +7,8 @@
 //! reader is tippecanoe's, by the golden tests. The Arrow streams are made
 //! here from the GeoParquet files. The `-bbox.fgb` files hold the rows that
 //! overlap -110,30,-90,45, as DuckDB picks them by their geometries' extents,
-//! for `--bbox`.
+//! for `--bbox`. The `-5070` files are the lines in NAD83 / Conus Albers,
+//! as GeoPandas wrote them with PROJ.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -127,6 +128,38 @@ fn bbox_keeps_the_rows_that_overlap_it() {
             );
             assert!(parquet == fgb, "{} {:?}", case, flags);
         }
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn reprojected_from_another_crs() {
+    let data = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/arrow");
+    let dir = std::env::temp_dir().join(format!("manby-arrow-crs-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let case = "ne_110m_admin_1_states_provinces_lines";
+    for flags in FLAGS {
+        let lonlat = tile(
+            &data.join(format!("{}.parquet", case)),
+            &dir.join("a.pmtiles"),
+            flags,
+        );
+        // the CRS of the GeoParquet metadata
+        let parquet = tile(
+            &data.join(format!("{}-5070.parquet", case)),
+            &dir.join("b.pmtiles"),
+            flags,
+        );
+        assert!(parquet == lonlat, "GeoParquet {:?}", flags);
+        // the CRS of -s
+        let mut with_s = flags.to_vec();
+        with_s.extend(["-s", "EPSG:5070"]);
+        let geojson = tile(
+            &data.join(format!("{}-5070.geojson", case)),
+            &dir.join("c.pmtiles"),
+            &with_s,
+        );
+        assert!(geojson == lonlat, "GeoJSON {:?}", flags);
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }

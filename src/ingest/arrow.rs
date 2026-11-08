@@ -33,6 +33,8 @@ use tippecanoe::jsonpull::{JsonPull, JsonRef, JsonType};
 use tippecanoe::milo::dtoa_milo;
 use tippecanoe::mvt::{MVT_BOOL, MVT_DOUBLE, MVT_STRING};
 use tippecanoe::projection::PROJECTIONS;
+
+use crate::crs::{Project, Reprojection};
 use tippecanoe::serial::SerialVal;
 
 use super::chunk::{Chunk, MessageKind};
@@ -159,11 +161,11 @@ fn geometry_box(table: &Table, g: &dyn Array, row: usize, dv: &mut DrawVec) -> O
         let mut w = Wkb {
             b: wkb_bytes(g, row),
             pos: 0,
-            project: table.project,
+            project: &table.project,
         };
         w.geometry(dv).is_ok()
     } else {
-        geoarrow(g, row, table.encoding, table.project, dv).is_some()
+        geoarrow(g, row, table.encoding, &table.project, dv).is_some()
     };
     if !read {
         return Some(WorldBox {
@@ -211,6 +213,33 @@ fn statistic(s: Option<&parquet::file::statistics::Statistics>, max: bool) -> Op
         Statistics::Double(v) => if max { v.max_opt() } else { v.min_opt() }.copied(),
         Statistics::Float(v) => if max { v.max_opt() } else { v.min_opt() }.map(|f| *f as f64),
         _ => None,
+    }
+}
+
+/// A row group's bounding box `[xmin, ymin, xmax, ymax]` in world
+/// coordinates. A box in another CRS is curved in world coordinates, so its
+/// edges are followed, and it is made a little bigger.
+fn stats_box(project: &Project, s: [f64; 4]) -> WorldBox {
+    if let Project::Tippecanoe(p) = project {
+        return WorldBox::of(p(s[0], s[1], 32), p(s[2], s[3], 32));
+    }
+    let mut b = WorldBox::of(project.world(s[0], s[1], 32), project.world(s[2], s[3], 32));
+    const STEPS: usize = 8;
+    for i in 0..=STEPS {
+        let f = i as f64 / STEPS as f64;
+        let x = s[0] + (s[2] - s[0]) * f;
+        let y = s[1] + (s[3] - s[1]) * f;
+        for p in [(x, s[1]), (x, s[3]), (s[0], y), (s[2], y)] {
+            let (wx, wy) = project.world(p.0, p.1, 32);
+            b = WorldBox::of((b.x0.min(wx), b.y0.min(wy)), (b.x1.max(wx), b.y1.max(wy)));
+        }
+    }
+    let margin = ((b.x1 - b.x0).max(b.y1 - b.y0) / 100).max(1 << 10);
+    WorldBox {
+        x0: b.x0 - margin,
+        y0: b.y0 - margin,
+        x1: b.x1 + margin,
+        y1: b.y1 + margin,
     }
 }
 
@@ -265,8 +294,7 @@ pub fn row_groups(
             match stats {
                 // across the antimeridian, or no statistics: read it
                 Some(s) if s[0] <= s[2] && s.iter().all(|v| v.is_finite()) => {
-                    let p = table.project;
-                    WorldBox::of(p(s[0], s[1], 32), p(s[2], s[3], 32)).overlaps(bbox)
+                    stats_box(&table.project, s).overlaps(bbox)
                 }
                 _ => true,
             }
@@ -344,7 +372,7 @@ struct Property {
 pub struct Table {
     geometry: usize,
     encoding: Encoding,
-    project: fn(f64, f64, i32) -> (i64, i64),
+    project: Project,
     properties: Vec<Property>,
     /// The table's columns that the features use, for a reader that can
     /// leave the others out.
@@ -573,18 +601,22 @@ impl Table {
         }
 
         let project = match crs {
-            Crs::Unknown => cfg.project,
-            Crs::LonLat => PROJECTIONS[0].project,
-            Crs::WebMercator => PROJECTIONS[1].project,
-            Crs::Other(name) => {
-                return Err(Error::new(
-                    EXIT_IMPOSSIBLE,
-                    format!(
-                        "{}: the coordinates are in {}. manby reads longitude and latitude (EPSG:4326) or Web Mercator (EPSG:3857), so reproject them first, with DuckDB's ST_Transform or GeoPandas' to_crs for example",
-                        fname, name
-                    ),
-                ));
-            }
+            Crs::Unknown => cfg.project.clone(),
+            Crs::LonLat => Project::Tippecanoe(PROJECTIONS[0].project),
+            Crs::WebMercator => Project::Tippecanoe(PROJECTIONS[1].project),
+            // made longitude and latitude by crs-defs' definition of it
+            Crs::Other(name) => match Reprojection::new(&name) {
+                Ok(r) => Project::Crs(std::sync::Arc::new(r)),
+                Err(_) => {
+                    return Err(Error::new(
+                        EXIT_IMPOSSIBLE,
+                        format!(
+                            "{}: the coordinates are in {}, which manby doesn't know. Reproject them first, with DuckDB's ST_Transform or GeoPandas' to_crs for example",
+                            fname, name
+                        ),
+                    ));
+                }
+            },
         };
 
         let mut properties = Vec::new();
@@ -940,7 +972,7 @@ fn json(a: &dyn Array, i: usize, out: &mut String) {
 struct Wkb<'a> {
     b: &'a [u8],
     pos: usize,
-    project: fn(f64, f64, i32) -> (i64, i64),
+    project: &'a Project,
 }
 
 /// A geometry tippecanoe cannot read from FlatGeobuf either.
@@ -1001,7 +1033,7 @@ impl Wkb<'_> {
     }
 
     fn draw(&self, op: i8, (x, y): (f64, f64)) -> Draw {
-        let (x, y) = (self.project)(x, y, 32);
+        let (x, y) = self.project.world(x, y, 32);
         Draw::new(op, x, y)
     }
 
@@ -1126,11 +1158,11 @@ fn geoarrow(
     a: &dyn Array,
     i: usize,
     encoding: Encoding,
-    project: fn(f64, f64, i32) -> (i64, i64),
+    project: &Project,
     dv: &mut DrawVec,
 ) -> Option<i8> {
     let draw = |op, (x, y): (f64, f64)| {
-        let (x, y) = project(x, y, 32);
+        let (x, y) = project.world(x, y, 32);
         Draw::new(op, x, y)
     };
     let line = |a: &dyn Array, i: usize, dv: &mut DrawVec| -> Option<()> {
@@ -1219,7 +1251,7 @@ pub fn read_row(
         let mut w = Wkb {
             b: wkb_bytes(g, row),
             pos: 0,
-            project: table.project,
+            project: &table.project,
         };
         match w.geometry(&mut dv) {
             Ok(t) => t,
@@ -1251,7 +1283,7 @@ pub fn read_row(
             }
         }
     } else {
-        match geoarrow(g, row, table.encoding, table.project, &mut dv) {
+        match geoarrow(g, row, table.encoding, &table.project, &mut dv) {
             Some(t) => t,
             None => {
                 return Err(Error::new(
@@ -1341,10 +1373,11 @@ mod tests {
             b.extend_from_slice(&v.to_be_bytes());
         }
         let mut dv = DrawVec::new();
+        let lonlat = Project::Tippecanoe(PROJECTIONS[0].project);
         let mut w = Wkb {
             b: &b,
             pos: 0,
-            project: PROJECTIONS[0].project,
+            project: &lonlat,
         };
         assert!(matches!(w.geometry(&mut dv), Ok(1)));
         assert_eq!(w.pos, b.len());

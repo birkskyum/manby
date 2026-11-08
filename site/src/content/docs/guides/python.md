@@ -14,7 +14,7 @@ manby -zg --drop-densest-as-needed -o buildings.pmtiles buildings.parquet
 Arrow IPC files and streams, `.arrow`, `.arrows` and `.feather`, read the same way.
 
 - **Geometry.** The column that the GeoParquet metadata names, or the first with a GeoArrow type, or a column named `geometry` in well-known binary. Rows without a geometry are left out.
-- **Coordinates.** Longitude and latitude, or Web Mercator where the CRS is EPSG:3857. A file in another CRS is refused, so reproject it first, with DuckDB's `ST_Transform` for example.
+- **Coordinates.** In the CRS that the GeoParquet or GeoArrow metadata names: longitude and latitude, Web Mercator, or any of the 9,508 EPSG and ESRI codes of [crs-defs](https://github.com/birkskyum/crs-defs), which are made longitude and latitude within centimeters of PROJ. Without a CRS, `-s` names it.
 - **Attributes.** Each field of a struct becomes an attribute of its own, such as `names.primary`, and lists and maps become JSON text, as GDAL makes them. Dates and times become ISO 8601 text, with a `Z` for UTC where they have a zone. Binary columns are left out.
 
 ### In object storage and on the web

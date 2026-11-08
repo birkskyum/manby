@@ -132,6 +132,10 @@ pub struct Options {
     pub read_parallel: bool,
     /// Index into `tippecanoe::projection::PROJECTIONS` (`-s`).
     pub projection: usize,
+    /// `-s` with a CRS that tippecanoe doesn't have, such as `EPSG:25832`,
+    /// which crs-defs defines: the input's coordinates are made longitude
+    /// and latitude first.
+    pub source_crs: Option<String>,
 
     pub maxzoom: i32,
     pub minzoom: i32,
@@ -242,6 +246,7 @@ impl Default for Options {
             attribution: None,
             read_parallel: false,
             projection: 0,
+            source_crs: None,
             maxzoom: 14,
             minzoom: 0,
             guess_maxzoom: false,
@@ -322,6 +327,25 @@ fn parse_size(s: &str) -> Option<u64> {
 
 impl Options {
     /// The memory budget in bytes.
+    /// How the input's coordinates become world coordinates (`-s`).
+    pub fn project(&self) -> crate::crs::Project {
+        match &self.source_crs {
+            Some(code) => crate::crs::Project::Crs(std::sync::Arc::new(
+                crate::crs::Reprojection::new(code).expect("a CRS checked when parsed"),
+            )),
+            None => crate::crs::Project::Tippecanoe(PROJECTIONS[self.projection].project),
+        }
+    }
+
+    /// The name of the input's CRS that a GeoJSON file's `crs` is expected
+    /// to give.
+    pub fn projection_alias(&self) -> String {
+        match &self.source_crs {
+            Some(code) => format!("urn:ogc:def:crs:{}", code.replacen(':', "::", 1)),
+            None => PROJECTIONS[self.projection].alias.to_string(),
+        }
+    }
+
     pub fn memory_budget(&self) -> u64 {
         self.memory_budget
             .unwrap_or_else(|| tippecanoe::platform::calc_memsize() as u64 / 2)
@@ -387,10 +411,10 @@ impl Options {
         // Wait until here to project the bounding box, so that the behavior is
         // the same no matter what order the projection and bounding box are
         // specified in
-        let project = PROJECTIONS[self.projection].project;
+        let project = self.project();
         for c in self.clip_bboxes.iter_mut() {
-            (c.minx, c.maxy) = project(c.lon1, c.lat1, 32);
-            (c.maxx, c.miny) = project(c.lon2, c.lat2, 32);
+            (c.minx, c.maxy) = project.world(c.lon1, c.lat1, 32);
+            (c.maxx, c.miny) = project.world(c.lon2, c.lat2, 32);
         }
 
         if self.max_tilestats_sample_values < self.max_tilestats_values {
@@ -1678,10 +1702,19 @@ pub fn parse_args(argv: &[String]) -> crate::Result<Options> {
                 .iter()
                 .position(|p| p.name == arg || p.alias == arg)
             {
-                Some(p) => o.projection = p,
-                None => {
-                    return err_args(format!("Unknown projection (-s): {}", arg));
+                Some(p) => {
+                    o.projection = p;
+                    o.source_crs = None;
                 }
+                None => match crate::crs::Reprojection::new(arg) {
+                    Ok(r) => {
+                        o.projection = 0;
+                        o.source_crs = Some(r.code);
+                    }
+                    Err(_) => {
+                        return err_args(format!("Unknown projection (-s): {}", arg));
+                    }
+                },
             },
 
             b'S' => {

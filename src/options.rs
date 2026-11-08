@@ -136,6 +136,12 @@ pub struct Options {
     /// which crs-defs defines: the input's coordinates are made longitude
     /// and latitude first.
     pub source_crs: Option<String>,
+    /// `--h3`: below `--h3-base-zoom`, each layer's points binned into H3
+    /// hexagons in a layer of their own; `--h3-categories` counts the
+    /// values of an attribute in each.
+    pub h3: bool,
+    pub h3_base_zoom: Option<i32>,
+    pub h3_categories: Option<String>,
 
     pub maxzoom: i32,
     pub minzoom: i32,
@@ -247,6 +253,9 @@ impl Default for Options {
             read_parallel: false,
             projection: 0,
             source_crs: None,
+            h3: false,
+            h3_base_zoom: None,
+            h3_categories: None,
             maxzoom: 14,
             minzoom: 0,
             guess_maxzoom: false,
@@ -346,6 +355,13 @@ impl Options {
         }
     }
 
+    /// `--h3`'s base zoom: given, or two zooms below the maximum.
+    pub fn h3_base(&self) -> i32 {
+        self.h3_base_zoom
+            .unwrap_or(self.maxzoom - 2)
+            .clamp(self.minzoom, self.maxzoom.max(self.minzoom))
+    }
+
     pub fn memory_budget(&self) -> u64 {
         self.memory_budget
             .unwrap_or_else(|| tippecanoe::platform::calc_memsize() as u64 / 2)
@@ -406,6 +422,16 @@ impl Options {
 
         if self.tippecanoe_cpus == 0 {
             self.tippecanoe_cpus = tippecanoe_cpus()?;
+        }
+
+        if self.h3 && self.guess_maxzoom && self.h3_base_zoom.is_none() {
+            return Err(Error::new(
+                EXIT_ARGS,
+                format!(
+                    "{}: --h3 with -zg needs --h3-base-zoom, the zoom from which the points show",
+                    argv0
+                ),
+            ));
         }
 
         // Wait until here to project the bounding box, so that the behavior is
@@ -1166,6 +1192,9 @@ fn long_options_orig() -> Vec<LongOption> {
         opt("tile-format", REQ, b'~'),
         opt("mlt-profile", REQ, b'~'),
         opt("bbox", REQ, b'~'),
+        opt("h3", NO, b'~'),
+        opt("h3-base-zoom", REQ, b'~'),
+        opt("h3-categories", REQ, b'~'),
         heading(""),
         opt("prevent", REQ, b'p'),
         opt("additional", REQ, b'a'),
@@ -1454,6 +1483,15 @@ pub fn parse_args(argv: &[String]) -> crate::Result<Options> {
                             ));
                         }
                     },
+                    "h3" => o.h3 = true,
+                    "h3-base-zoom" => {
+                        o.h3 = true;
+                        o.h3_base_zoom = Some(require_int(&optarg, "H3 base zoom", &argv0)?)
+                    }
+                    "h3-categories" => {
+                        o.h3 = true;
+                        o.h3_categories = Some(arg.to_string())
+                    }
                     "bbox" => match sscanf_f64x4(arg) {
                         Some(b) if b[0] < b[2] && b[1] < b[3] => o.bbox = Some(b),
                         _ => {

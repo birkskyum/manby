@@ -23,6 +23,7 @@ pub mod csv;
 pub mod flatgeobuf;
 pub mod geobuf;
 pub mod geojson;
+pub mod h3;
 pub mod json;
 pub mod remote;
 pub mod serialize;
@@ -834,7 +835,68 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
     }
     flush(&mut stderr);
 
+    if let Some(setup) = &cfg.h3 {
+        add_hexagons(
+            &mut parts,
+            &cfg,
+            setup,
+            &layer_names,
+            unit_count,
+            overall_offset,
+        );
+    }
+
     Ok(merge(parts, &sources, &layer_names, &layer_source, options))
+}
+
+/// `--h3`: the hexagons of the points that the chunks counted, as one more
+/// chunk, after every input's features.
+fn add_hexagons(
+    parts: &mut Parts,
+    cfg: &Config<'_>,
+    setup: &h3::Setup,
+    layer_names: &[String],
+    unit: usize,
+    seq: i64,
+) {
+    let bins: Vec<h3::Bins> = parts
+        .chunks
+        .iter_mut()
+        .filter_map(|a| a.chunk.h3.take().map(|b| *b))
+        .collect();
+    let hexagons = h3::hexagons(setup, bins);
+    if hexagons.is_empty() {
+        return;
+    }
+    let mut chunk = Chunk::new(layer_names);
+    for mut h in hexagons {
+        serialize::serialize_feature(&mut chunk, cfg, &mut h.feature, &h.layer);
+    }
+    // the guess of a maximum zoom goes by the features read
+    chunk.dist_terms = Buf::new();
+    chunk.area_terms = Buf::new();
+    chunk.dist_count = 0;
+    chunk.finish();
+    if !cfg.o.quiet {
+        let windows: Vec<String> = setup
+            .windows
+            .iter()
+            .map(|w| format!("{} at z{}-{}", w.0, w.1, w.2))
+            .collect();
+        eprintln!(
+            "{} hexagons at H3 resolutions {}, and the points from z{}",
+            chunk.features.len(),
+            windows.join(", "),
+            setup.base
+        );
+    }
+    parts.seq_base.push(seq);
+    parts.segment.push(0);
+    parts.chunks.push(Accepted {
+        chunk,
+        unit,
+        line_offset: 0,
+    });
 }
 
 /// tippecanoe's numbering of the features of a FlatGeobuf file. It runs its

@@ -1,5 +1,17 @@
 The changes in each version of manby, from the titles of the pull requests that made them.
 
+## [0.1.11](https://github.com/birkskyum/manby/compare/v0.1.10...v0.1.11) - 2026-11-09
+
+### Added
+
+- Like, ilike and intersects in feature filters ([#31](https://github.com/birkskyum/manby/pull/31))
+- --largest-maximum-zoom-guess caps the maxzoom that -zg chooses ([#35](https://github.com/birkskyum/manby/pull/35))
+
+### Fixed
+
+- Keep high zooms of large polygons within memory ([#37](https://github.com/birkskyum/manby/pull/37))
+- Say that manby needs Rust 1.94, and build with it in CI ([#36](https://github.com/birkskyum/manby/pull/36))
+
 ## [0.1.10](https://github.com/birkskyum/manby/compare/v0.1.9...v0.1.10) - 2026-11-09
 
 ### Fixed

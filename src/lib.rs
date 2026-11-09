@@ -97,9 +97,13 @@ pub use options::Options;
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct Summary {
+    /// Features read.
     pub features: u64,
+    /// Tiles written.
     pub tiles: u64,
+    /// The lowest zoom written.
     pub minzoom: i32,
+    /// The highest zoom written.
     pub maxzoom: i32,
     /// A tile could not be made small enough, so the tileset stops at
     /// `maxzoom`, below the zoom that was planned. tippecanoe exits with

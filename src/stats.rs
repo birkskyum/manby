@@ -22,14 +22,20 @@ directory's tiles at each zoom, as stored.
   --largest=N    list the N largest tiles, 10 unless given
   --json         write the report as JSON";
 
+/// `manby stats`'s options.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StatsOptions {
+    /// `--layers`: also count the features of each layer at each zoom
     pub layers: bool,
+    /// `--largest`: how many of the largest tiles to list
     pub largest: usize,
+    /// `--json`: write the report as JSON
     pub json: bool,
+    /// PMTiles archives, MBTiles databases or directories of tiles
     pub tilesets: Vec<String>,
 }
 
+/// Parses `manby stats`'s arguments, the first being the program's name.
 pub fn parse_args(argv: &[String]) -> Result<StatsOptions> {
     let mut o = StatsOptions {
         layers: false,

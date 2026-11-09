@@ -80,7 +80,10 @@ pub struct Source {
     pub format: String,
 }
 
+/// tippecanoe's options, and manby's own. [`Options::default`] has
+/// tippecanoe's defaults, and [`parse_args`] reads them from a command line.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Options {
     /// Input files named on the command line, after the `-L` sources.
     pub inputs: Vec<String>,
@@ -344,8 +347,8 @@ fn parse_size(s: &str) -> Option<u64> {
 }
 
 impl Options {
-    /// The memory budget in bytes.
     /// How the input's coordinates become world coordinates (`-s`).
+    #[doc(hidden)]
     pub fn project(&self) -> crate::crs::Project {
         match &self.source_crs {
             Some(code) => crate::crs::Project::Crs(std::sync::Arc::new(
@@ -601,6 +604,7 @@ pub fn tippecanoe_cpus() -> crate::Result<usize> {
 /// globals. This is the one place manby writes them, once per run, before any
 /// borrowed function is called. Each borrowed function that manby replaces
 /// with a parameterized copy removes a reason for this function to exist.
+#[doc(hidden)]
 pub fn set_tippecanoe_globals(options: &Options, cluster_maxzoom: i32) {
     use std::sync::atomic::Ordering::Relaxed;
     use tippecanoe::globals as g;
@@ -963,6 +967,7 @@ fn read_filter(fname: &str) -> crate::Result<JsonTree> {
 }
 
 /// What `perror` would print after the colon for `e`.
+#[doc(hidden)]
 pub fn os_message(e: &std::io::Error) -> String {
     match e.raw_os_error() {
         Some(n) => tippecanoe::cstd::strerror(n),

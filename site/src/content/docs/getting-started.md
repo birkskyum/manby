@@ -87,4 +87,11 @@ make test
 
 ## As a library
 
-manby is a library first. `manby::run(&Options)` reads, tiles and writes a tileset and returns an error instead of exiting, `manby::join(&JoinOptions)` joins tilesets, and the commands are thin layers over them.
+manby is a library first. `manby::run(&Options)` reads, tiles and writes a tileset and returns an error instead of exiting, `manby::join(&JoinOptions)` joins tilesets, and the commands are thin layers over them. The options are tippecanoe's, from a command line or as fields, and [docs.rs](https://docs.rs/manby) has the API.
+
+```rust
+let args = ["manby", "-zg", "--drop-densest-as-needed", "-o", "places.pmtiles", "places.geojson"];
+let options = manby::options::parse_args(&args.map(String::from))?;
+let summary = manby::run(&options)?;
+println!("{} tiles, to zoom {}", summary.tiles, summary.maxzoom);
+```

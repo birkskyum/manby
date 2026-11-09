@@ -8,11 +8,17 @@
 
 pub mod args;
 pub mod csv;
+#[doc(hidden)]
 pub mod key;
+#[doc(hidden)]
 pub mod merge;
+#[doc(hidden)]
 pub mod overzoom;
+#[doc(hidden)]
 pub mod source;
+#[doc(hidden)]
 pub mod stats;
+#[doc(hidden)]
 pub mod tile;
 
 #[cfg(test)]
@@ -42,8 +48,11 @@ pub const MAX_TILE_BYTES: usize = 500_000;
 /// Output tiles worked on together.
 const BATCH: usize = 2048;
 
-/// Everything tile-join's command line says.
+/// Everything tile-join's command line says. [`JoinOptions::default`] has
+/// tile-join's defaults, and [`args::parse_args`] reads them from a command
+/// line.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct JoinOptions {
     /// The tilesets to join, in order.
     pub inputs: Vec<String>,
@@ -151,6 +160,7 @@ impl Default for JoinOptions {
 
 /// What a join wrote.
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct JoinSummary {
     pub tiles: u64,
     /// Tiles left out for being over the size limit.

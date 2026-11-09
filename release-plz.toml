@@ -53,6 +53,8 @@ commit_parsers = [
     { message = "^fix", group = "<!-- 1 -->Fixed" },
     { message = "^perf", group = "<!-- 2 -->Faster or smaller" },
     { message = "^chore\\(deps\\)", group = "<!-- 4 -->Dependencies" },
+    # a breaking change of a type that is otherwise left out
+    { message = "^[a-z]+(\\([a-z0-9_-]+\\))?!:", group = "<!-- 3 -->Changed" },
     { message = "^(build|chore|ci|docs|refactor|style|test)", skip = true },
     { message = ".*", group = "<!-- 3 -->Changed" },
 ]

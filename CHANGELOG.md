@@ -1,5 +1,11 @@
 The changes in each version of manby, from the titles of the pull requests that made them.
 
+## [0.1.10](https://github.com/birkskyum/manby/compare/v0.1.9...v0.1.10) - 2026-11-09
+
+### Fixed
+
+- Keep reading Arrow and FlatGeobuf within the memory budget ([#30](https://github.com/birkskyum/manby/pull/30))
+
 ## [0.1.9](https://github.com/birkskyum/manby/compare/v0.1.8...v0.1.9) - 2026-11-08
 
 ### Added

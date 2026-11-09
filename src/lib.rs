@@ -11,6 +11,7 @@ pub mod clean;
 pub mod compress;
 pub mod crs;
 pub mod error;
+pub mod filter;
 pub mod ingest;
 pub mod join;
 pub mod mem;

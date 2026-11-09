@@ -207,7 +207,7 @@ pub fn reference(store: &FeatureStore, o: &TileOptions) -> Reference {
     let outdir = format!("{}/out", dir);
     g::EXTEND_ZOOMS_MAX.store(o.extend_zooms_max, Relaxed);
 
-    let filter = o.filter.as_ref().map(|t| t.root());
+    let filter = o.filter.as_ref().map(|f| f.tree().root());
     let ret = tippecanoe::tile::traverse_zooms(
         &mut geomfd,
         &mut geom_size,

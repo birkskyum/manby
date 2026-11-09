@@ -197,7 +197,9 @@ fn main() {
         clipbboxes: gi("clipbboxes") > 0,
         extra_detail: gi("extra_detail") as i32,
         attribute_accum: accum,
-        filter: gopt("filter").map(|f| tippecanoe::evaluator::parse_filter(&f)),
+        filter: gopt("filter").map(|f| {
+            manby::filter::Filter::new(tippecanoe::evaluator::parse_filter(&f), false).unwrap()
+        }),
         drop_by_attribute: gopt("drop_by_attribute"),
         drop_by_attribute_descending: gv("drop_by_attribute")[1] == "1",
         unidecode_data: unidecode,

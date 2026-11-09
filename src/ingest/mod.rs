@@ -1157,8 +1157,8 @@ fn read_batched(
         }
     });
 
-    for k in 0..ranges.len() {
-        let Some((j, p)) = at[k] else {
+    for &read in &at {
+        let Some((j, p)) = read else {
             continue;
         };
         let (m0, m1) = (reads[j].ranges[p].2, end(&reads[j], p).1);

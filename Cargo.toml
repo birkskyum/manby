@@ -79,6 +79,10 @@ required-features = ["mlt"]
 name = "mlt_variants"
 required-features = ["mlt"]
 
+[lints.clippy]
+# The tiler divides as tippecanoe does, after checking the divisor.
+manual_checked_ops = "allow"
+
 [profile.release]
 debug = 1
 lto = "thin"

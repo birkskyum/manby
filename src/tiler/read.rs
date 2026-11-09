@@ -1186,7 +1186,7 @@ fn read_chunk(ctx: &Ctx<'_>, input: &TileInput, source: Source<'_>, rp: &ReadPar
     let mut n = 0u32;
     loop {
         n = n.wrapping_add(1);
-        if n % 4096 == 0 {
+        if n.is_multiple_of(4096) {
             crate::buf::relieve();
         }
         geometry.clear();

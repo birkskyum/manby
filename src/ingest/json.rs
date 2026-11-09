@@ -189,7 +189,9 @@ impl<'d, 'a> Ref<'d, 'a> {
     pub fn entries(&self) -> impl Iterator<Item = (Ref<'d, 'a>, Ref<'d, 'a>)> + 'd {
         let doc = self.doc;
         self.child_slice()
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .filter(|kv| kv[1] != NONE)
             .map(move |kv| (Ref { doc, id: kv[0] }, Ref { doc, id: kv[1] }))
     }
@@ -200,7 +202,7 @@ impl<'d, 'a> Ref<'d, 'a> {
         if self.node().kind != Kind::Hash {
             return None;
         }
-        for kv in self.child_slice().chunks_exact(2) {
+        for kv in self.child_slice().as_chunks::<2>().0 {
             let k = self.get(kv[0]);
             if k.kind() == Kind::String && k.bytes() == key {
                 return (kv[1] != NONE).then(|| self.get(kv[1]));

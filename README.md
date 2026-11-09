@@ -14,6 +14,8 @@ The `manby` command takes tippecanoe's options:
 manby -zg --drop-densest-as-needed -o places.pmtiles places.geojson
 ```
 
+`--largest-maximum-zoom-guess=14` chooses the maximum zoom as `-zg` does, but no higher than 14.
+
 The [site](https://birkskyum.github.io/manby/) has the guides.
 
 ## Install

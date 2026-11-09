@@ -48,6 +48,8 @@ manby takes [tippecanoe's options](https://github.com/felt/tippecanoe#readme), a
 manby -zg --drop-densest-as-needed -o places.pmtiles places.geojson
 ```
 
+`-zg` chooses the maximum zoom from how close the features are. `--largest-maximum-zoom-guess=14` chooses it the same way but no higher than 14, for dense data that would otherwise get more zooms than the map needs.
+
 The input can be GeoJSON, newline-delimited GeoJSON (read in parallel with `-P`), FlatGeobuf, CSV, Geobuf, [GeoParquet or Arrow](../guides/python/), and GeoParquet in object storage or on the web, by URL. GeoPackage, Shapefile and OpenStreetMap data can be [converted to FlatGeobuf](../guides/other-formats/) with GDAL first. The output is a PMTiles archive, an MBTiles database, or a directory of tiles with `-e`.
 
 Points can be clustered as tippecanoe clusters them, with their attributes accumulated.

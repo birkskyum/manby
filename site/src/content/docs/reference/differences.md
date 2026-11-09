@@ -17,6 +17,8 @@ manby makes the same tiles on macOS and on Linux, the tiles of tippecanoe's x86-
 
 ## What tippecanoe does not have
 
+[manby's own options](../options/) lists every option that tippecanoe and tile-join do not have.
+
 - **`--largest-maximum-zoom-guess`.** It chooses the maximum zoom as `-zg` does, but no higher than the zoom it is given, as `--smallest-maximum-zoom-guess` chooses no lower.
 - **Filters.** Feature filters also take [`like`, `ilike` and `intersects`](../../guides/programs/#feature-filters).
 

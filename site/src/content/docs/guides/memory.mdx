@@ -22,3 +22,9 @@ Inputs several times larger than a 1 GB budget, once each, against tippecanoe 2.
 <BarChart chart={charts.largerMemory} />
 
 The tiles are tippecanoe's for both. The [benchmarks](../../reference/benchmarks/) give the commands and describe the machines.
+
+## Large polygons at high zooms
+
+A polygon the size of a province covers millions of tiles at a high zoom, and a zoom level's tiles wait until the level is written. The tiles wait in the temporary file, and each one costs about 60 bytes of memory meanwhile, so the number of tiles does not decide the memory.
+
+Canada's 57,932 census dissemination areas at `-z15` make 46 million tiles, in 318 seconds and 3.3 GB on an M5 Max. The four largest of them alone make 24 million tiles in 1.7 GB, or in 0.8 GB with `--memory-budget=1G`, at 1.6 times the time.

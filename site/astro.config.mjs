@@ -65,6 +65,7 @@ export default defineConfig({
 					items: [
 						{ label: 'Benchmarks', slug: 'reference/benchmarks' },
 						{ label: 'How it works', slug: 'reference/how' },
+						{ label: "manby's own options", slug: 'reference/options' },
 						{ label: 'Differences from tippecanoe', slug: 'reference/differences' },
 						{ label: 'Changelog', slug: 'reference/changelog' },
 					],

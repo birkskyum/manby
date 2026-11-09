@@ -2,6 +2,10 @@
 # the crates from the titles of the pull requests merged into main: `feat` and
 # `fix` make a patch release while manby is 0.x, and `feat!` a minor one.
 #
+# manby's API, which is what src/lib.rs does not hide, is also compared with
+# the last release by cargo-semver-checks, so a change that breaks it makes a
+# minor release whatever its title says.
+#
 # Each crate is published when its files change. Only manby has a changelog, a
 # tag and a GitHub release, and its changelog includes the other crates' changes.
 # tippecanoe-rs and its vendored crates keep upstream's version numbers: when
@@ -18,6 +22,7 @@ repo_url = "https://github.com/birkskyum/manby"
 
 [[package]]
 name = "manby"
+semver_check = true
 changelog_update = true
 changelog_path = "CHANGELOG.md"
 changelog_include = ["manby-wagyu", "tippecanoe-rs", "tippecanoe-rs-wagyu", "tippecanoe-rs-clipper2"]

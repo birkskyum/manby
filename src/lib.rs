@@ -1,29 +1,86 @@
 //! manby builds vector tilesets from geographic features, like tippecanoe, but
 //! several times faster. See DESIGN.md.
 //!
-//! [`run`] takes [`Options`] and writes the tileset, and [`join`] takes
+//! [`run`] takes [`Options`] and writes the tileset, and [`join()`] takes
 //! [`JoinOptions`] and joins tilesets as tippecanoe's tile-join does. Nothing
-//! in manby exits the process or keeps global state; errors come back as
-//! [`Error`].
+//! in manby exits the process; errors come back as [`Error`], with the exit
+//! status tippecanoe would use.
+//!
+//! The options are tippecanoe's, so its command line is the shortest way to
+//! them:
+//!
+//! ```no_run
+//! let args = ["manby", "-zg", "--drop-densest-as-needed", "-o", "places.pmtiles", "places.geojson"];
+//! let options = manby::options::parse_args(&args.map(String::from))?;
+//! let summary = manby::run(&options)?;
+//! println!("{} tiles, to zoom {}", summary.tiles, summary.maxzoom);
+//! # Ok::<(), manby::Error>(())
+//! ```
+//!
+//! They are also fields, set on the defaults:
+//!
+//! ```no_run
+//! use manby::options::Output;
+//!
+//! let mut options = manby::Options::default();
+//! options.inputs = vec!["places.geojson".to_string()];
+//! options.output = Output::Pmtiles("places.pmtiles".to_string());
+//! options.maxzoom = 12;
+//! manby::run(&options)?;
+//! # Ok::<(), manby::Error>(())
+//! ```
+//!
+//! # What is public
+//!
+//! The API is what these pages show: [`run`] and [`join()`] with their options
+//! and summaries, and the commands in [`stats`], [`serve`] and [`overzoom`].
+//! The options and summaries are `#[non_exhaustive]`, since each new option
+//! is a new field. Some fields have types of tippecanoe-rs, which is
+//! [`tippecanoe`] here.
+//!
+//! manby's other modules are public for its own tests, examples and
+//! benchmarks. They are hidden from these pages and can change in any
+//! release.
+//!
+//! # One run at a time
+//!
+//! The code that manby borrows from tippecanoe-rs reads its options from
+//! globals, which each run sets, and the memory budget is the process's. Runs
+//! in one process should take turns unless their options are the same.
 
+#[doc(hidden)]
 pub mod buf;
+#[doc(hidden)]
 pub mod clean;
+#[doc(hidden)]
 pub mod compress;
+#[doc(hidden)]
 pub mod crs;
 pub mod error;
+#[doc(hidden)]
 pub mod filter;
+#[doc(hidden)]
 pub mod ingest;
 pub mod join;
+#[doc(hidden)]
 pub mod mem;
+#[doc(hidden)]
 pub mod mlt;
 pub mod options;
+#[doc(hidden)]
 pub mod order;
 pub mod overzoom;
 pub mod serve;
+#[doc(hidden)]
 pub mod sink;
 pub mod stats;
+#[doc(hidden)]
 pub mod store;
+#[doc(hidden)]
 pub mod tiler;
+
+/// tippecanoe-rs, for the types of its that the options have.
+pub use tippecanoe;
 
 use tippecanoe::errors::EXIT_NODATA;
 use tippecanoe::mbtiles::{make_metadata, merge_layermaps};
@@ -31,11 +88,14 @@ use tippecanoe::options::{P_TILE_COMPRESSION, P_TILE_STATS};
 use tippecanoe::projection::tile2lonlat;
 
 pub use error::{Error, Result};
+pub use filter::Filter;
 pub use join::{JoinOptions, JoinSummary, join};
+pub use mlt::{MltProfile, TileFormat};
 pub use options::Options;
 
 /// What a run produced.
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct Summary {
     pub features: u64,
     pub tiles: u64,
@@ -48,6 +108,7 @@ pub struct Summary {
 }
 
 /// The tiler's options for a run.
+#[doc(hidden)]
 pub fn tile_options(
     o: &Options,
     plan: &order::Plan,

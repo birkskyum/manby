@@ -179,7 +179,7 @@ pub struct Options {
     pub maximum_string_attribute_length: usize,
 
     /// `-J` or `-j`
-    pub filter: Option<JsonTree>,
+    pub filter: Option<crate::filter::Filter>,
     pub prefilter: Option<String>,
     pub postfilter: Option<String>,
     pub tmpdir: String,
@@ -1711,8 +1711,8 @@ pub fn parse_args(argv: &[String]) -> crate::Result<Options> {
                 _ => return err_args(format!("{}: -Y requires attribute:description", argv0)),
             },
 
-            b'J' => o.filter = Some(read_filter(arg)?),
-            b'j' => o.filter = Some(parse_filter(arg)?),
+            b'J' => o.filter = Some(crate::filter::Filter::new(read_filter(arg)?, false)?),
+            b'j' => o.filter = Some(crate::filter::Filter::new(parse_filter(arg)?, false)?),
 
             b'b' => {
                 o.buffer = require_int(&optarg, "Buffer", &argv0)?;

@@ -518,7 +518,7 @@ pub struct Rules {
     pub exclude_all: bool,
     pub exclude_all_tile_attributes: bool,
     pub exclude_all_tile_geometries: bool,
-    pub filter: Option<tippecanoe::jsonpull::JsonTree>,
+    pub filter: Option<crate::filter::Filter>,
     pub unidecode_data: Vec<String>,
 }
 
@@ -731,7 +731,7 @@ pub fn join_tile<'t>(
                 let tags = &tile.tags[feat.tags.start as usize..feat.tags.end as usize];
                 exclude_attributes.clear();
                 if let (Some(filter), Some(fl)) = (&rules.filter, &filter_layer) {
-                    let root = filter.root();
+                    let root = filter.tree().root();
                     if root.type_() != JsonType::Hash {
                         return Err(filter_not_a_hash(root));
                     }
@@ -742,13 +742,13 @@ pub fn join_tile<'t>(
                         has_id: feat.has_id,
                         ..Default::default()
                     };
-                    if !tippecanoe::evaluator::evaluate_feature(
+                    if !filter.evaluate_feature(
                         &mf,
                         fl,
-                        root,
                         &mut exclude_attributes,
                         z,
                         &rules.unidecode_data,
+                        None,
                     ) {
                         continue;
                     }

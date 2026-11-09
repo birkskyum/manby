@@ -8,7 +8,6 @@ use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 
 use tippecanoe::errors::{EXIT_ARGS, EXIT_IMPOSSIBLE, EXIT_INCOMPLETE};
 use tippecanoe::globals::MAX_ZOOM;
-use tippecanoe::jsonpull::JsonRef;
 use tippecanoe::mbtiles::{LayermapEntry, merge_layermaps};
 use tippecanoe::mvt::{MVT_NULL, MvtValue, stringified_to_mvt_value};
 use tippecanoe::options::*;
@@ -33,7 +32,7 @@ pub struct Ctx<'a> {
     pub value_null: Buf<bool>,
     /// The position of each layer when the layers are sorted by name.
     pub layer_rank: Vec<u32>,
-    pub filter: Option<JsonRef<'a>>,
+    pub filter: Option<&'a crate::filter::Filter>,
     /// The encodings of the values, for writing tiles.
     pub codes: ValueCodes,
     /// Each key's slot in tippecanoe's key dedup cache.
@@ -103,7 +102,7 @@ impl<'a> Ctx<'a> {
             o,
             value_null,
             layer_rank,
-            filter: o.filter.as_ref().map(|t| t.root()),
+            filter: o.filter.as_ref(),
         }
     }
 }

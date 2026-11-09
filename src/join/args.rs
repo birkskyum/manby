@@ -11,6 +11,7 @@ use tippecanoe::usage::{UsageRequiredOption, print_usage, strip_usage_headings};
 
 use super::JoinOptions;
 use super::csv::RawCsv;
+use crate::filter::Filter;
 use crate::options::Output;
 use crate::{Error, Result};
 
@@ -255,8 +256,8 @@ pub fn parse_args(argv: &[String], commandline: String) -> Result<JoinOptions> {
             _ if i == c(b'N') => o.description = optarg,
             _ if i == c(b'z') => o.maxzoom = atoi(&optarg),
             _ if i == c(b'Z') => o.minzoom = atoi(&optarg),
-            _ if i == c(b'J') => o.filter = Some(read_filter(&optarg)?),
-            _ if i == c(b'j') => o.filter = Some(parse_filter(&optarg)?),
+            _ if i == c(b'J') => o.filter = Some(Filter::new(read_filter(&optarg)?, false)?),
+            _ if i == c(b'j') => o.filter = Some(Filter::new(parse_filter(&optarg)?, false)?),
             _ if i == c(b'p') => match optarg.as_str() {
                 "k" => o.no_tile_size_limit = true,
                 "C" => o.no_tile_compression = true,

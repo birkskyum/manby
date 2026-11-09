@@ -1,10 +1,10 @@
 //! The `manby` command, which accepts tippecanoe's options, and its
 //! subcommands for tippecanoe's other programs: `manby join` accepts
-//! tile-join's, and `manby decode`, `manby enumerate`, `manby overzoom` and
-//! `manby json-tool` are tippecanoe-rs's tippecanoe-decode,
-//! tippecanoe-enumerate, tippecanoe-overzoom and tippecanoe-json-tool. Each
-//! program's own name also works as the subcommand, and run under that name
-//! (a link, say), manby is that program. `manby serve` serves tilesets with
+//! tile-join's, `manby decode`, `manby enumerate` and `manby json-tool` are
+//! tippecanoe-rs's tippecanoe-decode, tippecanoe-enumerate and
+//! tippecanoe-json-tool, and `manby overzoom` is tippecanoe-overzoom, made
+//! with manby's feature filters. Each program's own name also works as the
+//! subcommand, and run under that name (a link, say), manby is that program. `manby serve` serves tilesets with
 //! a map of them, and `manby stats` reports their tiles' sizes.
 
 use std::ffi::OsString;
@@ -23,8 +23,9 @@ unsafe impl Sync for MallocConf {}
 pub static MALLOC_CONF: MallocConf =
     MallocConf(c"narenas:4,dirty_decay_ms:0,muzzy_decay_ms:0,retain:true".as_ptr() as *const u8);
 
-/// tippecanoe's programs that manby runs as tippecanoe-rs has them: the
-/// subcommand, the program's name, and its `main`.
+/// tippecanoe's programs that manby runs as tippecanoe-rs has them, and
+/// overzoom, which is manby's: the subcommand, the program's name, and its
+/// `main`.
 const TOOLS: [(&str, &str, fn()); 4] = [
     ("decode", "tippecanoe-decode", tippecanoe::decode::main),
     (
@@ -32,11 +33,7 @@ const TOOLS: [(&str, &str, fn()); 4] = [
         "tippecanoe-enumerate",
         tippecanoe::enumerate::main,
     ),
-    (
-        "overzoom",
-        "tippecanoe-overzoom",
-        tippecanoe::overzoom::main,
-    ),
+    ("overzoom", "tippecanoe-overzoom", overzoom),
     (
         "json-tool",
         "tippecanoe-json-tool",
@@ -107,6 +104,19 @@ fn main() {
             }
             std::process::exit(e.exit_code);
         }
+    }
+}
+
+/// tippecanoe-overzoom, with manby's feature filters.
+fn overzoom() {
+    let argv: Vec<String> = std::env::args_os()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    if let Err(e) = manby::overzoom::parse_args(&argv).and_then(|o| manby::overzoom::run(&o)) {
+        if !e.message.is_empty() {
+            eprintln!("{}", e.message);
+        }
+        std::process::exit(e.exit_code);
     }
 }
 

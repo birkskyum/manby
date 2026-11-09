@@ -24,7 +24,6 @@ use std::collections::{BTreeMap, HashMap};
 
 use tippecanoe::attribute::AttributeOp;
 use tippecanoe::globals::OrderField;
-use tippecanoe::jsonpull::JsonTree;
 use tippecanoe::mbtiles::LayermapEntry;
 use tippecanoe::serial::Node;
 
@@ -97,7 +96,7 @@ pub struct TileOptions {
     /// `--cluster-categories`: keys starting `kind:`, which are summed.
     pub category_prefix: Option<String>,
     /// The parsed `-j` feature filter.
-    pub filter: Option<JsonTree>,
+    pub filter: Option<crate::filter::Filter>,
     pub drop_by_attribute: Option<String>,
     pub drop_by_attribute_descending: bool,
     pub unidecode_data: Vec<String>,

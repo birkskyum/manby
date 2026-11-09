@@ -9,7 +9,6 @@ use std::collections::{BTreeSet, HashMap};
 
 use flate2::{Compress, Compression, FlushCompress};
 use tippecanoe::clip::{clip_lines, clip_point, remove_noop, simple_clip_poly};
-use tippecanoe::evaluator::evaluate;
 use tippecanoe::geometry::VT_END;
 use tippecanoe::geometry::{
     Draw, DrawVec, VT_LINE, VT_LINETO, VT_MOVETO, VT_POINT, VT_POLYGON, point_within_tile,
@@ -1213,7 +1212,7 @@ fn read_chunk(ctx: &Ctx<'_>, input: &TileInput, source: Source<'_>, rp: &ReadPar
 /// `Some(Some(attrs))` if some of its attributes are to be removed.
 fn filter_feature(
     ctx: &Ctx<'_>,
-    filter: tippecanoe::jsonpull::JsonRef<'_>,
+    filter: &crate::filter::Filter,
     fi: u32,
     z: i32,
 ) -> Option<Option<Vec<Attr>>> {
@@ -1258,10 +1257,9 @@ fn filter_feature(
     v2.numeric_value.set_uint_value(z as u64);
     attributes.entry("$zoom".to_string()).or_insert(v2);
 
-    if !evaluate(
+    if !filter.evaluate(
         &attributes,
         layername,
-        filter,
         &mut exclude_attributes,
         &ctx.o.unidecode_data,
     ) {

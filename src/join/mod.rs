@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use tippecanoe::errors::{EXIT_CSV, EXIT_EXISTS, EXIT_PTHREAD};
-use tippecanoe::jsonpull::{JsonPull, JsonRef, JsonTree, JsonType};
+use tippecanoe::jsonpull::{JsonPull, JsonRef, JsonType};
 use tippecanoe::mbtiles::{LayermapEntry, make_metadata, merge_layermaps};
 use tippecanoe::tile::Strategy;
 
@@ -79,7 +79,7 @@ pub struct JoinOptions {
     pub exclude_all_tile_attributes: bool,
     pub exclude_all_tile_geometries: bool,
     /// `-j` or `-J`
-    pub filter: Option<JsonTree>,
+    pub filter: Option<crate::filter::Filter>,
     /// `-pk`, `-pC`, `-pg`
     pub no_tile_size_limit: bool,
     pub no_tile_compression: bool,

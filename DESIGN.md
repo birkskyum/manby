@@ -76,6 +76,10 @@ Polygons are cleaned with wagyu, as in tippecanoe, by manby's own copy of tippec
 
 `crates/wagyu/examples/wagyu_replay.rs` replays recorded cleanings through both tippecanoe-rs's wagyu and manby's, checks that every polygon is the same, and times them. On the water polygons' 270,000 recorded cleanings, manby's takes 125 s of processor time against 283 s. Some other changes measured no faster and were left out: binary search for the hot pixel rows, and other sorts where the comparison allows them. So was keeping recently cleaned big polygons, which a retried tile cleans again: it saved a tenth of the time on the water polygons for 50 MB more memory.
 
+### Feature filters (`src/filter.rs`, `src/overzoom.rs`)
+
+Filters (`-j`, `-J`) take three operators that tippecanoe's lack: `like` and `ilike` (with `!like` and `!ilike`), SQL's LIKE, and `intersects`, whether a feature shares a point with a GeoJSON Polygon or MultiPolygon. tippecanoe-rs's evaluator stays as tippecanoe has it, so `src/filter.rs` evaluates these three itself, with the `all`, `any`, `none` and `attribute-filter` expressions around them, and hands every other expression to tippecanoe-rs's evaluator as a filter of its own, `{"*": expression}`, so it keeps tippecanoe's meaning and messages. A filter without any of the three goes to tippecanoe-rs's evaluator whole. The tiler and `manby join` use these filters. Only overzooming has each feature's geometry for `intersects`: `manby overzoom` is `src/overzoom.rs`, a copy of tippecanoe-rs's tippecanoe-overzoom that tests each feature as clipped to the new tile, and otherwise makes the same tiles.
+
 ### Sinks (`src/sink/`)
 
 `TileSink` receives finished tiles from any thread.

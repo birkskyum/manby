@@ -18,6 +18,7 @@ pub mod mem;
 pub mod mlt;
 pub mod options;
 pub mod order;
+pub mod overzoom;
 pub mod serve;
 pub mod sink;
 pub mod stats;

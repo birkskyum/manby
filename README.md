@@ -26,7 +26,7 @@ manby runs on macOS and Linux, and on Windows in WSL.
 | pip, with the Python module | `pip install manby` |
 | uv, without installing | `uvx manby` |
 | mise | `mise use -g github:birkskyum/manby` |
-| cargo, with Rust 1.89 or later | `cargo install manby` |
+| cargo, with Rust 1.94 or later | `cargo install manby` |
 | R, from [R-universe](https://birkskyum.r-universe.dev/manby) | `install.packages("manby", repos = c("https://birkskyum.r-universe.dev", "https://cloud.r-project.org"))` |
 | The program alone | the [releases](https://github.com/birkskyum/manby/releases), for macOS and Linux on arm64 and x86-64 |
 

@@ -1,4 +1,5 @@
-# Checks every pull request and main: the formatting, the unit tests,
+# Checks every pull request and main: the formatting, the build with the
+# oldest Rust that Cargo.toml's rust-version promises, the unit tests,
 # tippecanoe's golden tests as MVT and as MLT on Linux and macOS, the Python
 # module, the R package, and the site.
 name: CI
@@ -27,6 +28,16 @@ jobs:
       - uses: actions/checkout@v7
       - run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt
       - run: cargo fmt --all --check
+
+  msrv:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build with the rust-version of Cargo.toml
+        run: |
+          msrv=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)
+          rustup toolchain install "$msrv" --profile minimal
+          RUSTUP_TOOLCHAIN="$msrv" cargo check --locked --features remote
 
   test:
     name: test (${{ matrix.os }})

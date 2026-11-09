@@ -59,21 +59,29 @@ pub struct JoinOptions {
     /// `-r`: the tilesets the listed files name, one per line, which tile-join
     /// opens before the output and uses instead of `inputs`.
     pub read_from: Option<Vec<String>>,
+    /// `-o`, `--output` or `-e`, `--output-to-directory`
     pub output: Output,
+    /// `-f`, `--force`: replaces an existing tileset
     pub force: bool,
-    /// `-n`, `-N`, `-A`; empty means not given.
+    /// `-n`, `--name`; empty means not given
     pub name: String,
+    /// `-N`, `--description`; empty means not given
     pub description: String,
+    /// `-A`, `--attribution`; empty means not given
     pub attribution: String,
-    /// `-Z` and `-z`
+    /// `-Z`, `--minimum-zoom`
     pub minzoom: i32,
+    /// `-z`, `--maximum-zoom`
     pub maxzoom: i32,
-    /// `--overzoom`, and its `--buffer`
+    /// `-O`, `--overzoom`
     pub overzoom: bool,
+    /// `-b`, `--buffer`, for `--overzoom`
     pub buffer: i32,
-    /// `-l`, `-L` and `-R`
+    /// `-l`, `--layer`
     pub keep_layers: BTreeSet<String>,
+    /// `-L`, `--exclude-layer`
     pub remove_layers: BTreeSet<String>,
+    /// `-R`, `--rename-layer`
     pub renames: BTreeMap<String, String>,
     /// `-c`, as read
     pub csv: Option<Arc<csv::RawCsv>>,
@@ -81,22 +89,33 @@ pub struct JoinOptions {
     pub ifmatched: bool,
     /// `--empty-csv-columns-are-null` (`-pe`)
     pub empty_csv_columns_are_null: bool,
-    /// `-x`, `-y`, `-X`
+    /// `-x`, `--exclude`
     pub exclude: BTreeSet<String>,
+    /// `-y`, `--include`
     pub include: BTreeSet<String>,
+    /// `-X`, `--exclude-all`
     pub exclude_all: bool,
+    /// `--exclude-all-tile-attributes`
     pub exclude_all_tile_attributes: bool,
+    /// `--exclude-all-tile-geometries`
     pub exclude_all_tile_geometries: bool,
     /// `-j` or `-J`
     pub filter: Option<crate::filter::Filter>,
-    /// `-pk`, `-pC`, `-pg`
+    /// `-pk`, `--no-tile-size-limit`
     pub no_tile_size_limit: bool,
+    /// `-pC`, `--no-tile-compression`
     pub no_tile_compression: bool,
+    /// `-pg`, `--no-tile-stats`
     pub no_tile_stats: bool,
+    /// `--tile-stats-attributes-limit`
     pub max_tilestats_attributes: usize,
+    /// `--tile-stats-sample-values-limit`
     pub max_tilestats_sample_values: usize,
+    /// `--tile-stats-values-limit`
     pub max_tilestats_values: usize,
+    /// `-q`, `--quiet`
     pub quiet: bool,
+    /// `--unidecode-data`
     pub unidecode_data: Vec<String>,
     /// Worker threads; 0 means one per available CPU.
     pub threads: usize,
@@ -162,10 +181,13 @@ impl Default for JoinOptions {
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct JoinSummary {
+    /// Tiles written.
     pub tiles: u64,
     /// Tiles left out for being over the size limit.
     pub skipped: u64,
+    /// The lowest zoom written.
     pub minzoom: i32,
+    /// The highest zoom written.
     pub maxzoom: i32,
 }
 

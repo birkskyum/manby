@@ -87,8 +87,11 @@ pub struct Source {
 pub struct Options {
     /// Input files named on the command line, after the `-L` sources.
     pub inputs: Vec<String>,
+    /// `-o`, `--output` or `-e`, `--output-to-directory`
     pub output: Output,
+    /// `-f`, `--force`: replaces an existing tileset
     pub force: bool,
+    /// `-q`, `--quiet`
     pub quiet: bool,
     /// Worker threads; 0 means one per available CPU, as tippecanoe chooses.
     pub threads: usize,
@@ -143,7 +146,9 @@ pub struct Options {
     /// hexagons in a layer of their own; `--h3-categories` counts the
     /// values of an attribute in each.
     pub h3: bool,
+    /// `--h3-base-zoom`; None is two below the maximum zoom
     pub h3_base_zoom: Option<i32>,
+    /// `--h3-categories`
     pub h3_categories: Option<String>,
     /// `--cluster-categories=kind`, or `kind:park,museum`: each feature
     /// gets `kind:<value>` of 1, which clustering and coalescing add up, so
@@ -151,76 +156,131 @@ pub struct Options {
     /// as `kind:_other`.
     pub cluster_categories: Option<(String, Option<Vec<String>>)>,
 
+    /// `-z`, `--maximum-zoom`
     pub maxzoom: i32,
+    /// `-Z`, `--minimum-zoom`
     pub minzoom: i32,
     /// `-zg`, `--smallest-maximum-zoom-guess` or `--largest-maximum-zoom-guess`
     pub guess_maxzoom: bool,
+    /// `--smallest-maximum-zoom-guess`: the least `-zg` may choose
     pub minimum_maxzoom: i32,
     /// `--largest-maximum-zoom-guess`: the most `-zg` may choose
     pub maximum_maxzoom: i32,
+    /// `-B`, `--base-zoom`. -1 is the maximum zoom, and -2 is a guess (`-Bg`).
     pub basezoom: i32,
+    /// The marker width of `-Bg<width>` and `-rg<width>`
     pub basezoom_marker_width: f64,
+    /// `-r`, `--drop-rate`. -2 is a guess (`-rg`), and -3 is `-rp`.
     pub droprate: f64,
+    /// `-g`, `--gamma`
     pub gamma: f64,
+    /// `-b`, `--buffer`
     pub buffer: i32,
     /// `-R z/x/y`: the x and y of the one tile.
     pub one_tile: Option<(u32, u32)>,
 
+    /// `-d`, `--full-detail`; -1 is 12, tippecanoe's default
     pub full_detail: i32,
+    /// `-D`, `--low-detail`
     pub low_detail: i32,
+    /// `-m`, `--minimum-detail`
     pub min_detail: i32,
+    /// `--extra-detail`; -1 is none
     pub extra_detail: i32,
 
+    /// `-x`, `--exclude`
     pub exclude: BTreeSet<String>,
+    /// `-y`, `--include`
     pub include: BTreeSet<String>,
+    /// `-X`, `--exclude-all`, which `-y` sets too
     pub exclude_all: bool,
+    /// `-T`, `--attribute-type`: an MVT type (`tippecanoe::mvt::MVT_*`) for an attribute
     pub attribute_types: HashMap<String, i32>,
+    /// `-E`, `--accumulate-attribute`
     pub attribute_accum: HashMap<String, AttributeOp>,
+    /// `-Y`, `--attribute-description`
     pub attribute_descriptions: BTreeMap<String, String>,
+    /// `--set-attribute`
     pub set_attributes: BTreeMap<String, SerialVal>,
+    /// `--use-attribute-for-id`; empty is none
     pub attribute_for_id: String,
+    /// `--maximum-string-attribute-length`; 0 is no limit
     pub maximum_string_attribute_length: usize,
 
     /// `-J` or `-j`
     pub filter: Option<crate::filter::Filter>,
+    /// `-C`, `--prefilter`
     pub prefilter: Option<String>,
+    /// `-c`, `--postfilter`
     pub postfilter: Option<String>,
+    /// `-t`, `--temporary-directory`
     pub tmpdir: String,
 
+    /// `-p`, `--prevent`, and the options named after its letters, such as
+    /// `--no-tile-size-limit`
     pub prevent: Flags,
+    /// `-a`, `--additional`, and the options named after its letters, such as
+    /// `--drop-densest-as-needed`
     pub additional: Flags,
 
+    /// `-S`, `--simplification`
     pub simplification: f64,
+    /// `--simplification-at-maximum-zoom`; -1 is `simplification`
     pub maxzoom_simplification: f64,
+    /// `--tiny-polygon-size`
     pub tiny_polygon_size: i32,
 
+    /// `-M`, `--maximum-tile-bytes`
     pub max_tile_size: usize,
+    /// `-O`, `--maximum-tile-features`
     pub max_tile_features: usize,
+    /// `--limit-tile-feature-count`; 0 is no limit
     pub limit_tile_feature_count: usize,
+    /// `--limit-tile-feature-count-at-maximum-zoom`; 0 is no limit
     pub limit_tile_feature_count_at_maxzoom: usize,
 
+    /// `-K`, `--cluster-distance`
     pub cluster_distance: i32,
+    /// `-k`, `--cluster-maxzoom`
     pub cluster_maxzoom: i32,
+    /// `-kg`
     pub guess_cluster_maxzoom: bool,
+    /// `--retain-points-multiplier`
     pub retain_points_multiplier: i32,
+    /// `--drop-denser`
     pub drop_denser: u32,
+    /// `--preserve-point-density-threshold`
     pub preserve_point_density_threshold: u64,
+    /// `--preserve-multiplier-density-threshold`
     pub preserve_multiplier_density_threshold: u64,
+    /// `--extend-zooms-if-still-dropping-maximum`
     pub extend_zooms_max: i64,
 
+    /// `--order-by` and `--order-descending-by`
     pub order_by: Vec<OrderField>,
+    /// `--order-smallest-first` or `--order-largest-first`
     pub order_by_size: bool,
+    /// `--clip-bounding-box`
     pub clip_bboxes: Vec<ClipBbox>,
+    /// `--unidecode-data`
     pub unidecode_data: Vec<String>,
+    /// `--drop-by-attribute-as-needed`
     pub drop_by_attribute_as_needed_attribute: String,
+    /// `--drop-by-attribute-order=desc`
     pub drop_by_attribute_descending: bool,
 
+    /// `--tile-stats-attributes-limit`
     pub max_tilestats_attributes: usize,
+    /// `--tile-stats-sample-values-limit`
     pub max_tilestats_sample_values: usize,
+    /// `--tile-stats-values-limit`
     pub max_tilestats_values: usize,
 
+    /// `-Q`, `--no-progress-indicator`
     pub quiet_progress: bool,
+    /// `-U`, `--progress-interval`
     pub progress_interval: f64,
+    /// `-u`, `--json-progress`
     pub json_progress: bool,
     /// `-F`
     pub forcetable: bool,

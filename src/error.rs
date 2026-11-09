@@ -3,8 +3,10 @@
 
 use std::fmt;
 
+/// Why a run failed, with tippecanoe's message and exit status for it.
 #[derive(Debug)]
 pub struct Error {
+    /// What tippecanoe prints for the problem. Empty when it prints nothing.
     pub message: String,
     /// One of tippecanoe's exit statuses (`tippecanoe::errors::EXIT_*`).
     pub exit_code: i32,

@@ -27,11 +27,16 @@ with a map of them at /.
   --host=HOST      the address to listen on, 127.0.0.1 by default
   --open           open the map in a browser";
 
+/// `manby serve`'s options.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ServeOptions {
+    /// `--host`: the address to listen on
     pub host: String,
+    /// `-p`, `--port`; 0 is any free port
     pub port: u16,
+    /// `--open`: open the map in a browser
     pub open: bool,
+    /// PMTiles archives, MBTiles databases or directories of tiles
     pub tilesets: Vec<String>,
 }
 

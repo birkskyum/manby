@@ -9,6 +9,15 @@ description: Writing MapLibre Tiles (MLT) instead of Mapbox Vector Tiles, with t
 manby -zg --drop-densest-as-needed --tile-format=mlt -o places.pmtiles places.geojson
 ```
 
+`--mlt-profile` chooses the encodings, by what will read the tiles.
+
+| Profile | For |
+| --- | --- |
+| `web` | Every MapLibre GL JS that reads MapLibre Tiles, 5.12 and later, with attribute values of the same JavaScript types as from Mapbox Vector Tiles. The default. |
+| `native` | MapLibre Native, with every encoding and with polygon triangles where they save the map more time than their bytes cost. MapLibre GL JS reads these from 6.0, with 64-bit integers as `BigInt`. |
+| `min-size` | The fewest bytes. Features can be sorted within a layer, so their drawing order can differ. |
+| `fast` | The quickest to encode. |
+
 manby from pip, uv or the [releases](https://github.com/birkskyum/manby/releases) writes MLT. The encoder, mlt-core, needs Rust 1.98, so built from source MLT output is a cargo feature.
 
 ```sh

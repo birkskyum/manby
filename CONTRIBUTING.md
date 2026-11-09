@@ -4,4 +4,6 @@ Pull requests are welcome. A pull request's title becomes its commit on main and
 
 CI checks the formatting, lints manby's code with clippy, and runs the unit tests and tippecanoe's golden tests, as MVT and as MLT, on Linux and macOS. Locally that is `cargo fmt --check`, `cargo clippy --features mlt,remote -p manby --all-targets --no-deps -- -D warnings` and `make test test-golden-mlt`.
 
+manby's Rust API is what `src/lib.rs` does not hide: `run`, `join`, their options and the commands. A pull request that breaks it has `!` after its type, such as `feat!:`, and makes a minor release. The hidden modules can change freely.
+
 Releases need no one. Each merge updates the release PR, and merging that publishes manby to crates.io, PyPI, the GitHub releases and Homebrew.

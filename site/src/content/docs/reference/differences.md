@@ -15,6 +15,11 @@ tippecanoe's arm64 builds, from Apple's clang on macOS and from GCC on Linux, fu
 
 manby makes the same tiles on macOS and on Linux, the tiles of tippecanoe's x86-64 build. Built for x86-64, or on arm64 with `-ffp-contract=off`, tippecanoe makes manby's tiles on the tracts too.
 
+## What tippecanoe does not have
+
+- **`--largest-maximum-zoom-guess`.** It chooses the maximum zoom as `-zg` does, but no higher than the zoom it is given, as `--smallest-maximum-zoom-guess` chooses no lower.
+- **Filters.** Feature filters also take [`like`, `ilike` and `intersects`](../../guides/programs/#feature-filters).
+
 ## manby join
 
 - **Shared tiles.** Where several inputs have a tile at the same z/x/y, tile-join orders their features by the tiles' stored bytes. manby join compares tiles that manby made by the bytes zlib would make of them, so manby and then manby join make the tiles that tippecanoe and then tile-join make. tile-join itself, run on manby's tilesets, can order the features of those tiles differently, unless they were made with `--compression=zlib`.

@@ -1,5 +1,11 @@
 The changes in each version of manby, from the titles of the pull requests that made them.
 
+## [0.2.0](https://github.com/birkskyum/manby/compare/v0.1.11...v0.2.0) - 2026-11-09
+
+### Changed
+
+- [**breaking**] A public API of run, join and the commands, with the rest hidden ([#42](https://github.com/birkskyum/manby/pull/42))
+
 ## [0.1.11](https://github.com/birkskyum/manby/compare/v0.1.10...v0.1.11) - 2026-11-09
 
 ### Added

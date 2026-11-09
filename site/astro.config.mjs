@@ -55,6 +55,7 @@ export default defineConfig({
 						{ label: 'MapLibre Tiles', slug: 'guides/mlt' },
 						{ label: 'GeoParquet, DuckDB and Python', slug: 'guides/python' },
 						{ label: 'From R', slug: 'guides/r' },
+						{ label: 'From Rust', slug: 'guides/rust' },
 						{ label: 'Looking at tilesets', slug: 'guides/serve' },
 						{ label: 'H3 hexagons and categories', slug: 'guides/h3' },
 						{ label: 'Other formats', slug: 'guides/other-formats' },

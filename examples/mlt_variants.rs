@@ -9,9 +9,6 @@ use std::collections::HashSet;
 use manby::mlt::{EncoderConfig, MltProfile, MltSettings, encode_tile_with, encoder_config};
 use rayon::prelude::*;
 
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
-
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let archive = std::fs::read(&args[1]).unwrap();

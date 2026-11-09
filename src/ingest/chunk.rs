@@ -553,7 +553,11 @@ mod tests {
                 .wrapping_mul(6364136223846793005)
                 .wrapping_add(1442695040888963407);
             let v = SerialVal {
-                type_: if x % 3 == 0 { MVT_STRING } else { MVT_DOUBLE },
+                type_: if x.is_multiple_of(3) {
+                    MVT_STRING
+                } else {
+                    MVT_DOUBLE
+                },
                 s: ((x >> 40) % 50).to_string(),
             };
             tippecanoe::mbtiles::add_to_tilestats(&mut ts, "k", &v);

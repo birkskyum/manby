@@ -120,7 +120,7 @@ pub fn calculate_drop_sequence(feature_minzoom: i8, index: u64) -> u64 {
 
 /// Keeps only a sample of 100K values for choosing thresholds.
 pub fn add_sample_to<T: Copy>(vals: &mut Vec<T>, val: T, increment: &mut usize, seq: usize) {
-    if seq % *increment == 0 {
+    if seq.is_multiple_of(*increment) {
         vals.push(val);
 
         if vals.len() > 100000 {

@@ -1,7 +1,7 @@
-# Checks every pull request and main: the formatting, the build with the
-# oldest Rust that Cargo.toml's rust-version promises, the unit tests,
-# tippecanoe's golden tests as MVT and as MLT on Linux and macOS, the Python
-# module, the R package, and the site.
+# Checks every pull request and main: the formatting, clippy on manby's code,
+# tests and examples, the build with the oldest Rust that Cargo.toml's
+# rust-version promises, the unit tests, tippecanoe's golden tests as MVT and
+# as MLT on Linux and macOS, the Python module, the R package, and the site.
 name: CI
 
 on:
@@ -28,6 +28,15 @@ jobs:
       - uses: actions/checkout@v7
       - run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt
       - run: cargo fmt --all --check
+
+  clippy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install 1.98.1 --profile minimal --component clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Lint manby's code, tests and examples, which also builds them
+        run: cargo clippy --locked --features mlt,remote -p manby --all-targets --no-deps -- -D warnings
 
   msrv:
     runs-on: ubuntu-24.04

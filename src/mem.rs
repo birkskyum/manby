@@ -330,7 +330,75 @@ pub enum Stored {
     },
 }
 
+/// Where some stored bytes are in a spool that their holder knows:
+/// `Stored::Spooled` without the spool, for records kept by the million.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Place {
+    pub at: u64,
+    pub len: u64,
+    pub shard: u32,
+}
+
+impl Place {
+    /// The bytes from `skip` on, as stored bytes of `spool`.
+    pub fn stored(&self, spool: &Arc<Spool>, skip: u64) -> Stored {
+        debug_assert!(skip <= self.len);
+        Stored::Spooled {
+            spool: spool.clone(),
+            shard: self.shard,
+            at: self.at + skip,
+            len: (self.len - skip) as usize,
+        }
+    }
+
+    /// Reads `out.len()` bytes from the start.
+    pub fn read(&self, spool: &Spool, out: &mut [u8]) -> crate::Result<()> {
+        debug_assert!(out.len() as u64 <= self.len);
+        spool.read(self.shard, self.at, out, false)
+    }
+
+    /// The shard in a byte, for records that keep places by the million.
+    pub fn shard_byte(&self) -> u8 {
+        if self.shard == NO_SHARD {
+            u8::MAX
+        } else {
+            debug_assert!((self.shard as usize) < SPOOL_SHARDS);
+            self.shard as u8
+        }
+    }
+
+    /// The place with the shard from `shard_byte`.
+    pub fn with_shard_byte(at: u64, len: u64, shard: u8) -> Place {
+        Place {
+            at,
+            len,
+            shard: if shard == u8::MAX {
+                NO_SHARD
+            } else {
+                shard as u32
+            },
+        }
+    }
+}
+
 impl Stored {
+    /// Where the bytes are, if they are in `spool`.
+    pub fn place_in(&self, spool: &Arc<Spool>) -> Option<Place> {
+        match self {
+            Stored::Spooled {
+                spool: s,
+                shard,
+                at,
+                len,
+            } if Arc::ptr_eq(s, spool) => Some(Place {
+                at: *at,
+                len: *len as u64,
+                shard: *shard,
+            }),
+            _ => None,
+        }
+    }
+
     pub fn len(&self) -> usize {
         match self {
             Stored::Mem(v) => v.len(),

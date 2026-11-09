@@ -1,8 +1,7 @@
 //! The order of work: zoom levels, the passes tippecanoe makes over a zoom
 //! level when a tile needs a stricter threshold, and the parallelism.
 
-use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 
@@ -15,12 +14,12 @@ use tippecanoe::tile::Strategy;
 
 use super::encode::{ValueCodes, key_slot};
 use super::make::{MakeParams, MakeResult, Thresholds, dropping_features, make_tile};
-use super::read::{ReadParams, TileInput, read_tile, store_inputs};
+use super::read::{Parked, ReadParams, TileInput, read_tile, store_inputs};
 use super::util::Helpers;
 use super::{TileOptions, TileStats};
 use crate::buf::Buf;
 use crate::error::Error;
-use crate::mem::{Rest, Spool, Stored};
+use crate::mem::{Place, Rest, Spool};
 use crate::sink::TileSink;
 use crate::store::FeatureStore;
 use rayon::prelude::*;
@@ -194,40 +193,6 @@ struct Task {
     mp: MakeParams,
 }
 
-/// A tile waiting for a thread, with what its task needs that may change
-/// before it starts. The task itself is made when it starts, since a level
-/// can queue hundreds of thousands of tiles at once.
-struct Ready {
-    /// The level, and the order the tile was queued in.
-    key: (usize, u64),
-    idx: u32,
-    pass: u32,
-    maxzoom: i32,
-    extend_zooms_max: i64,
-    /// About how much memory the task takes, if it counts as big.
-    big: u64,
-}
-
-impl PartialEq for Ready {
-    fn eq(&self, o: &Ready) -> bool {
-        self.key == o.key
-    }
-}
-
-impl Eq for Ready {}
-
-impl PartialOrd for Ready {
-    fn partial_cmp(&self, o: &Ready) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(o))
-    }
-}
-
-impl Ord for Ready {
-    fn cmp(&self, o: &Ready) -> std::cmp::Ordering {
-        self.key.cmp(&o.key)
-    }
-}
-
 /// What a task reports: the first read of a tile as soon as it is done, so
 /// that the children can start while the tile is being made, then the tile.
 enum Done {
@@ -243,45 +208,311 @@ enum Done {
         pass: usize,
         big: u64,
         result: Box<MakeResult>,
-        tile: Option<Stored>,
+        /// The tile's `Reuse` record, if it is reusable, followed by the
+        /// tile, if one is written, in the level's spool.
+        made: Option<Place>,
+        /// The record's length, or 0.
+        record: u8,
+        tile: bool,
     },
     Failed(Error),
 }
 
-/// A tile of a zoom level.
+/// A tile of a zoom level. A level keeps one for each of its tiles until it
+/// is written, which at high zooms of large polygons is millions, so it is
+/// small and holds no pointers, and the level keeps them in blocks of
+/// `Buf`s, which the memory budget can move to a file. The input waits in
+/// the level's spool (or, kept whole, in `Level::whole`), and so do the
+/// tile and what another pass needs to know of how it was made.
+///
+/// Its fields leave no gaps, so that blocks of them can be stored as bytes.
+#[derive(Clone, Copy)]
+#[repr(C)]
 struct Slot {
-    input: Arc<TileInput>,
-    /// Whether the tile has been read, and so has written its children.
-    read: bool,
-    /// With `-at`: the estimated complexity, once counted.
-    complexity: Option<i64>,
-    /// What the current pass made of the tile.
-    made: Option<Made>,
-    /// Its bytes, until the level is done.
-    tile: Option<Stored>,
-    /// With `-at`: whether the tile's children must not try to stop early,
-    /// from the pass in which the tile was first made.
-    children_must_go_on: Option<bool>,
-    /// With `-at`: the tile's children, until it is known whether the tile
-    /// writes them.
-    held: Vec<TileInput>,
+    /// The input, and once the tile is read its complexity.
+    input: Parked,
+    /// Where the made bytes are in the level's spool: the `Reuse` record,
+    /// of `record` bytes, and then the tile, with `TILE`. A `Place` packed
+    /// small.
+    made_at: u64,
+    made_len: u32,
+    made_shard: u8,
+    record: u8,
+    flags: u16,
 }
 
-/// What a tile keeps of how a pass made it.
-struct Made {
-    len: i64,
-    skipped: bool,
-    truncated: bool,
-    /// The thresholds and counts under which the tile stands for the next
-    /// pass too, if a higher threshold cannot change it.
-    reuse: Option<Box<Reuse>>,
+/// The tile has been read, and so has written its children.
+const READ: u16 = 1;
+/// The current pass has made the tile (or skipped it, or reused it).
+const MADE: u16 = 1 << 1;
+const SKIPPED: u16 = 1 << 2;
+const TRUNCATED: u16 = 1 << 3;
+/// A higher threshold cannot change what the pass made of the tile: the
+/// `Reuse` record at the start of its made bytes says under which.
+const REUSABLE: u16 = 1 << 4;
+/// The made bytes hold a tile, after the record if there is one.
+const TILE: u16 = 1 << 6;
+/// With `-at`: whether the tile's children must not try to stop early is
+/// known, from the pass in which the tile was first made, and what it is.
+const MUST_GO_ON_KNOWN: u16 = 1 << 7;
+const MUST_GO_ON: u16 = 1 << 8;
+/// The input is kept whole, in `Level::whole`.
+const WHOLE: u16 = 1 << 9;
+/// Which of the four tiles below at the next zoom the tile wrote children
+/// for, one bit each, as `2 * (y & 1) + (x & 1)` of the child, when they
+/// went to the next level.
+const CHILDREN: u32 = 10;
+
+const _: () = assert!(std::mem::size_of::<Slot>() == 56);
+
+impl Slot {
+    fn made(&self) -> Place {
+        Place::with_shard_byte(self.made_at, self.made_len as u64, self.made_shard)
+    }
 }
 
+/// A level's slots, in blocks, so that adding to millions of them never
+/// moves them all, and each block is a vector that the memory budget can
+/// move to a file. A level that may never be made, beyond the maximum zoom,
+/// puts its full blocks in its spool until it starts.
+#[derive(Default)]
+struct Slots {
+    blocks: Vec<Block>,
+    len: usize,
+}
+
+enum Block {
+    Here(Buf<Slot>),
+    /// A full block, stored as bytes.
+    Away(Place),
+}
+
+const BLOCK: usize = 1 << 16;
+
+impl Slots {
+    fn push(&mut self, s: Slot) {
+        if self.len.is_multiple_of(BLOCK) {
+            self.blocks.push(Block::Here(Buf::new()));
+        }
+        match self.blocks.last_mut() {
+            Some(Block::Here(b)) => b.push(s),
+            _ => unreachable!("a block is stored only once full"),
+        }
+        self.len += 1;
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &Slot> {
+        self.blocks.iter().flat_map(|b| match b {
+            Block::Here(b) => b.iter(),
+            Block::Away(_) => panic!("{}", AWAY),
+        })
+    }
+
+    /// Stores the full blocks in `spool`.
+    fn put_away(&mut self, spool: &Arc<Spool>) -> crate::Result<()> {
+        for b in &mut self.blocks {
+            if let Block::Here(slots) = b
+                && slots.len() == BLOCK
+            {
+                // SAFETY: a slot is plain data without gaps between its
+                // fields, so its bytes are all initialized
+                let bytes = unsafe {
+                    std::slice::from_raw_parts(
+                        slots.as_ptr() as *const u8,
+                        slots.len() * std::mem::size_of::<Slot>(),
+                    )
+                };
+                let place = spool
+                    .store(bytes)?
+                    .place_in(spool)
+                    .expect("stored in the spool");
+                *b = Block::Away(place);
+            }
+        }
+        Ok(())
+    }
+
+    /// Takes back the blocks stored in `spool`.
+    fn bring_back(&mut self, spool: &Arc<Spool>) -> crate::Result<()> {
+        for b in &mut self.blocks {
+            if let Block::Away(place) = b {
+                let stored = place.stored(spool, 0);
+                let bytes = stored.load()?;
+                let size = std::mem::size_of::<Slot>();
+                let mut slots = Buf::with_capacity(BLOCK);
+                for c in bytes.chunks_exact(size) {
+                    // SAFETY: the bytes are those of slots, each its own
+                    // `size` of them, read unaligned
+                    slots.push(unsafe { std::ptr::read_unaligned(c.as_ptr() as *const Slot) });
+                }
+                debug_assert_eq!(slots.len(), BLOCK);
+                *b = Block::Here(slots);
+            }
+        }
+        Ok(())
+    }
+}
+
+const AWAY: &str = "a level's slots are back in memory once it starts";
+
+impl std::ops::Index<usize> for Slots {
+    type Output = Slot;
+    fn index(&self, i: usize) -> &Slot {
+        match &self.blocks[i / BLOCK] {
+            Block::Here(b) => &b[i % BLOCK],
+            Block::Away(_) => panic!("{}", AWAY),
+        }
+    }
+}
+
+impl std::ops::IndexMut<usize> for Slots {
+    fn index_mut(&mut self, i: usize) -> &mut Slot {
+        match &mut self.blocks[i / BLOCK] {
+            Block::Here(b) => &mut b[i % BLOCK],
+            Block::Away(_) => panic!("{}", AWAY),
+        }
+    }
+}
+
+/// The thresholds and counts under which a tile stands for the next pass
+/// too, as a higher threshold cannot change it, and its `MakeResult::len`.
 struct Reuse {
+    len: i64,
     th: Thresholds,
     gap: u64,
     drop_sequence: u64,
     strategy: Option<Strategy>,
+}
+
+fn put_varint(out: &mut Vec<u8>, mut v: u64) {
+    while v >= 0x80 {
+        out.push(v as u8 | 0x80);
+        v >>= 7;
+    }
+    out.push(v as u8);
+}
+
+fn get_varint(b: &[u8], pos: &mut usize) -> u64 {
+    let mut v = 0u64;
+    let mut shift = 0;
+    loop {
+        let c = b[*pos];
+        *pos += 1;
+        v |= ((c & 0x7f) as u64) << shift;
+        if c < 0x80 {
+            return v;
+        }
+        shift += 7;
+    }
+}
+
+fn zigzag(v: i64) -> u64 {
+    ((v << 1) ^ (v >> 63)) as u64
+}
+
+fn unzigzag(v: u64) -> i64 {
+    (v >> 1) as i64 ^ -((v & 1) as i64)
+}
+
+impl Reuse {
+    /// The record, in varints: most of it is zero or the largest value,
+    /// and millions of tiles write one.
+    fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(48);
+        let th = &self.th;
+        put_varint(&mut out, zigzag(self.len));
+        put_varint(&mut out, th.gamma.to_bits());
+        put_varint(&mut out, th.mingap);
+        put_varint(&mut out, zigzag(th.minextent));
+        put_varint(&mut out, th.mindrop_sequence);
+        if th.minattribute == f64::NEG_INFINITY {
+            out.push(0);
+        } else if th.minattribute == f64::INFINITY {
+            out.push(1);
+        } else {
+            out.push(2);
+            out.extend_from_slice(&th.minattribute.to_bits().to_le_bytes());
+        }
+        put_varint(&mut out, self.gap.wrapping_add(1));
+        put_varint(&mut out, self.drop_sequence.wrapping_add(1));
+        match &self.strategy {
+            None => out.push(0),
+            Some(s) => {
+                out.push(1);
+                for f in [
+                    s.dropped_by_rate,
+                    s.dropped_by_gamma,
+                    s.dropped_as_needed,
+                    s.coalesced_as_needed,
+                    s.detail_reduced,
+                    s.tiny_polygons,
+                    s.truncated_zooms,
+                    s.tile_size,
+                    s.feature_count,
+                ] {
+                    put_varint(&mut out, f as u64);
+                }
+            }
+        }
+        out
+    }
+
+    fn decode(b: &[u8]) -> Reuse {
+        let mut pos = 0;
+        let len = unzigzag(get_varint(b, &mut pos));
+        let gamma = f64::from_bits(get_varint(b, &mut pos));
+        let mingap = get_varint(b, &mut pos);
+        let minextent = unzigzag(get_varint(b, &mut pos));
+        let mindrop_sequence = get_varint(b, &mut pos);
+        pos += 1;
+        let minattribute = match b[pos - 1] {
+            0 => f64::NEG_INFINITY,
+            1 => f64::INFINITY,
+            _ => {
+                pos += 8;
+                f64::from_bits(u64::from_le_bytes(b[pos - 8..pos].try_into().unwrap()))
+            }
+        };
+        let gap = get_varint(b, &mut pos).wrapping_sub(1);
+        let drop_sequence = get_varint(b, &mut pos).wrapping_sub(1);
+        pos += 1;
+        let strategy = (b[pos - 1] == 1).then(|| {
+            let mut f = || get_varint(b, &mut pos) as usize;
+            Strategy {
+                dropped_by_rate: f(),
+                dropped_by_gamma: f(),
+                dropped_as_needed: f(),
+                coalesced_as_needed: f(),
+                detail_reduced: f(),
+                tiny_polygons: f(),
+                truncated_zooms: f(),
+                tile_size: f(),
+                feature_count: f(),
+            }
+        });
+        debug_assert_eq!(pos, b.len());
+        Reuse {
+            len,
+            th: Thresholds {
+                gamma,
+                mingap,
+                minextent,
+                mindrop_sequence,
+                minattribute,
+            },
+            gap,
+            drop_sequence,
+            strategy,
+        }
+    }
 }
 
 /// The totals of a pass over a level, which its tiles add to as they are
@@ -295,8 +526,22 @@ struct Totals {
     extend_zooms: bool,
     /// The message of the first tile in tile order that failed with one.
     error: Option<((u32, u32), String)>,
-    /// Each tile's z, x, y and vertex count.
-    history: Vec<(i32, u32, u32, i64)>,
+    /// The tile with the most vertices, and of those the first in x and y
+    /// order: its vertex count, x and y.
+    top: Option<(i64, u32, u32)>,
+}
+
+/// Whether tile `a`, as `Totals::top` has it, comes before `b`.
+fn above(a: (i64, u32, u32), b: (i64, u32, u32)) -> bool {
+    a.0 > b.0 || (a.0 == b.0 && (a.1, a.2) < (b.1, b.2))
+}
+
+/// The one of `a` and `b` that comes first.
+fn top_of(a: Option<(i64, u32, u32)>, b: (i64, u32, u32)) -> (i64, u32, u32) {
+    match a {
+        Some(a) if !above(b, a) => a,
+        _ => b,
+    }
 }
 
 impl Totals {
@@ -307,13 +552,10 @@ impl Totals {
             strategy: Strategy::default(),
             extend_zooms: false,
             error: None,
-            history: Vec::new(),
+            top: None,
         }
     }
 }
-
-/// The maximum zoom during a pass, and each tile's z, x, y and vertex count.
-type PassTiles = (i32, Vec<(i32, u32, u32, i64)>);
 
 /// One zoom level: the tiles that tippecanoe would read from one zoom's
 /// temporary files.
@@ -325,30 +567,41 @@ struct Level {
     threads: usize,
     child_shards: i32,
     max_zoom_increment: i32,
-    slots: Vec<Slot>,
+    slots: Slots,
+    /// The tiles waiting for a thread, in the order they were queued, which
+    /// is the order of their slots, and with each the maximum zoom and
+    /// `extend_zooms_max` when it was queued: from each tile in
+    /// `spawn_limits` on, the index into `Driver::limits` there.
+    queue: VecDeque<u32>,
+    spawn_limits: Vec<(u32, u16)>,
+    /// The inputs kept whole rather than in the spool: the first tile's, and
+    /// those whose bytes went to the memory budget's file as they were read.
+    whole: Vec<Arc<TileInput>>,
+    /// With `-at`: the tiles' children, until it is known whether each tile
+    /// writes them.
+    held: HashMap<u32, Vec<TileInput>>,
     /// Where the level's inputs and tiles wait, and where its tiles write
     /// their children: the next level's inputs. Each spool goes, with its
     /// memory and its temporary file, when the level whose inputs it holds
     /// is finalized.
     spool: Option<Arc<Spool>>,
     child_spool: Option<Arc<Spool>>,
-    /// Tiles whose first task waits for the level to start.
-    waiting: Vec<usize>,
+    /// How many tiles wait for the level to start: all of them until it
+    /// starts, the tiles from 0 on.
+    waiting: usize,
     /// Tiles not read yet.
     unread: usize,
     /// Tiles without a result in the current pass.
     missing: usize,
-    /// For tippecanoe's count of temporary files with data: each input's
-    /// parent tile and its own position.
-    origins: Vec<((u32, u32), (u32, u32))>,
     inputs_complete: bool,
     started: bool,
     pass: usize,
     th: Thresholds,
     totals: Totals,
     outstanding: usize,
-    /// Per pass: the maximum zoom then and each tile's z, x, y and vertex count.
-    history: Vec<PassTiles>,
+    /// Of the tiles of the passes made at the maximum zoom then, the one with
+    /// the most vertices (`Totals::top`).
+    top: Option<(i64, u32, u32)>,
     tilestats: Vec<BTreeMap<String, LayermapEntry>>,
     zoom_tile_size: usize,
     zoom_feature_count: usize,
@@ -381,20 +634,23 @@ impl Level {
             threads: 1,
             child_shards: 0,
             max_zoom_increment: 0,
-            slots: Vec::new(),
+            slots: Slots::default(),
+            queue: VecDeque::new(),
+            spawn_limits: Vec::new(),
+            whole: Vec::new(),
+            held: HashMap::new(),
             spool: Some(spool),
             child_spool: Some(Spool::new(&o.tmpdir, rest)),
-            waiting: Vec::new(),
+            waiting: 0,
             unread: 0,
             missing: 0,
-            origins: Vec::new(),
             inputs_complete: false,
             started: false,
             pass: 0,
             th,
             totals: Totals::new(loop_z, th),
             outstanding: 0,
-            history: Vec::new(),
+            top: None,
             tilestats: Vec::new(),
             zoom_tile_size: 0,
             zoom_feature_count: 0,
@@ -408,23 +664,26 @@ impl Level {
 
     /// Adds what a pass made of tile `idx` to the pass's totals.
     fn fold(&mut self, idx: usize, mut r: MakeResult, descending: bool) {
+        let z = self.z;
         let slot = &mut self.slots[idx];
-        let (z, x, y) = (slot.input.z, slot.input.x, slot.input.y);
+        let (x, y) = (slot.input.x, slot.input.y);
         let t = &mut self.totals;
-        t.history.push((z, x, y, r.len));
-        slot.made = Some(Made {
-            len: r.len,
-            skipped: r.skipped,
-            truncated: r.truncated,
-            reuse: r.reusable.map(|th| {
-                Box::new(Reuse {
-                    th,
-                    gap: r.reuse_gap,
-                    drop_sequence: r.reuse_drop_sequence,
-                    strategy: r.strategy,
-                })
-            }),
-        });
+        t.top = Some(top_of(t.top, (r.len, x, y)));
+        // what of the result another pass needs: the `Reuse` is in the made
+        // bytes, from `run_task`, or from an earlier pass if the tile was
+        // reused
+        slot.flags &= !(SKIPPED | TRUNCATED | REUSABLE);
+        slot.flags |= MADE;
+        if r.skipped {
+            slot.flags |= SKIPPED;
+        }
+        if r.truncated {
+            slot.flags |= TRUNCATED;
+        }
+        if r.reusable.is_some() {
+            debug_assert!(slot.record > 0);
+            slot.flags |= REUSABLE;
+        }
         if r.skipped {
             return;
         }
@@ -478,10 +737,40 @@ impl Level {
     }
 
     /// The tiles in tippecanoe's order within a zoom.
-    fn order(&self) -> Vec<usize> {
-        let mut order: Vec<usize> = (0..self.slots.len()).collect();
-        order.sort_by_key(|&i| (self.slots[i].input.x, self.slots[i].input.y));
+    fn order(&self) -> Vec<u32> {
+        let mut order: Vec<u32> = (0..self.slots.len() as u32).collect();
+        order.sort_unstable_by_key(|&i| {
+            let s = &self.slots[i as usize];
+            (s.input.x, s.input.y)
+        });
         order
+    }
+
+    /// Records that tile `idx` wrote a child at `x`, `y` at the next zoom.
+    fn wrote_child(&mut self, idx: usize, x: u32, y: u32) {
+        let s = &mut self.slots[idx];
+        debug_assert_eq!((x >> 1, y >> 1), (s.input.x, s.input.y));
+        s.flags |= 1 << (CHILDREN + 2 * (y & 1) + (x & 1));
+    }
+
+    /// The input of tile `idx`.
+    fn input(&self, idx: usize) -> Arc<TileInput> {
+        let slot = &self.slots[idx];
+        if slot.flags & WHOLE != 0 {
+            self.whole[slot.input.index()].clone()
+        } else {
+            Arc::new(slot.input.input(self.z, self.spool.as_ref().expect(LIVE)))
+        }
+    }
+
+    /// About how much memory reading and making tile `idx` takes.
+    fn working_set(&self, idx: usize, store: &FeatureStore, o: &TileOptions) -> u64 {
+        let slot = &self.slots[idx];
+        if slot.flags & WHOLE != 0 {
+            self.whole[slot.input.index()].working_set(store, o)
+        } else {
+            slot.input.working_set(o)
+        }
     }
 }
 
@@ -490,9 +779,6 @@ struct Driver<'d, 's> {
     sink: &'s dyn TileSink,
     scope: &'d rayon::Scope<'s>,
     tx: Sender<Done>,
-    /// Tasks waiting for a thread, shallower levels first.
-    ready: BinaryHeap<Reverse<Ready>>,
-    seq: u64,
     /// How many tasks the pool holds at once: enough that no thread waits for
     /// the coordinator, few enough that shallower levels keep their priority.
     /// Tasks never wait on rayon work inside, so a queued task cannot be
@@ -501,6 +787,9 @@ struct Driver<'d, 's> {
     levels: Vec<Level>,
     maxzoom: i32,
     extend_zooms_max: i64,
+    /// Each maximum zoom and `extend_zooms_max` there has been, for
+    /// `Level::spawn_limits`.
+    limits: Vec<(i32, i64)>,
     finalized: usize,
     in_flight: usize,
     largest_written: i32,
@@ -543,12 +832,11 @@ pub fn drive<'s>(
         sink,
         scope,
         tx,
-        ready: BinaryHeap::new(),
-        seq: 0,
         max_in_flight: (threads.max(1) * 4).min(tiles_at_once(o)),
         levels: Vec::new(),
         maxzoom: o.maxzoom,
         extend_zooms_max: o.extend_zooms_max,
+        limits: vec![(o.maxzoom, o.extend_zooms_max)],
         finalized: 0,
         in_flight: 0,
         largest_written: -1,
@@ -572,8 +860,7 @@ pub fn drive<'s>(
             Spool::new(&o.tmpdir, &ctx.rest),
             &ctx.rest,
         ));
-        let at = (root.x, root.y);
-        d.add_input(0, at, root);
+        d.add_input(0, root);
         d.level_inputs_complete(0);
     }
 
@@ -590,7 +877,9 @@ pub fn drive<'s>(
             d.in_flight -= 1;
         }
         if d.error.is_some() {
-            d.ready.clear();
+            for l in &mut d.levels {
+                l.queue.clear();
+            }
             continue;
         }
         match done {
@@ -606,10 +895,12 @@ pub fn drive<'s>(
                 pass,
                 big,
                 result,
+                made,
+                record,
                 tile,
             } => {
                 d.running_big -= big;
-                d.on_made(level, idx, pass, *result, tile)
+                d.on_made(level, idx, pass, *result, made, record, tile)
             }
             Done::Failed(e) => d.error = Some(e),
         }
@@ -637,23 +928,30 @@ pub fn drive<'s>(
 }
 
 impl<'d, 's> Driver<'d, 's> {
-    /// Hands ready tasks to the pool while threads are free.
+    /// Hands ready tasks to the pool while threads are free, from the
+    /// shallowest levels first.
     fn pump(&mut self) {
-        let mut deferred = Vec::new();
+        let mut deferred: Vec<(usize, u32)> = Vec::new();
         while self.in_flight < self.max_in_flight {
-            let Some(Reverse(ready)) = self.ready.pop() else {
+            let Some(k) = (0..self.levels.len()).find(|&k| !self.levels[k].queue.is_empty()) else {
                 break;
             };
-            let big = ready.big;
+            let idx = self.levels[k].queue.pop_front().unwrap();
+            let ws = self.levels[k].working_set(idx as usize, self.ctx.store, self.ctx.o);
+            let big = if ws >= BIG_TASK.min(self.big_memory / 64) {
+                ws
+            } else {
+                0
+            };
             if big > 0 && self.running_big > 0 && self.running_big + big > self.big_memory {
-                deferred.push(ready);
+                deferred.push((k, idx));
                 continue;
             }
             self.running_big += big;
             self.in_flight += 1;
             let ctx = self.ctx;
             let tx = self.tx.clone();
-            let t = self.task(&ready);
+            let t = self.task(k, idx as usize, big);
             self.scope.spawn(move |_| {
                 // a task that panics fails the run; its message is printed
                 // already
@@ -667,31 +965,52 @@ impl<'d, 's> Driver<'d, 's> {
                 let _ = tx.send(done.unwrap_or_else(Done::Failed));
             });
         }
-        for r in deferred {
-            self.ready.push(Reverse(r));
+        // back at the front of their levels, in their order
+        for (k, idx) in deferred.into_iter().rev() {
+            self.levels[k].queue.push_front(idx);
         }
     }
 
-    /// Adds a tile to level `k`, from its parent at `parent`.
-    fn add_input(&mut self, k: usize, parent: (u32, u32), input: TileInput) {
+    /// Adds a tile to level `k`.
+    fn add_input(&mut self, k: usize, input: TileInput) {
         let level = &mut self.levels[k];
+        debug_assert_eq!(input.z, level.z);
         let idx = level.slots.len();
-        level.origins.push((parent, (input.x, input.y)));
+        let (parked, flags) = match input.park(level.spool.as_ref().expect(LIVE)) {
+            Some(p) => (p, 0),
+            None => {
+                let p = Parked::stand_in(&input, level.whole.len());
+                level.whole.push(Arc::new(input));
+                (p, WHOLE)
+            }
+        };
         level.slots.push(Slot {
-            input: Arc::new(input),
-            read: false,
-            complexity: None,
-            made: None,
-            tile: None,
-            children_must_go_on: None,
-            held: Vec::new(),
+            input: parked,
+            made_at: 0,
+            made_len: 0,
+            made_shard: 0,
+            record: 0,
+            flags,
         });
         level.unread += 1;
         level.missing += 1;
         if level.started {
             self.spawn_tile(k, idx);
         } else {
-            level.waiting.push(idx);
+            debug_assert_eq!(level.waiting, idx);
+            level.waiting += 1;
+            // a level beyond the maximum zoom may never be made, and so
+            // waits in its spool
+            if level.waiting.is_multiple_of(BLOCK)
+                && level.z > self.maxzoom
+                && k > 0
+                && self.levels[k - 1].z + 1 == self.levels[k].z
+            {
+                let level = &mut self.levels[k];
+                if let Err(e) = level.slots.put_away(level.spool.as_ref().expect(LIVE)) {
+                    self.error = Some(e);
+                }
+            }
         }
     }
 
@@ -707,8 +1026,13 @@ impl<'d, 's> Driver<'d, 's> {
         {
             return;
         }
-        self.levels[k].started = true;
-        for idx in std::mem::take(&mut self.levels[k].waiting) {
+        let level = &mut self.levels[k];
+        level.started = true;
+        if let Err(e) = level.slots.bring_back(level.spool.as_ref().expect(LIVE)) {
+            self.error = Some(e);
+            return;
+        }
+        for idx in 0..std::mem::take(&mut self.levels[k].waiting) {
             self.spawn_tile(k, idx);
         }
     }
@@ -718,9 +1042,7 @@ impl<'d, 's> Driver<'d, 's> {
     fn spawn_tile(&mut self, k: usize, idx: usize) {
         let o = self.ctx.o;
         let level = &mut self.levels[k];
-        let pass = level.pass;
-        let slot = &mut level.slots[idx];
-        if slot.input.skip_unless_dropping
+        if level.slots[idx].input.skip_unless_dropping
             && !dropping_features(&level.th, o.drop_by_attribute_descending)
         {
             let th = level.th;
@@ -728,35 +1050,30 @@ impl<'d, 's> Driver<'d, 's> {
             level.missing -= 1;
             return;
         }
-        let ws = slot.input.working_set(self.ctx.store, o);
         level.outstanding += 1;
-        self.seq += 1;
-        self.ready.push(Reverse(Ready {
-            key: (k, self.seq),
-            idx: idx as u32,
-            pass: pass as u32,
-            maxzoom: self.maxzoom,
-            extend_zooms_max: self.extend_zooms_max,
-            big: if ws >= BIG_TASK.min(self.big_memory / 64) {
-                ws
-            } else {
-                0
-            },
-        }));
+        // a pass queues its tiles in the order of their slots
+        debug_assert!(level.queue.back().is_none_or(|&b| (b as usize) < idx));
+        let limits = (self.limits.len() - 1) as u16;
+        if level.spawn_limits.last().is_none_or(|l| l.1 != limits) {
+            level.spawn_limits.push((idx as u32, limits));
+        }
+        level.queue.push_back(idx as u32);
     }
 
     /// The task of a queued tile. Nothing it is made from changes while the
-    /// tile waits, apart from what `Ready` keeps: a level's thresholds and
-    /// its tiles' reads change only once its pass is done.
-    fn task(&self, r: &Ready) -> Task {
+    /// tile waits, apart from the maximum zoom, which `spawn_limits` keeps
+    /// as it was: a level's thresholds and its tiles' reads change only once
+    /// its pass is done.
+    fn task(&self, k: usize, idx: usize, big: u64) -> Task {
         let o = self.ctx.o;
-        let k = r.key.0;
-        let idx = r.idx as usize;
-        let pass = r.pass as usize;
         let level = &self.levels[k];
+        let pass = level.pass;
+        let sl = &level.spawn_limits;
+        let from = sl.partition_point(|&(i, _)| i as usize <= idx);
+        let (maxzoom, extend_zooms_max) = self.limits[sl[from - 1].1 as usize];
         let slot = &level.slots[idx];
         let loop_z = if pass == 0 { level.loop_z } else { level.z };
-        let simplification = if loop_z == r.maxzoom && o.maxzoom_simplification > 0.0 {
+        let simplification = if loop_z == maxzoom && o.maxzoom_simplification > 0.0 {
             o.maxzoom_simplification
         } else {
             o.simplification
@@ -765,19 +1082,24 @@ impl<'d, 's> Driver<'d, 's> {
             level: k,
             idx,
             pass,
-            big: r.big,
+            big,
             spool: level.spool.clone().expect(LIVE),
             child_spool: level.child_spool.clone().expect(LIVE),
-            input: slot.input.clone(),
+            input: level.input(idx),
             rp: ReadParams {
                 nextzoom: level.nextzoom.unwrap(),
-                maxzoom: r.maxzoom,
-                extend_zooms_max: r.extend_zooms_max,
-                children: !slot.read,
+                maxzoom,
+                extend_zooms_max,
+                children: slot.flags & READ == 0,
             },
-            complexity: slot.complexity,
+            // a whole input keeps its own; the complexity is the slot's
+            complexity: if slot.flags & WHOLE != 0 {
+                slot.input.complexity()
+            } else {
+                None
+            },
             mp: MakeParams {
-                maxzoom: r.maxzoom,
+                maxzoom,
                 simplification,
                 th: level.th,
             },
@@ -798,16 +1120,56 @@ impl<'d, 's> Driver<'d, 's> {
             let threads = prev.threads;
             let cs = prev.child_shards as u32;
             let mzi = prev.max_zoom_increment as u32;
-            let mut parents: Vec<(u32, u32)> =
-                self.levels[k].origins.iter().map(|(p, _)| *p).collect();
-            parents.sort();
-            parents.dedup();
+            // tippecanoe's temporary files with data: those of each parent,
+            // numbered in x and y order, and of each child's position
+            let shard = |parent: usize, x: u32, y: u32| {
+                let j = (x.wrapping_shl(mzi) | (y & ((1u32 << mzi) - 1))) & cs.wrapping_sub(1);
+                (parent % threads) * cs as usize + j as usize
+            };
             let mut shards = std::collections::BTreeSet::new();
-            for (parent, child) in &self.levels[k].origins {
-                let slot = parents.binary_search(parent).unwrap() % threads;
-                let j = (child.0.wrapping_shl(mzi) | (child.1 & ((1u32 << mzi) - 1)))
-                    & cs.wrapping_sub(1);
-                shards.insert(slot * cs as usize + j as usize);
+            if self.levels[k].z == prev.z + 1 {
+                // from the parents, which know which children they wrote,
+                // with x and y in 24 bits each and the children below
+                debug_assert!(prev.z <= MAX_ZOOM);
+                let mut parents: Vec<u64> = prev
+                    .slots
+                    .iter()
+                    .filter(|s| (s.flags >> CHILDREN) & 0xf != 0)
+                    .map(|s| {
+                        ((s.input.x as u64) << 36)
+                            | ((s.input.y as u64) << 8)
+                            | ((s.flags >> CHILDREN) & 0xf) as u64
+                    })
+                    .collect();
+                parents.sort_unstable();
+                // the count matters only up to tippecanoe's other limits
+                let enough = o.cpus.min(o.temp_files / 4);
+                for (rank, p) in parents.iter().enumerate() {
+                    let (x, y) = ((p >> 36) as u32, ((p >> 8) & 0xff_ffff) as u32);
+                    for c in 0..4u32 {
+                        if p & (1 << c) != 0 {
+                            shards.insert(shard(rank, 2 * x + (c & 1), 2 * y + (c >> 1)));
+                        }
+                    }
+                    if shards.len() >= enough {
+                        break;
+                    }
+                }
+            } else {
+                // each tile's parent is the tile above it in the level before
+                let dz = (self.levels[k].z - prev.z) as u32;
+                let slots = &self.levels[k].slots;
+                let mut parents: Vec<(u32, u32)> = slots
+                    .iter()
+                    .map(|s| (s.input.x >> dz, s.input.y >> dz))
+                    .collect();
+                parents.sort_unstable();
+                parents.dedup();
+                for s in slots.iter() {
+                    let (x, y) = (s.input.x, s.input.y);
+                    let rank = parents.binary_search(&(x >> dz, y >> dz)).unwrap();
+                    shards.insert(shard(rank, x, y));
+                }
             }
             shards.len()
         };
@@ -867,13 +1229,12 @@ impl<'d, 's> Driver<'d, 's> {
     fn on_read(&mut self, k: usize, idx: usize, children: Vec<TileInput>, complexity: i64) {
         let o = self.ctx.o;
         let level = &mut self.levels[k];
-        let parent = (level.slots[idx].input.x, level.slots[idx].input.y);
         let slot = &mut level.slots[idx];
-        slot.read = true;
-        slot.complexity = Some(complexity);
+        slot.flags |= READ;
+        slot.input.set_complexity(complexity);
         level.unread -= 1;
         if self.variable_depth {
-            slot.held = children;
+            level.held.insert(idx as u32, children);
         } else if !children.is_empty() {
             if k + 1 == self.levels.len() {
                 let z = children[0].z;
@@ -885,29 +1246,49 @@ impl<'d, 's> Driver<'d, 's> {
                 self.levels.push(next);
                 self.try_start(k + 1);
             }
+            let level = &mut self.levels[k];
+            if children[0].z == level.z + 1 {
+                for c in &children {
+                    level.wrote_child(idx, c.x, c.y);
+                }
+            }
             for child in children {
-                self.add_input(k + 1, parent, child);
+                self.add_input(k + 1, child);
             }
         }
         self.check_children_complete(k);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn on_made(
         &mut self,
         k: usize,
         idx: usize,
         pass: usize,
         result: MakeResult,
-        tile: Option<Stored>,
+        made: Option<Place>,
+        record: u8,
+        tile: bool,
     ) {
         let level = &mut self.levels[k];
         debug_assert_eq!(pass, level.pass);
         level.outstanding -= 1;
         level.missing -= 1;
         let slot = &mut level.slots[idx];
-        slot.tile = tile;
-        if slot.children_must_go_on.is_none() {
-            slot.children_must_go_on = Some(result.children_must_go_on);
+        let made = made.unwrap_or_default();
+        slot.made_at = made.at;
+        slot.made_len = made.len as u32;
+        slot.made_shard = made.shard_byte();
+        slot.record = record;
+        slot.flags &= !TILE;
+        if tile {
+            slot.flags |= TILE;
+        }
+        if slot.flags & MUST_GO_ON_KNOWN == 0 {
+            slot.flags |= MUST_GO_ON_KNOWN;
+            if result.children_must_go_on {
+                slot.flags |= MUST_GO_ON;
+            }
         }
         level.fold(idx, result, self.ctx.o.drop_by_attribute_descending);
         self.check_pass(k);
@@ -918,7 +1299,7 @@ impl<'d, 's> Driver<'d, 's> {
         if level.done
             || !level.started
             || !level.inputs_complete
-            || !level.waiting.is_empty()
+            || level.waiting > 0
             || level.missing > 0
         {
             return;
@@ -952,7 +1333,11 @@ impl<'d, 's> Driver<'d, 's> {
         level.totals.next = next;
         let extend_zooms = totals.extend_zooms;
         let mut strategy = totals.strategy;
-        level.history.push((maxzoom, totals.history));
+        if level.z == maxzoom
+            && let Some(t) = totals.top
+        {
+            level.top = Some(top_of(level.top, t));
+        }
         let error = totals.error.map(|(_, m)| m);
 
         if let Some(message) = error {
@@ -969,6 +1354,7 @@ impl<'d, 's> Driver<'d, 's> {
             if self.extend_zooms_max > 0 {
                 self.extend_zooms_max -= 1;
             }
+            self.limits.push((self.maxzoom, self.extend_zooms_max));
         }
 
         let level = &mut self.levels[k];
@@ -1001,23 +1387,37 @@ impl<'d, 's> Driver<'d, 's> {
 
         if again {
             level.pass += 1;
+            level.spawn_limits.clear();
             let th = level.th;
             let filters = o.prefilter.is_some() || o.postfilter.is_some();
             let reusable = !self.variable_depth && !filters;
+            let mut record = [0u8; 255];
             for idx in 0..self.levels[k].slots.len() {
                 let level = &mut self.levels[k];
-                let made = level.slots[idx].made.take();
+                let slot = &mut level.slots[idx];
+                let flags = slot.flags;
+                slot.flags &= !MADE;
                 level.missing += 1;
-                let reuse = made
-                    .and_then(|m| m.reuse.map(|r| (m.len, r)))
-                    .filter(|(_, r)| {
-                        reusable
-                            && r.th.gamma == th.gamma
-                            && r.th.minextent == th.minextent
-                            && r.th.minattribute == th.minattribute
-                            && r.gap >= th.mingap
-                            && r.drop_sequence > th.mindrop_sequence
-                    });
+                let reuse = if reusable && flags & MADE != 0 && flags & REUSABLE != 0 {
+                    let spool = level.spool.as_ref().expect(LIVE);
+                    let slot = &level.slots[idx];
+                    let record = &mut record[..slot.record as usize];
+                    if let Err(e) = slot.made().read(spool, record) {
+                        self.error = Some(e);
+                        return;
+                    }
+                    let r = Reuse::decode(record);
+                    Some((r.len, r))
+                } else {
+                    None
+                };
+                let reuse = reuse.filter(|(_, r)| {
+                    r.th.gamma == th.gamma
+                        && r.th.minextent == th.minextent
+                        && r.th.minattribute == th.minattribute
+                        && r.gap >= th.mingap
+                        && r.drop_sequence > th.mindrop_sequence
+                });
                 match reuse {
                     // a higher threshold leaves the tile as it is
                     Some((len, r)) => {
@@ -1069,22 +1469,26 @@ impl<'d, 's> Driver<'d, 's> {
         let order = self.levels[k].order();
         let level = &mut self.levels[k];
 
-        let mut next: Vec<((u32, u32), TileInput)> = Vec::new();
+        let mut next: Vec<TileInput> = Vec::new();
+        let z = level.z;
         for &i in &order {
-            let slot = &mut level.slots[i];
-            let r = slot.made.as_ref().unwrap();
-            if r.skipped {
+            let i = i as usize;
+            let flags = level.slots[i].flags;
+            debug_assert!(flags & MADE != 0);
+            if flags & SKIPPED != 0 {
                 continue;
             }
-            let (z, x, y) = (slot.input.z, slot.input.x, slot.input.y);
-            let must_go_on = slot.children_must_go_on.unwrap_or(false);
-            for mut child in std::mem::take(&mut slot.held) {
-                child.skip_unless_dropping = r.truncated && child.z == z + 1;
+            let must_go_on = flags & MUST_GO_ON != 0;
+            for mut child in level.held.remove(&(i as u32)).unwrap_or_default() {
+                child.skip_unless_dropping = flags & TRUNCATED != 0 && child.z == z + 1;
                 if must_go_on {
                     // large enough not to try to stop early
                     child.complexity = Some(1i64 << 32);
                 }
-                next.push(((x, y), child));
+                if child.z == z + 1 {
+                    level.wrote_child(i, child.x, child.y);
+                }
+                next.push(child);
             }
         }
         if next.is_empty() {
@@ -1092,15 +1496,15 @@ impl<'d, 's> Driver<'d, 's> {
         }
 
         debug_assert_eq!(k + 1, self.levels.len());
-        let z = next[0].1.z;
+        let z = next[0].z;
         let spool = self.levels[k].child_spool.clone().expect(LIVE);
         let mut nl = Level::new(z, self.levels[k].z + 1, o, spool, &self.ctx.rest);
         if z + 1 >= o.minzoom {
             nl.nextzoom = Some(z + 1);
         }
         self.levels.push(nl);
-        for (parent, child) in next {
-            self.add_input(k + 1, parent, child);
+        for child in next {
+            self.add_input(k + 1, child);
         }
         self.level_inputs_complete(k + 1);
     }
@@ -1150,18 +1554,17 @@ impl<'d, 's> Driver<'d, 's> {
         let order = self.levels[k].order();
         let level = &mut self.levels[k];
 
+        // tippecanoe's tile with the most vertices at the maximum zoom, and
+        // of those the first in x and y order; with none above zero, the
+        // first of those with zero and the one found before
         self.most = 0;
-        for (pass_maxzoom, tiles) in &level.history {
-            for &(z, x, y, len) in tiles {
-                if z == *pass_maxzoom {
-                    let a: u64 = ((x as u64) << 32) | y as u64;
-                    let b: u64 = ((self.stats.midx as u64) << 32) | self.stats.midy as u64;
-                    if len > self.most || (len == self.most && a < b) {
-                        self.stats.midx = x;
-                        self.stats.midy = y;
-                        self.most = len;
-                    }
-                }
+        if let Some((len, x, y)) = level.top {
+            let a: u64 = ((x as u64) << 32) | y as u64;
+            let b: u64 = ((self.stats.midx as u64) << 32) | self.stats.midy as u64;
+            if len > self.most || (len == self.most && a < b) {
+                self.stats.midx = x;
+                self.stats.midy = y;
+                self.most = len;
             }
         }
 
@@ -1176,12 +1579,14 @@ impl<'d, 's> Driver<'d, 's> {
             self.largest_written = level.z;
         }
 
+        let spool = level.spool.clone().expect(LIVE);
         for &i in &order {
-            let slot = &level.slots[i];
-            if let Some(tile) = &slot.tile {
-                let bytes = tile.load_sequential()?;
+            let slot = &level.slots[i as usize];
+            if slot.flags & TILE != 0 {
+                let stored = slot.made().stored(&spool, slot.record as u64);
+                let bytes = stored.load_sequential()?;
                 self.sink
-                    .write_tile(slot.input.z as u8, slot.input.x, slot.input.y, &bytes)?;
+                    .write_tile(level.z as u8, slot.input.x, slot.input.y, &bytes)?;
                 self.stats.tiles += 1;
             }
         }
@@ -1199,8 +1604,10 @@ impl<'d, 's> Driver<'d, 's> {
         }
 
         // free the level's memory
-        level.slots = Vec::new();
-        level.history = Vec::new();
+        level.slots = Slots::default();
+        level.spawn_limits = Vec::new();
+        level.whole = Vec::new();
+        level.held = HashMap::new();
         if let Some(spool) = level.spool.take() {
             for l in &mut self.levels {
                 if l.child_spool
@@ -1253,9 +1660,36 @@ fn run_task(ctx: &Ctx<'_>, t: Task, tx: &Sender<Done>) -> crate::Result<Done> {
     }
     let mut result = make_tile(ctx, &rt, &t.mp);
     drop(rt);
-    let tile = match result.tile.take() {
-        Some(bytes) => Some(t.spool.store(&bytes)?),
-        None => None,
+    let tile = result.tile.take();
+    // what another pass needs to know of the tile waits with it
+    let record = result.reusable.map(|th| {
+        Reuse {
+            len: result.len,
+            th,
+            gap: result.reuse_gap,
+            drop_sequence: result.reuse_drop_sequence,
+            strategy: result.strategy,
+        }
+        .encode()
+    });
+    let made = if tile.is_some() || record.is_some() {
+        let parts = [
+            record.as_deref().unwrap_or(&[]),
+            tile.as_deref().unwrap_or(&[]),
+        ];
+        if parts[0].len() + parts[1].len() > u32::MAX as usize {
+            return Err(Error::new(
+                EXIT_IMPOSSIBLE,
+                format!(
+                    "tile {}/{}/{} is too large",
+                    t.input.z, t.input.x, t.input.y
+                ),
+            ));
+        }
+        let stored = t.spool.store_parts(&parts)?;
+        Some(stored.place_in(&t.spool).expect("stored in the spool"))
+    } else {
+        None
     };
     Ok(Done::Made {
         level: t.level,
@@ -1263,7 +1697,9 @@ fn run_task(ctx: &Ctx<'_>, t: Task, tx: &Sender<Done>) -> crate::Result<Done> {
         pass: t.pass,
         big: t.big,
         result: Box::new(result),
-        tile,
+        made,
+        record: record.map_or(0, |r| r.len() as u8),
+        tile: tile.is_some(),
     })
 }
 
@@ -1303,5 +1739,93 @@ fn merge_tilestats(maps: Vec<BTreeMap<String, LayermapEntry>>) -> BTreeMap<Strin
             }
             merged
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slots_stay_small() {
+        // a level keeps one per tile until it is written: 18 million at z15
+        // for the largest Canadian census areas
+        assert!(std::mem::size_of::<Slot>() <= 56);
+    }
+
+    #[test]
+    fn reuse_records_come_back() {
+        let th = |minattribute| Thresholds {
+            gamma: 1.5,
+            mingap: 0,
+            minextent: -7,
+            mindrop_sequence: u64::MAX - 3,
+            minattribute,
+        };
+        let strategy = Strategy {
+            dropped_as_needed: 3,
+            tile_size: 123_456,
+            feature_count: 789,
+            ..Strategy::default()
+        };
+        for (len, th, gap, drop_sequence, strategy) in [
+            (0, th(f64::NEG_INFINITY), u64::MAX, u64::MAX, None),
+            (-1, th(f64::INFINITY), 0, 1, Some(strategy)),
+            (
+                i64::MAX,
+                th(-2.25),
+                12_345,
+                u64::MAX - 1,
+                Some(Strategy::default()),
+            ),
+        ] {
+            let r = Reuse {
+                len,
+                th,
+                gap,
+                drop_sequence,
+                strategy,
+            };
+            let bytes = r.encode();
+            assert!(bytes.len() <= u8::MAX as usize);
+            let back = Reuse::decode(&bytes);
+            assert_eq!(back.len, len);
+            assert_eq!(back.th, th);
+            assert_eq!(back.gap, gap);
+            assert_eq!(back.drop_sequence, drop_sequence);
+            assert_eq!(
+                back.strategy.map(|s| format!("{:?}", s)),
+                strategy.map(|s| format!("{:?}", s))
+            );
+        }
+    }
+
+    #[test]
+    fn slots_in_blocks() {
+        let mut slots = Slots::default();
+        let slot = |i: u32| {
+            let input = TileInput::root(0, i, i, 1, 0);
+            Slot {
+                input: Parked::stand_in(&input, i as usize),
+                made_at: i as u64,
+                made_len: 0,
+                made_shard: 0,
+                record: 0,
+                flags: 0,
+            }
+        };
+        for i in 0..(BLOCK as u32 * 2 + 5) {
+            slots.push(slot(i));
+        }
+        assert_eq!(slots.len(), BLOCK * 2 + 5);
+        assert_eq!(slots.blocks.len(), 3);
+        slots[BLOCK + 1].made_at = 7;
+        assert_eq!(slots[BLOCK + 1].made_at, 7);
+        assert!(
+            slots
+                .iter()
+                .enumerate()
+                .all(|(i, s)| s.input.index() == i && (i == BLOCK + 1 || s.made_at == i as u64))
+        );
     }
 }

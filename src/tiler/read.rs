@@ -130,7 +130,120 @@ pub struct TileInput {
     pub complexity: Option<i64>,
 }
 
+/// A tile input in its zoom level's spool, kept without the spool, which the
+/// level holds: a level keeps one for each of its tiles until the level is
+/// written, which at high zooms can be millions, so it is small.
+///
+/// Its fields leave no gaps, so that blocks of them can be stored as bytes.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct Parked {
+    pub x: u32,
+    pub y: u32,
+    /// Where its bytes are: a `Place` packed small.
+    at: u64,
+    len: u32,
+    count: u32,
+    vertices: u32,
+    shard: u8,
+    shift: u8,
+    pub skip_unless_dropping: bool,
+    _pad: u8,
+    /// `TileInput::complexity`, or `NO_COMPLEXITY`.
+    complexity: i64,
+}
+
+const _: () = assert!(std::mem::size_of::<Parked>() == 40);
+
+const NO_COMPLEXITY: i64 = i64::MIN;
+
+impl Parked {
+    /// The input again, its bytes in `spool`, at zoom `z`.
+    pub fn input(&self, z: i32, spool: &Arc<Spool>) -> TileInput {
+        TileInput {
+            z,
+            x: self.x,
+            y: self.y,
+            root: false,
+            data: crate::mem::Place::with_shard_byte(self.at, self.len as u64, self.shard)
+                .stored(spool, 0),
+            parts: Vec::new(),
+            runs: Vec::new(),
+            count: self.count as usize,
+            vertices: self.vertices as u64,
+            last: NO_FEATURE,
+            shift: self.shift as u32,
+            skip_unless_dropping: self.skip_unless_dropping,
+            complexity: self.complexity(),
+        }
+    }
+
+    /// A stand-in for `input`, kept whole elsewhere as number `i`.
+    pub fn stand_in(input: &TileInput, i: usize) -> Parked {
+        Parked {
+            x: input.x,
+            y: input.y,
+            at: i as u64,
+            len: 0,
+            shard: 0,
+            shift: 0,
+            skip_unless_dropping: input.skip_unless_dropping,
+            count: 0,
+            vertices: 0,
+            _pad: 0,
+            complexity: NO_COMPLEXITY,
+        }
+    }
+
+    /// For a stand-in, the number it was given.
+    pub fn index(&self) -> usize {
+        self.at as usize
+    }
+
+    pub fn complexity(&self) -> Option<i64> {
+        (self.complexity != NO_COMPLEXITY).then_some(self.complexity)
+    }
+
+    /// Sets the complexity, as the first read of the tile counted it.
+    pub fn set_complexity(&mut self, c: i64) {
+        debug_assert_ne!(c, NO_COMPLEXITY);
+        self.complexity = c;
+    }
+
+    /// `TileInput::working_set`, for an input that is not a stand-in.
+    pub fn working_set(&self, o: &super::TileOptions) -> u64 {
+        working_set(self.count as u64, self.vertices as u64, o)
+    }
+}
+
 impl TileInput {
+    /// The input as a `Parked`, if its bytes are in `spool` with its runs
+    /// and so all that is left of it is where they are.
+    pub fn park(&self, spool: &Arc<Spool>) -> Option<Parked> {
+        let place = self.data.place_in(spool)?;
+        let small = |v: u64| u32::try_from(v).ok();
+        if self.root
+            || !self.parts.is_empty()
+            || !self.runs.is_empty()
+            || self.complexity == Some(NO_COMPLEXITY)
+        {
+            return None;
+        }
+        Some(Parked {
+            x: self.x,
+            y: self.y,
+            at: place.at,
+            len: small(place.len)?,
+            shard: place.shard_byte(),
+            shift: u8::try_from(self.shift).ok()?,
+            skip_unless_dropping: self.skip_unless_dropping,
+            count: small(self.count as u64)?,
+            vertices: small(self.vertices)?,
+            _pad: 0,
+            complexity: self.complexity.unwrap_or(NO_COMPLEXITY),
+        })
+    }
+
     /// The first tile, which reads every feature of the store.
     pub fn root(z: i32, x: u32, y: u32, features: usize, complexity: i64) -> TileInput {
         TileInput {
@@ -168,26 +281,14 @@ impl TileInput {
         }
     }
 
-    /// About how much memory reading and making the tile takes. Reading
-    /// holds every feature of the input, and making the tile the features
-    /// it keeps, of which there are at most the feature limit.
+    /// About how much memory reading and making the tile takes.
     pub fn working_set(&self, store: &crate::store::FeatureStore, o: &super::TileOptions) -> u64 {
         let vertices = if self.root {
             store.geometry.vertices()
         } else {
             self.vertices
         };
-        let count = self.count as u64;
-        let kept = if o.p(P_FEATURE_LIMIT) {
-            count
-        } else {
-            count.min(o.max_tile_features as u64)
-        };
-        let kept_vertices = (vertices as u128 * kept as u128 / count.max(1) as u128) as u64;
-        count * READ_PER_FEATURE
-            + vertices * READ_PER_VERTEX
-            + kept * MAKE_PER_FEATURE
-            + kept_vertices * MAKE_PER_VERTEX
+        working_set(self.count as u64, vertices, o)
     }
 
     /// Appends a part that one read chunk of the parent wrote.
@@ -251,6 +352,23 @@ impl TileInput {
             put_varint(out, r.prev.wrapping_add(1) as u64);
         }
     }
+}
+
+/// About how much memory reading and making a tile of `count` features and
+/// `vertices` vertices takes. Reading holds every feature of the input, and
+/// making the tile the features it keeps, of which there are at most the
+/// feature limit.
+fn working_set(count: u64, vertices: u64, o: &super::TileOptions) -> u64 {
+    let kept = if o.p(P_FEATURE_LIMIT) {
+        count
+    } else {
+        count.min(o.max_tile_features as u64)
+    };
+    let kept_vertices = (vertices as u128 * kept as u128 / count.max(1) as u128) as u64;
+    count * READ_PER_FEATURE
+        + vertices * READ_PER_VERTEX
+        + kept * MAKE_PER_FEATURE
+        + kept_vertices * MAKE_PER_VERTEX
 }
 
 /// An input's runs and features, ready to read.

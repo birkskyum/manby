@@ -243,6 +243,8 @@ impl Source {
     /// zooms `minzoom` to `maxzoom` are listed for PMTiles and directories,
     /// as tile-join lists them.
     pub fn open(fname: &str, minzoom: i32, maxzoom: i32) -> Result<Source> {
+        // S_IFDIR is 16 bits on macOS and 32 on Linux
+        #[allow(clippy::unnecessary_cast)]
         let is_dir =
             std::fs::metadata(fname).is_ok_and(|st| (st.mode() & libc::S_IFDIR as u32) != 0);
         if is_dir {

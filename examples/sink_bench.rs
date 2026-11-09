@@ -92,7 +92,7 @@ fn synthetic(n: usize, buffer: &mut Vec<u8>) -> Vec<(u8, u32, u32, usize, usize)
         };
         tiles.push((t.z, t.x, t.y, range.0, range.1));
         prev = range;
-        id += 1 + if rng.next() % 3 == 0 {
+        id += 1 + if rng.next().is_multiple_of(3) {
             rng.next() % 40
         } else {
             0

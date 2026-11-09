@@ -331,7 +331,7 @@ fn reference(o: &Options) -> Reference {
             .map(|(k, v)| (v.id, k.clone()))
             .collect();
 
-        for rec in index.chunks_exact(32) {
+        for rec in index.as_chunks::<32>().0 {
             let x = tippecanoe::tippecanoe_main::Index::from_bytes(rec);
             let mut p: &[u8] = &geom[x.start as usize..x.end as usize];
             let len = tippecanoe::serial::deserialize_long_long(&mut p) as usize;

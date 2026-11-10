@@ -4,7 +4,6 @@ use std::collections::BTreeSet;
 use std::ffi::{CStr, c_char};
 use std::fs::File;
 use std::io::Read;
-use std::os::unix::fs::MetadataExt;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
@@ -303,16 +302,16 @@ fn decode(
         Ok(fd) => {
             match fd.metadata() {
                 Ok(st) => {
-                    if let Ok(map) = mmap_file(&fd, st.size())
+                    if let Ok(map) = mmap_file(&fd, st.len())
                         && !c_streq(&map, b"SQLite format 3")
                         && !map.starts_with(b"PMTiles")
                     {
                         if z >= 0 {
-                            if st.size() > 250 * 1024 * 1024 {
+                            if st.len() > 250 * 1024 * 1024 {
                                 eprintln!(
                                     "{}: unrealistically large single-tile size {}",
                                     fname,
-                                    st.size()
+                                    st.len()
                                 );
                                 std::process::exit(EXIT_MEMORY);
                             } else {
@@ -349,7 +348,7 @@ fn decode(
     let mut entries = Vec::new();
     let mut is_pmtiles = false;
 
-    if std::fs::metadata(fname).is_ok_and(|st| (st.mode() & libc::S_IFDIR as u32) != 0) {
+    if std::fs::metadata(fname).is_ok_and(|st| crate::platform::mode_is_dir(&st)) {
         isdir = true;
 
         db = dirmeta2tmp(fname);
@@ -357,7 +356,7 @@ fn decode(
     } else if pmtiles_has_suffix(fname) {
         let map = match File::open(fname) {
             Ok(pmtiles_fd) => {
-                let len = pmtiles_fd.metadata().map(|st| st.size()).unwrap_or(0);
+                let len = pmtiles_fd.metadata().map(|st| st.len()).unwrap_or(0);
                 mmap_file(&pmtiles_fd, len)
             }
             // mmap() of the -1 that open() returned
@@ -859,10 +858,7 @@ fn c_streq(map: &[u8], s: &[u8]) -> bool {
 /// Restores the default `SIGPIPE` action that a C program starts with, so that
 /// writing to a closed pipe ends the program quietly instead of failing the write.
 fn restore_sigpipe() {
-    // SAFETY: setting a signal to its default action has no preconditions.
-    unsafe {
-        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
-    }
+    crate::platform::sigpipe_default();
 }
 
 /// `sqlite3_open(fname, &db)`. On failure, returns `sqlite3_errmsg(db)`, without

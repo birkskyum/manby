@@ -2,6 +2,7 @@
 //!
 //!     cargo run --release --example phases -- -zg -P bench/data/points4m.geojsonl
 
+#[cfg(not(windows))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 

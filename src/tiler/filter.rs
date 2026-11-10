@@ -3,8 +3,6 @@
 //! features the filter writes back.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::fs::File;
-use std::os::fd::{FromRawFd, IntoRawFd};
 
 use tippecanoe::clip::close_poly;
 use tippecanoe::geometry::{DrawVec, VT_POLYGON};
@@ -46,7 +44,7 @@ pub fn prefilter_tile(
 
     let mut write_to = -1;
     let mut read_from = -1;
-    let mut pid: libc::pid_t = 0;
+    let mut pid: tippecanoe::platform::Pid = 0;
     setup_filter(
         filter,
         &mut write_to,
@@ -62,7 +60,7 @@ pub fn prefilter_tile(
         let writer = scope.spawn(move || write_candidates(ctx, rt, write_to));
 
         // SAFETY: read_from is the read end of the filter's output pipe, owned here.
-        let read_fp = unsafe { File::from_raw_fd(read_from) };
+        let read_fp = unsafe { tippecanoe::platform::file_from_fd(read_from) };
         {
             let mut jp = JsonPull::begin_file(Box::new(&read_fp));
             loop {
@@ -83,8 +81,8 @@ pub fn prefilter_tile(
                 parsed.push(sf);
             }
         }
-        // SAFETY: the descriptor came from into_raw_fd and is closed exactly once.
-        unsafe { libc::close(read_fp.into_raw_fd()) };
+        // SAFETY: the descriptor came from file_into_fd and is closed exactly once.
+        unsafe { libc::close(tippecanoe::platform::file_into_fd(read_fp)) };
         wait_for_filter(pid, "waitpid for prefilter\n");
         if let Err(e) = writer.join() {
             std::panic::resume_unwind(e);

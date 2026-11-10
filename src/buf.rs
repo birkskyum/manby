@@ -7,6 +7,8 @@
 //! resident memory nears the budget, a pager thread maps file regions
 //! afresh: that takes their pages out of the process's memory, while the
 //! page cache keeps them for the next use as long as the machine has room.
+//! Windows can't map a region afresh in place, so there the pager takes the
+//! pages out of the process's working set instead, which ends the same way.
 
 use std::alloc::Layout;
 use std::cell::Cell;
@@ -14,6 +16,7 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::marker::PhantomData;
 use std::mem::{ManuallyDrop, MaybeUninit, needs_drop, size_of};
+#[cfg(unix)]
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
@@ -124,7 +127,10 @@ fn file_alloc(bytes: usize) -> Option<NonNull<u8>> {
         return None;
     }
     if s.file.is_none() {
-        let dir = s.dir.clone().unwrap_or_else(|| PathBuf::from("/tmp"));
+        let dir = s
+            .dir
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(tippecanoe::platform::default_tmpdir()));
         match crate::mem::create_unlinked(&dir, "memory") {
             Ok(f) => s.file = Some(f),
             Err(e) => {
@@ -144,20 +150,7 @@ fn file_alloc(bytes: usize) -> Option<NonNull<u8>> {
         s.failed = true;
         return None;
     }
-    // SAFETY: a new shared mapping of a range of the file, which now exists.
-    let p = unsafe {
-        libc::mmap(
-            std::ptr::null_mut(),
-            len,
-            libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_SHARED,
-            file.as_raw_fd(),
-            off as libc::off_t,
-        )
-    };
-    if p == libc::MAP_FAILED {
-        return None;
-    }
+    let p = map_region(file, off, len)?;
     s.next += len as u64;
     s.mapped += len as u64;
     s.regions.insert(p as usize, (off, len));
@@ -171,11 +164,75 @@ fn file_free(p: *mut u8) {
         return;
     };
     s.mapped -= len as u64;
-    // SAFETY: the region was mapped by file_alloc and nothing uses it now.
-    unsafe { libc::munmap(p as *mut libc::c_void, len) };
+    unmap_region(p, len);
     if let Some(f) = &s.file {
         punch_hole(f, off, len);
     }
+}
+
+/// A new shared, writable mapping of a range of the file, which exists.
+#[cfg(unix)]
+fn map_region(file: &File, off: u64, len: usize) -> Option<*mut libc::c_void> {
+    // SAFETY: a new shared mapping of a range of the file, which now exists.
+    let p = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            len,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            file.as_raw_fd(),
+            off as libc::off_t,
+        )
+    };
+    (p != libc::MAP_FAILED).then_some(p)
+}
+
+/// A view of a range of the file. `off` is a multiple of `GRANULE`, which is
+/// Windows' allocation granularity.
+#[cfg(windows)]
+fn map_region(file: &File, off: u64, len: usize) -> Option<*mut libc::c_void> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Memory::{
+        CreateFileMappingW, FILE_MAP_ALL_ACCESS, MapViewOfFile, PAGE_READWRITE,
+    };
+    let end = off + len as u64;
+    // SAFETY: a mapping of the open file, as large as the file now is.
+    let m = unsafe {
+        CreateFileMappingW(
+            file.as_raw_handle(),
+            std::ptr::null(),
+            PAGE_READWRITE,
+            (end >> 32) as u32,
+            end as u32,
+            std::ptr::null(),
+        )
+    };
+    if m.is_null() {
+        return None;
+    }
+    // SAFETY: a view of a range inside the mapping, which the view keeps
+    // alive after its handle is closed.
+    let v = unsafe { MapViewOfFile(m, FILE_MAP_ALL_ACCESS, (off >> 32) as u32, off as u32, len) };
+    // SAFETY: the handle was opened above.
+    unsafe { CloseHandle(m) };
+    (!v.Value.is_null()).then_some(v.Value)
+}
+
+fn unmap_region(p: *mut u8, len: usize) {
+    // SAFETY: the region was mapped by file_alloc and nothing uses it now.
+    #[cfg(unix)]
+    unsafe {
+        libc::munmap(p as *mut libc::c_void, len)
+    };
+    // SAFETY: as above.
+    #[cfg(windows)]
+    unsafe {
+        let _ = len;
+        windows_sys::Win32::System::Memory::UnmapViewOfFile(
+            windows_sys::Win32::System::Memory::MEMORY_MAPPED_VIEW_ADDRESS { Value: p as _ },
+        )
+    };
 }
 
 /// Gives the disk space of a range of the file back.
@@ -261,6 +318,7 @@ fn trim_locked(s: &mut PagerState, target: u64) {
         // SAFETY: the range is a live mapping of the same range of the file,
         // which this replaces at once while the state is locked. The pages
         // are the file's, so the contents stay as they are.
+        #[cfg(unix)]
         unsafe {
             libc::mmap(
                 addr as *mut libc::c_void,
@@ -270,6 +328,13 @@ fn trim_locked(s: &mut PagerState, target: u64) {
                 f.as_raw_fd(),
                 off as libc::off_t,
             )
+        };
+        // SAFETY: unlocking pages that are not locked takes them out of the
+        // working set; the view and its contents stay as they are.
+        #[cfg(windows)]
+        unsafe {
+            let _ = (f, off);
+            windows_sys::Win32::System::Memory::VirtualUnlock(addr as *const libc::c_void, len)
         };
         last = Some(addr);
         if target > 0 && k % 4 == 3 && crate::mem::resident().is_some_and(|r| r <= target) {

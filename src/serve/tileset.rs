@@ -5,12 +5,14 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
-use std::os::unix::fs::{FileExt, MetadataExt};
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use tippecanoe::jsonpull::{JsonPull, JsonRef, JsonType};
+use tippecanoe::platform::FileAt;
 use tippecanoe::pmtiles::{self, EntryV3, HeaderV3};
 
 /// PMTiles' tile type for MapLibre Tiles.
@@ -35,12 +37,27 @@ pub struct Stamp {
 impl Stamp {
     pub fn of(path: &Path) -> std::io::Result<Stamp> {
         let m = std::fs::metadata(path)?;
-        Ok(Stamp {
+        #[cfg(unix)]
+        return Ok(Stamp {
             len: m.len(),
             mtime: m.mtime(),
             mtime_nsec: m.mtime_nsec(),
             ino: m.ino(),
-        })
+        });
+        // Windows gives no inode, so the time and length tell versions apart.
+        #[cfg(windows)]
+        {
+            let t = m
+                .modified()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default();
+            Ok(Stamp {
+                len: m.len(),
+                mtime: t.as_secs() as i64,
+                mtime_nsec: t.subsec_nanos() as i64,
+                ino: 0,
+            })
+        }
     }
 
     /// The version as text, for ETags and URLs.

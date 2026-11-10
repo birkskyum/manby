@@ -24,6 +24,7 @@ use manby::sink::mbtiles::MbtilesSink;
 use manby::sink::pmtiles::PmtilesSink;
 use manby::sink::{SinkSettings, TileSink};
 
+#[cfg(not(windows))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 

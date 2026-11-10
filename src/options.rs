@@ -363,7 +363,7 @@ impl Default for Options {
             filter: None,
             prefilter: None,
             postfilter: None,
-            tmpdir: "/tmp".to_string(),
+            tmpdir: tippecanoe::platform::default_tmpdir(),
             prevent: Flags::default(),
             additional: Flags::default(),
             simplification: 1.0,

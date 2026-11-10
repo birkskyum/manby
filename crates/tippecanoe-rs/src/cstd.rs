@@ -107,6 +107,15 @@ fn errno_location() -> *mut libc::c_int {
     unsafe { libc::__errno_location() }
 }
 
+#[cfg(windows)]
+fn errno_location() -> *mut libc::c_int {
+    unsafe extern "C" {
+        fn _errno() -> *mut libc::c_int;
+    }
+    // SAFETY: _errno has no preconditions and returns this thread's errno.
+    unsafe { _errno() }
+}
+
 /// The current `errno`.
 pub fn errno() -> i32 {
     // SAFETY: the pointer is this thread's errno, valid for the thread's lifetime.

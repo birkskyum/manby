@@ -86,7 +86,7 @@ impl Default for SinkSettings {
             force: false,
             allow_existing: false,
             tile_compression: true,
-            tmpdir: PathBuf::from("/tmp"),
+            tmpdir: PathBuf::from(tippecanoe::platform::default_tmpdir()),
             memory_budget: physical_memory() / 4,
             file_writers: 4,
             tile_format: TileFormat::Mvt,
@@ -96,6 +96,13 @@ impl Default for SinkSettings {
 }
 
 /// Bytes of RAM, or 4 GiB if the system will not say.
+#[cfg(windows)]
+pub fn physical_memory() -> usize {
+    tippecanoe::platform::calc_memsize()
+}
+
+/// Bytes of RAM, or 4 GiB if the system will not say.
+#[cfg(unix)]
 pub fn physical_memory() -> usize {
     // SAFETY: sysconf has no preconditions.
     let (pages, page_size) = unsafe {

@@ -31,7 +31,6 @@ libc = "0.2.191"
 libdeflater = "1.26.1"
 memmap2 = "0.9.12"
 mlt-core = { version = "0.22.0", optional = true }
-tikv-jemallocator = "0.7"
 rayon = "1.12.0"
 rusqlite = { version = "0.41", features = ["bundled"] }
 tippecanoe-rs = { version = "2.82.1", path = "crates/tippecanoe-rs" }
@@ -52,6 +51,14 @@ url = { version = "2", optional = true }
 bytes = { version = "1", optional = true }
 webpki-root-certs = { version = "1", optional = true }
 arrow-select = "60.1"
+
+# jemalloc doesn't build for Windows, where mimalloc takes its place
+[target.'cfg(not(windows))'.dependencies]
+tikv-jemallocator = "0.7"
+
+[target.'cfg(windows)'.dependencies]
+mimalloc = { version = "0.1", default-features = false }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Memory", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
 
 [dev-dependencies]
 libz-sys = "1.1"

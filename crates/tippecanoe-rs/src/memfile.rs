@@ -3,14 +3,13 @@
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::os::fd::FromRawFd;
 
 use crate::cstd::{errno, strerror};
 use crate::errors::{EXIT_IMPOSSIBLE, EXIT_OPEN, EXIT_WRITE};
 
 #[allow(dead_code)]
 const INCREMENT: usize = 131072;
-const INITIAL: libc::off_t = 256;
+const INITIAL: i64 = 256;
 
 pub struct Memfile {
     pub fd: i32,
@@ -21,8 +20,7 @@ pub struct Memfile {
 }
 
 pub fn memfile_open(fd: i32) -> Option<Box<Memfile>> {
-    // SAFETY: ftruncate on a descriptor the caller owns.
-    if unsafe { libc::ftruncate(fd, INITIAL) } != 0 {
+    if crate::platform::ftruncate(fd, INITIAL) != 0 {
         return None;
     }
 
@@ -42,14 +40,7 @@ pub fn memfile_close(file: Box<Memfile>) -> i32 {
     let mut file = file;
     match file.fp.take() {
         None => {
-            // SAFETY: writes the bytes of `map` to a descriptor the memfile owns.
-            let w = unsafe {
-                libc::write(
-                    file.fd,
-                    file.map.as_ptr() as *const libc::c_void,
-                    file.map.len(),
-                )
-            };
+            let w = crate::platform::write(file.fd, &file.map);
             if w != file.map.len() as isize {
                 return -1;
             }
@@ -64,6 +55,7 @@ pub fn memfile_close(file: Box<Memfile>) -> i32 {
             if fp.into_inner().is_err() {
                 return -1;
             }
+            crate::platform::close_shared_fd(file.fd);
         }
     }
 
@@ -105,7 +97,7 @@ pub fn memfile_full(file: &mut Memfile) {
     }
 
     // SAFETY: the memfile owns the descriptor, and from here on the File does.
-    let mut fp = BufWriter::new(unsafe { File::from_raw_fd(file.fd) });
+    let mut fp = BufWriter::new(unsafe { crate::platform::file_sharing_fd(file.fd) });
 
     if fp.write_all(&file.map).is_err() {
         eprintln!("memfile write: {}", strerror(errno()));
@@ -120,7 +112,7 @@ mod tests {
     use super::*;
 
     fn tmpfd() -> i32 {
-        let mut name = String::from("/tmp/memfile-test.XXXXXX");
+        let mut name = format!("{}/memfile-test.XXXXXX", crate::platform::default_tmpdir());
         let fd = crate::tippecanoe_main::mkstemp_cloexec(&mut name);
         assert!(fd >= 0);
         std::fs::remove_file(&name).unwrap();
@@ -145,8 +137,7 @@ mod tests {
 
         mf.fp.as_mut().unwrap().flush().unwrap();
         let mut buf = vec![0u8; 11];
-        // SAFETY: reads into a buffer of the given size.
-        let n = unsafe { libc::pread(mf.fd, buf.as_mut_ptr() as *mut libc::c_void, 11, 0) };
+        let n = crate::platform::pread(mf.fd, &mut buf, 0);
         assert_eq!(n, 11);
         assert_eq!(&buf, b"hello world");
 

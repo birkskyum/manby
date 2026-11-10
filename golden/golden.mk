@@ -23,6 +23,16 @@ RECIPES += raw-tiles-test pmtiles-test enumerate-test join-test join-filter-test
 # and those of tippecanoe's other programs, all of them manby too.
 RECIPES += pbf-test overzoom-test json-tool-test
 
+# On Windows, in Git's bash, a program is started with its full path as its
+# name, which generator_options records, so the name is put back as
+# ./tippecanoe before the comparison, and a difference is shown. parallel-test
+# reads from bash's <(...) files, which only bash's own programs can open.
+ifeq ($(OS),Windows_NT)
+ARGV0 = | sed -E 's|("generator_options": ")[^ ]*tippecanoe(\.exe)? |\1./tippecanoe |'
+SHOWDIFF = || { diff $@.out $(patsubst %.check,%,$@) | head -20; false; }
+RECIPES := $(filter-out parallel-test,$(RECIPES))
+endif
+
 all: $(addsuffix .check,$(TESTS)) $(RECIPES)
 
 # Work around Makefile and filename punctuation limits:
@@ -47,8 +57,8 @@ testargs = \
 
 %.json.check:
 	./tippecanoe -q -a@ -f -o $@.mbtiles $(call testargs,$(patsubst %.json.check,%,$(word 4,$(subst /, ,$@)))) $(foreach suffix,$(suffixes),$(sort $(wildcard $(subst $(SPACE),/,$(wordlist 1,2,$(subst /, ,$@)))/*.$(suffix)))) < /dev/null
-	./tippecanoe-decode -x generator $@.mbtiles > $@.out
-	cmp $@.out $(patsubst %.check,%,$@)
+	./tippecanoe-decode -x generator $@.mbtiles $(ARGV0) > $@.out
+	cmp $@.out $(patsubst %.check,%,$@) $(SHOWDIFF)
 	rm $@.out $@.mbtiles
 
 # The recipes below are copied from tippecanoe's Makefile.

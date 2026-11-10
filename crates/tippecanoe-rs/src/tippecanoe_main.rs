@@ -1968,7 +1968,7 @@ fn read_input(
             let src = cstr(src).as_bytes();
             let mut use_ = 0;
             for ocp in 0..src.len() {
-                if src[ocp] == b'/' && ocp + 1 < src.len() {
+                if crate::platform::is_path_separator(src[ocp]) && ocp + 1 < src.len() {
                     use_ = ocp + 1;
                 }
             }

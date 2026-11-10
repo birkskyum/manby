@@ -53,21 +53,16 @@ fn main() {
     let argv: Vec<String> = std::env::args_os()
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
-    #[cfg(unix)]
-    let name = argv
-        .first()
-        .map(|a| a.rsplit('/').next().unwrap_or(a))
-        .unwrap_or("manby");
-    // C:\path\tile-join.exe is tile-join, and run_as names the program
+    // run_as names the program on Windows
     #[cfg(windows)]
     let run_as_name = std::env::var(RUN_AS).ok();
-    #[cfg(windows)]
+    #[cfg(unix)]
+    let run_as_name: Option<String> = None;
     let name = match &run_as_name {
         Some(program) => program.as_str(),
         None => argv
             .first()
-            .map(|a| a.rsplit(['/', '\\']).next().unwrap_or(a))
-            .map(|a| a.strip_suffix(".exe").unwrap_or(a))
+            .map(|a| tippecanoe::platform::program_name(a))
             .unwrap_or("manby"),
     };
 

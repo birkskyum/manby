@@ -132,7 +132,7 @@ fn usage(argv0: &str) -> String {
     ];
     // Under tile-join's name, the usage is tile-join's, without manby's own options.
     let mut options = long_options_orig();
-    if argv0.rsplit('/').next() == Some("tile-join") {
+    if tippecanoe::platform::program_name(argv0) == "tile-join" {
         let from = options.iter().position(|o| o.name == "manby").unwrap_or(0);
         let to = options
             .iter()

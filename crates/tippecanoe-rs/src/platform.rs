@@ -124,6 +124,26 @@ pub const fn get_null_device() -> &'static str {
     "NUL"
 }
 
+/// Whether `c` separates the components of a path: `/`, and on Windows `\\`
+/// too.
+pub fn is_path_separator(c: u8) -> bool {
+    c == b'/' || (cfg!(windows) && c == b'\\')
+}
+
+/// The last component of a path, as a program's name: on Windows without
+/// `.exe`.
+pub fn program_name(path: &str) -> &str {
+    let name = path
+        .rsplit(|c: char| c.is_ascii() && is_path_separator(c as u8))
+        .next()
+        .unwrap_or(path);
+    if cfg!(windows) {
+        name.strip_suffix(".exe").unwrap_or(name)
+    } else {
+        name
+    }
+}
+
 /// Where temporary files go when nothing says otherwise.
 pub fn default_tmpdir() -> String {
     if cfg!(windows) {

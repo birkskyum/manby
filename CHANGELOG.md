@@ -1,5 +1,11 @@
 The changes in each version of manby, from the titles of the pull requests that made them.
 
+## [0.2.1](https://github.com/birkskyum/manby/compare/v0.2.0...v0.2.1) - 2026-11-10
+
+### Added
+
+- Take each feature's zooms from attributes with --use-attribute-for-minzoom and --use-attribute-for-maxzoom ([#48](https://github.com/birkskyum/manby/pull/48))
+
 ## [0.2.0](https://github.com/birkskyum/manby/compare/v0.1.11...v0.2.0) - 2026-11-09
 
 ### Changed

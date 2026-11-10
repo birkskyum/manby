@@ -17,6 +17,8 @@ manby takes [tippecanoe's options](https://github.com/felt/tippecanoe#readme), a
 | `--h3-base-zoom=Z` | The zoom from which the points themselves show, two below the maximum zoom unless given. Implies `--h3`. |
 | `--h3-categories=NAME` | Counts the values of an attribute in each hexagon. Implies `--h3`. |
 | `--cluster-categories=NAME` | Counts the values of an attribute in each cluster. `NAME:a,b` counts only `a` and `b` by name, and the rest together. |
+| `--use-attribute-for-minzoom=NAME` | Takes the lowest zoom each feature shows at from an attribute, as the `tippecanoe` object gives it in GeoJSON. See [Zooms from a column](../../guides/python/#zooms-from-a-column). |
+| `--use-attribute-for-maxzoom=NAME` | The same for the highest zoom each feature shows at. |
 | `--tile-format=mlt` | Writes [MapLibre Tiles](../../guides/mlt/) instead of Mapbox Vector Tiles. `mvt` is the default. |
 | `--mlt-profile=PROFILE` | The encodings MapLibre Tiles may use: `web`, the default, or `native`, `min-size` or `fast`. |
 | `--compression=zlib` | Stores every tile as zlib compresses it, for an archive that is byte for byte tippecanoe's. `libdeflate` is the default. See [Differences from tippecanoe](../differences/#archive-bytes). |

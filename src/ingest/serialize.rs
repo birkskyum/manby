@@ -9,12 +9,13 @@ use tippecanoe::clip::{
     clip_lines_bbox, clip_point_bbox, distance_from_line, fix_polygon, get_area, remove_noop,
     simple_clip_poly_bbox,
 };
+use tippecanoe::errors::EXIT_JSON;
 use tippecanoe::geometry::{
     Draw, DrawVec, VT_LINE, VT_LINETO, VT_MOVETO, VT_POINT, VT_POLYGON, center_of_mass_mp,
     polygon_to_anchor,
 };
 use tippecanoe::milo::dtoa_milo;
-use tippecanoe::mvt::{MVT_DOUBLE, MVT_STRING};
+use tippecanoe::mvt::{MVT_DOUBLE, MVT_NULL, MVT_STRING};
 use tippecanoe::options::*;
 use tippecanoe::projection::{encode_hilbert, encode_quadkey, encode_vertex};
 use tippecanoe::serial::{SerialVal, Vertex, coerce_value};
@@ -228,6 +229,10 @@ pub fn serialize_feature(
     layername: &str,
 ) -> bool {
     let o = cfg.o;
+    if chunk.fatal.is_some() {
+        // an earlier feature ended the run
+        return false;
+    }
     let mut sf_bbox: [i64; 4] = [i64::MAX, i64::MAX, i64::MIN, i64::MIN];
 
     for g in &sf.geometry {
@@ -521,6 +526,47 @@ pub fn serialize_feature(
                 dtoa_milo(tippecanoe::cstd::atof(&sf.full_values[iu].s) as f32 as f64);
         }
 
+        // --use-attribute-for-minzoom and --use-attribute-for-maxzoom: the
+        // attribute is the feature's zoom, as "tippecanoe" gives it in GeoJSON
+        let mut is_zoom = false;
+        for (option, attribute, zoom) in [
+            (
+                "minzoom",
+                &o.attribute_for_minzoom,
+                &mut sf.tippecanoe_minzoom,
+            ),
+            (
+                "maxzoom",
+                &o.attribute_for_maxzoom,
+                &mut sf.tippecanoe_maxzoom,
+            ),
+        ] {
+            if attribute.as_deref() != Some(sf.full_keys[iu].as_ref()) {
+                continue;
+            }
+            is_zoom = true;
+            let v = &sf.full_values[iu];
+            // no value, which in CSV is an empty cell
+            if v.type_ == MVT_NULL || cstr(&v.s).is_empty() {
+                continue;
+            }
+            match attribute_zoom(v) {
+                Some(z) => *zoom = z,
+                None => {
+                    let text = format!(
+                        "Expected integer zoom level in attribute \"{}\" for --use-attribute-for-{}, not {}",
+                        cstr(&sf.full_keys[iu]),
+                        option,
+                        cstr(&v.s)
+                    );
+                    chunk
+                        .fatal
+                        .get_or_insert((EXIT_JSON, vec![(None, text.into_bytes())]));
+                    return false;
+                }
+            }
+        }
+
         if sf.full_keys[iu] == o.attribute_for_id.as_str() {
             let v = &sf.full_values[iu];
             if v.type_ != MVT_DOUBLE && !a(A_CONVERT_NUMERIC_IDS) {
@@ -563,6 +609,12 @@ pub fn serialize_feature(
                     continue;
                 }
             }
+        }
+
+        if is_zoom {
+            sf.full_keys.remove(iu);
+            sf.full_values.remove(iu);
+            continue;
         }
 
         let key = sf.full_keys[iu].as_ref();
@@ -670,6 +722,16 @@ pub fn serialize_feature(
     crate::store::set_sparse(&mut chunk.label_points, i, label_point);
 
     true
+}
+
+/// A number that is a zoom level, as tippecanoe takes one from the
+/// "tippecanoe" object of a GeoJSON feature.
+fn attribute_zoom(v: &SerialVal) -> Option<i32> {
+    if v.type_ != MVT_DOUBLE {
+        return None;
+    }
+    let d = tippecanoe::cstd::atof(&v.s);
+    (d.is_finite() && d == d.floor() && (0.0..=32.0).contains(&d)).then_some(d as i32)
 }
 
 /// `coerce_value` for an attribute with a type given by `-T`.

@@ -204,6 +204,13 @@ pub struct Options {
     pub set_attributes: BTreeMap<String, SerialVal>,
     /// `--use-attribute-for-id`; empty is none
     pub attribute_for_id: String,
+    /// `--use-attribute-for-minzoom`: the attribute that holds the lowest
+    /// zoom each feature shows at, as `tippecanoe.minzoom` does in GeoJSON.
+    /// A feature without a value shows from the minimum zoom.
+    pub attribute_for_minzoom: Option<String>,
+    /// `--use-attribute-for-maxzoom`: the same for the highest zoom, as
+    /// `tippecanoe.maxzoom` does
+    pub attribute_for_maxzoom: Option<String>,
     /// `--maximum-string-attribute-length`; 0 is no limit
     pub maximum_string_attribute_length: usize,
 
@@ -350,6 +357,8 @@ impl Default for Options {
             attribute_descriptions: BTreeMap::new(),
             set_attributes: BTreeMap::new(),
             attribute_for_id: String::new(),
+            attribute_for_minzoom: None,
+            attribute_for_maxzoom: None,
             maximum_string_attribute_length: 0,
             filter: None,
             prefilter: None,
@@ -1281,6 +1290,8 @@ fn long_options_orig() -> Vec<LongOption> {
         opt("h3-base-zoom", REQ, b'~'),
         opt("h3-categories", REQ, b'~'),
         opt("cluster-categories", REQ, b'~'),
+        opt("use-attribute-for-minzoom", REQ, b'~'),
+        opt("use-attribute-for-maxzoom", REQ, b'~'),
         heading(""),
         opt("prevent", REQ, b'p'),
         opt("additional", REQ, b'a'),
@@ -1598,6 +1609,8 @@ pub fn parse_args(argv: &[String]) -> crate::Result<Options> {
                             None => (arg.to_string(), None),
                         })
                     }
+                    "use-attribute-for-minzoom" => o.attribute_for_minzoom = Some(arg.to_string()),
+                    "use-attribute-for-maxzoom" => o.attribute_for_maxzoom = Some(arg.to_string()),
                     "bbox" => match sscanf_f64x4(arg) {
                         Some(b) if b[0] < b[2] && b[1] < b[3] => o.bbox = Some(b),
                         _ => {

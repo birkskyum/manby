@@ -17,6 +17,22 @@ Arrow IPC files and streams, `.arrow`, `.arrows` and `.feather`, read the same w
 - **Coordinates.** In the CRS that the GeoParquet or GeoArrow metadata names: longitude and latitude, Web Mercator, or any of the 9,508 EPSG and ESRI codes of [crs-defs](https://github.com/birkskyum/crs-defs), which are made longitude and latitude within centimeters of PROJ. Without a CRS, `-s` names it.
 - **Attributes.** Each field of a struct becomes an attribute of its own, such as `names.primary`, and lists and maps become JSON text, as GDAL makes them. Dates and times become ISO 8601 text, with a `Z` for UTC where they have a zone. Binary columns are left out.
 
+### Zooms from a column
+
+In GeoJSON, a feature's [`tippecanoe` object](https://github.com/felt/tippecanoe#geojson-extension) says which zooms it shows at. A table has no such object, so two options take the zooms from columns.
+
+```sh
+manby -z14 --use-attribute-for-minzoom=shows_from -o roads.pmtiles roads.parquet
+```
+
+- **`--use-attribute-for-minzoom=NAME`** takes the lowest zoom a feature shows at, and **`--use-attribute-for-maxzoom=NAME`** the highest.
+- **Values.** Whole numbers from 0 to 32. A row without a value shows at every zoom. Any other value stops the run, and `-T shows_from:int` makes text a number first.
+- **Attributes.** The columns are the zooms now, and are not kept as attributes.
+- **Inputs.** Every format takes them, FlatGeobuf, CSV and the properties of GeoJSON as well.
+- **Tiles.** The ones tippecanoe makes of the same features as GeoJSON, with these zooms in their `tippecanoe` objects.
+
+From Python the option is `use_attribute_for_minzoom="shows_from"`, and [a DuckDB query](#duckdb) can work the zooms out.
+
 ### In object storage and on the web
 
 A URL reads GeoParquet in place: one file, a prefix ending in `/`, or a glob, whose files are read in the order of their names as one table. Only the row groups that `--bbox` may overlap are fetched, by byte range, so a city out of a planet takes seconds.
@@ -71,6 +87,23 @@ roads = con.sql("""
     WHERE class IN ('motorway', 'trunk', 'primary')
 """)
 manby.tile(roads, "roads.pmtiles", layer="roads", maximum_zoom=14)
+```
+
+The query can also work out the zoom each row shows from, for [`use_attribute_for_minzoom`](#zooms-from-a-column).
+
+```python
+roads = con.sql("""
+    SELECT name, class, geometry,
+        CASE class WHEN 'motorway' THEN 5 WHEN 'trunk' THEN 7 ELSE 10 END AS shows_from
+    FROM 'roads.parquet'
+""")
+manby.tile(
+    roads,
+    "roads.pmtiles",
+    layer="roads",
+    maximum_zoom=14,
+    use_attribute_for_minzoom="shows_from",
+)
 ```
 
 ### Data frames

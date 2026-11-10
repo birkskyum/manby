@@ -12,6 +12,8 @@
 # are listed in golden/skip.txt, with the reason.
 
 CARGO ?= cargo
+# the programs' suffix: .exe on Windows, where the tests run in Git's bash
+EXE = $(if $(filter Windows_NT,$(OS)),.exe)
 TIPPECANOE_RS = crates/tippecanoe-rs
 RELEASE = target/release
 DECODE = $(RELEASE)/tippecanoe-decode
@@ -35,7 +37,7 @@ unit:
 test: unit test-golden test-geobuf
 
 golden-setup: manby tools
-	golden/setup.sh $(TIPPECANOE_RS)/tests $(GOLDEN) target/release/manby $(RELEASE)
+	golden/setup.sh $(TIPPECANOE_RS)/tests $(GOLDEN) target/release/manby$(EXE) $(RELEASE)
 	cp golden/skip.txt $(GOLDEN)/skip.txt
 
 test-golden: golden-setup

@@ -8,7 +8,8 @@
 # a link into them.
 #
 # ./tippecanoe, ./tile-join and the other programs are manby, under the names
-# the expected outputs record in generator_options.
+# the expected outputs record in generator_options. On Windows, where Git's
+# bash runs this and ln -s copies, they are copies named with .exe.
 #
 #   golden/setup.sh <tippecanoe-rs tests> <scratch directory> <manby> <tippecanoe-rs release directory>
 set -e
@@ -16,6 +17,10 @@ src=$(cd "$1" && pwd)
 dst=$2
 manby=$(cd "$(dirname "$3")" && pwd)/$(basename "$3")
 bin=$(cd "$4" && pwd)
+case $manby in
+*.exe) exe=.exe ;;
+*) exe= ;;
+esac
 
 # mirror <directory> <copy>
 mirror() {
@@ -36,10 +41,10 @@ mirror() {
 
 rm -rf "$dst/tests"
 mirror "$src" "$dst/tests"
-ln -sf "$manby" "$dst/tippecanoe"
-ln -sf "$manby" "$dst/tile-join"
-ln -sf "$manby" "$dst/tippecanoe-decode"
-ln -sf "$manby" "$dst/tippecanoe-enumerate"
-ln -sf "$manby" "$dst/tippecanoe-json-tool"
-ln -sf "$manby" "$dst/tippecanoe-overzoom"
-ln -sf "$bin/examples/json2geobuf" "$dst/json2geobuf"
+ln -sf "$manby" "$dst/tippecanoe$exe"
+ln -sf "$manby" "$dst/tile-join$exe"
+ln -sf "$manby" "$dst/tippecanoe-decode$exe"
+ln -sf "$manby" "$dst/tippecanoe-enumerate$exe"
+ln -sf "$manby" "$dst/tippecanoe-json-tool$exe"
+ln -sf "$manby" "$dst/tippecanoe-overzoom$exe"
+ln -sf "$bin/examples/json2geobuf$exe" "$dst/json2geobuf$exe"

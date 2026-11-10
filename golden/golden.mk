@@ -482,3 +482,10 @@ json-tool-test: tippecanoe-json-tool
 	cmp tests/join-population/tabblock_06001420-null.json.sort.joined tests/join-population/tabblock_06001420-null.json.sort.joined.standard
 	rm -f tests/join-population/tabblock_06001420.json.sort tests/join-population/tabblock_06001420.json.sort.joined
 	rm -f tests/join-population/tabblock_06001420-null.json.sort.joined
+
+# On Windows the programs that the recipes above need are files named .exe.
+ifeq ($(OS),Windows_NT)
+PROGRAMS = tippecanoe tippecanoe-decode tile-join tippecanoe-enumerate tippecanoe-overzoom tippecanoe-json-tool
+$(PROGRAMS): %: %.exe
+	@:
+endif

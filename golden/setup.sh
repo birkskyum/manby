@@ -48,3 +48,16 @@ ln -sf "$manby" "$dst/tippecanoe-enumerate$exe"
 ln -sf "$manby" "$dst/tippecanoe-json-tool$exe"
 ln -sf "$manby" "$dst/tippecanoe-overzoom$exe"
 ln -sf "$bin/examples/json2geobuf$exe" "$dst/json2geobuf$exe"
+
+# tippecanoe records its command line in the metadata, and Git's bash starts a
+# Windows program with its full path as its name: ./tippecanoe-decode puts the
+# names that the expected outputs have back in what it prints.
+if [ -n "$exe" ]; then
+	cat >"$dst/tippecanoe-decode" <<'END'
+#!/bin/bash
+set -o pipefail
+"$(dirname "$0")/tippecanoe-decode.exe" "$@" |
+	sed -E "s#'[A-Za-z]:[^' ]*[\\\\/](tippecanoe|tile-join)\\.exe'#./\\1#g"
+END
+	chmod +x "$dst/tippecanoe-decode"
+fi

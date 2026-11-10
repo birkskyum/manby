@@ -266,7 +266,7 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     fn tmpfd() -> i32 {
-        let mut name = String::from("/tmp/pool-test.XXXXXX");
+        let mut name = format!("{}/pool-test.XXXXXX", crate::platform::default_tmpdir());
         let fd = crate::tippecanoe_main::mkstemp_cloexec(&mut name);
         assert!(fd >= 0);
         std::fs::remove_file(&name).unwrap();

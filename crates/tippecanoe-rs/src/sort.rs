@@ -220,7 +220,10 @@ mod tests {
 
         let mut written = 0;
         for _ in 0..5 {
-            let mut f = BufWriter::new(tmpfile("/tmp/in.XXXXXXX"));
+            let mut f = BufWriter::new(tmpfile(&format!(
+                "{}/in.XXXXXXX",
+                crate::platform::default_tmpdir()
+            )));
             let iterations = 2000 + rng.next() % 200;
             for _ in 0..iterations {
                 // rand() is never negative
@@ -231,7 +234,10 @@ mod tests {
             inputs.push(rewind(f));
         }
 
-        let mut out = BufWriter::new(tmpfile("/tmp/out.XXXXXX"));
+        let mut out = BufWriter::new(tmpfile(&format!(
+            "{}/out.XXXXXX",
+            crate::platform::default_tmpdir()
+        )));
         {
             let mut refs: Vec<&mut dyn Read> =
                 inputs.iter_mut().map(|r| r as &mut dyn Read).collect();

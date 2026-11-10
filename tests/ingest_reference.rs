@@ -23,7 +23,11 @@ use tippecanoe::serial::{Reader, SerializationState};
 static GLOBALS: Mutex<()> = Mutex::new(());
 
 fn tmpfd(what: &str) -> (i32, String) {
-    let mut name = format!("/tmp/manby-ref-{}.XXXXXXXX", what);
+    let mut name = format!(
+        "{}/manby-ref-{}.XXXXXXXX",
+        tippecanoe::platform::default_tmpdir(),
+        what
+    );
     let fd = tippecanoe::tippecanoe_main::mkstemp_cloexec(&mut name);
     assert!(fd >= 0);
     (fd, name)

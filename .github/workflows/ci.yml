@@ -81,7 +81,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Lint manby's Windows code
         run: cargo clippy --locked --features mlt,remote -p manby --all-targets --no-deps -- -D warnings
-      - run: cargo test --locked --release
+      - run: cargo test --locked --release --no-fail-fast
       - run: command -v make || choco install make --no-progress
       - run: make test-golden
 

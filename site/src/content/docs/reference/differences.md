@@ -21,6 +21,7 @@ manby makes the same tiles on macOS and on Linux, the tiles of tippecanoe's x86-
 
 - **`--largest-maximum-zoom-guess`.** It chooses the maximum zoom as `-zg` does, but no higher than the zoom it is given, as `--smallest-maximum-zoom-guess` chooses no lower.
 - **Filters.** Feature filters also take [`like`, `ilike` and `intersects`](../../guides/programs/#feature-filters).
+- **Zooms from attributes.** [`--use-attribute-for-minzoom` and `--use-attribute-for-maxzoom`](../../guides/python/#zooms-from-a-column) take each feature's zooms from its attributes, for inputs without GeoJSON's `tippecanoe` object.
 
 ## manby join
 

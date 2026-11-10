@@ -860,6 +860,16 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
     }
     flush(&mut stderr);
 
+    // A problem found while a feature was kept, whatever the input's format.
+    for a in &parts.chunks {
+        if let Some((code, p)) = &a.chunk.fatal {
+            let mut m = Vec::new();
+            write_parts(&mut m, "", p, 0);
+            m.pop();
+            return Err(Error::new(*code, String::from_utf8_lossy(&m)));
+        }
+    }
+
     if let Some(setup) = &cfg.h3 {
         add_hexagons(
             &mut parts,

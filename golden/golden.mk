@@ -24,13 +24,16 @@ RECIPES += raw-tiles-test pmtiles-test enumerate-test join-test join-filter-test
 RECIPES += pbf-test overzoom-test json-tool-test
 
 # On Windows, in Git's bash, a program is started with its full path as its
-# name, which generator_options records, so the name is put back as
+# name, which generator_options records, quoted, so the name is put back as
 # ./tippecanoe before the comparison, and a difference is shown. parallel-test
 # reads from bash's <(...) files, which only bash's own programs can open.
+# make there, a Windows program, turns the name 堤防.json into ??.json, so the
+# nonascii test is left to tests/file_names.rs.
 ifeq ($(OS),Windows_NT)
-ARGV0 = | sed -E 's|("generator_options": ")[^ ]*tippecanoe(\.exe)? |\1./tippecanoe |'
+ARGV0 = | sed -E 's|("generator_options": ")[^ ]*tippecanoe[^ ]* |\1./tippecanoe |'
 SHOWDIFF = || { diff $@.out $(patsubst %.check,%,$@) | head -20; false; }
 RECIPES := $(filter-out parallel-test,$(RECIPES))
+TESTS := $(filter-out tests/nonascii/%,$(TESTS))
 endif
 
 all: $(addsuffix .check,$(TESTS)) $(RECIPES)

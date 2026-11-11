@@ -13,7 +13,7 @@ The tiles decode to exactly tippecanoe's, but the archives are not tippecanoe's 
 
 tippecanoe's arm64 builds, from Apple's clang on macOS and from GCC on Linux, fuse multiplications and additions where its x86-64 build does not, and that changes a few tiles near the size limit. On the benchmarks it changes only the census tracts at `-zg`, whose zoom 0 tile comes out 6 bytes smaller compressed, so that tippecanoe's retry keeps other features.
 
-manby makes the same tiles on macOS and on Linux, the tiles of tippecanoe's x86-64 build. Built for x86-64, or on arm64 with `-ffp-contract=off`, tippecanoe makes manby's tiles on the tracts too.
+manby makes the same tiles on macOS, Linux and Windows, the tiles of tippecanoe's x86-64 build. Built for x86-64, or on arm64 with `-ffp-contract=off`, tippecanoe makes manby's tiles on the tracts too.
 
 ## What tippecanoe does not have
 

@@ -1,6 +1,6 @@
 # manby for R
 
-manby builds vector tilesets from sf data frames, DuckDB tables, Arrow tables and files, with the tiles that [tippecanoe](https://github.com/felt/tippecanoe) makes from the same features, several times faster. It runs on macOS and Linux.
+manby builds vector tilesets from sf data frames, DuckDB tables, Arrow tables and files, with the tiles that [tippecanoe](https://github.com/felt/tippecanoe) makes from the same features, several times faster. It runs on macOS, Linux and Windows.
 
 ```r
 install.packages(

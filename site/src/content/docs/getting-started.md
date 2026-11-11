@@ -3,7 +3,7 @@ title: Getting started
 description: Installing manby, and making a first tileset with tippecanoe's options.
 ---
 
-manby runs on macOS and Linux, and on Windows in WSL. pip installs it.
+manby runs on macOS, Linux and Windows. pip installs it.
 
 ```sh
 pip install manby
@@ -22,7 +22,7 @@ brew install birkskyum/tap/manby
 mise use -g github:birkskyum/manby
 ```
 
-The [releases](https://github.com/birkskyum/manby/releases) have the program alone, for macOS on Apple silicon and Intel, and for Linux on x86-64 and arm64, built for glibc 2.28 or later, or for musl, which runs on any Linux.
+The [releases](https://github.com/birkskyum/manby/releases) have the program alone, for macOS on Apple silicon and Intel, for Linux on x86-64 and arm64, built for glibc 2.28 or later, or for musl, which runs on any Linux, and for Windows on x86-64 and arm64.
 
 cargo builds it, with Rust 1.94 or later, but without [MapLibre Tiles](../guides/mlt/).
 

@@ -27,7 +27,7 @@ is neither, it calls \code{install_manby()}.
 \details{
 \code{install_manby()} downloads manby from the GitHub release of the package's
 version, checks it against the release's checksums, and keeps it in the
-package's cache, \code{\link[tools:userdir]{tools::R_user_dir()}}. manby runs on macOS and on Linux.
+package's cache, \code{\link[tools:userdir]{tools::R_user_dir()}}. manby runs on macOS, Linux and Windows.
 }
 \examples{
 \dontrun{

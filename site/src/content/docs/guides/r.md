@@ -3,7 +3,7 @@ title: From R
 description: Tiling sf data frames, DuckDB tables and Arrow tables from R, with tippecanoe's tiles.
 ---
 
-The manby R package tiles sf data frames, DuckDB tables, Arrow tables and files. An sf data frame makes the tiles that tippecanoe makes from GDAL's FlatGeobuf of it. The package runs on macOS and Linux.
+The manby R package tiles sf data frames, DuckDB tables, Arrow tables and files. An sf data frame makes the tiles that tippecanoe makes from GDAL's FlatGeobuf of it. The package runs on macOS, Linux and Windows.
 
 ```r
 install.packages(

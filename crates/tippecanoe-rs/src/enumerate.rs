@@ -98,10 +98,7 @@ pub fn main() {
 /// Restores the default `SIGPIPE` action that a C program starts with, so that
 /// writing to a closed pipe ends the program quietly instead of failing the write.
 fn restore_sigpipe() {
-    // SAFETY: setting a signal to its default action has no preconditions.
-    unsafe {
-        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
-    }
+    crate::platform::sigpipe_default();
 }
 
 /// `sqlite3_open(fname, &db)`. On failure, returns `sqlite3_errmsg(db)`, without

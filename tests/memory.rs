@@ -1,6 +1,10 @@
 //! Memory for each tile. A zoom level keeps a little for every tile until
 //! the level is written (DESIGN.md), and at the high zooms of a large polygon
 //! that is most of what manby holds (#32).
+//!
+//! The memory of the child process comes from `wait4`, which is Unix's.
+
+#![cfg(unix)]
 
 use std::io::Write;
 use std::process::Command;

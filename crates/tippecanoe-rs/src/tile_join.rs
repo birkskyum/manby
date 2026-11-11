@@ -4,7 +4,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::ffi::{CStr, c_char};
 use std::fs::File;
 use std::io::Read;
-use std::os::unix::fs::MetadataExt;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Mutex, RwLock};
 
@@ -592,7 +591,7 @@ impl TilesetReader {
         let minzoom = relaxed(&MINZOOM);
         let maxzoom = relaxed(&MAXZOOM);
 
-        if std::fs::metadata(fname).is_ok_and(|st| (st.mode() & libc::S_IFDIR as u32) != 0) {
+        if std::fs::metadata(fname).is_ok_and(|st| crate::platform::mode_is_dir(&st)) {
             r.db = None;
             r.stmt = None;
             r.next = None;
@@ -602,7 +601,7 @@ impl TilesetReader {
         } else if pmtiles_has_suffix(fname) {
             let map = match File::open(fname) {
                 Ok(pmtiles_fd) => {
-                    let len = pmtiles_fd.metadata().map(|st| st.size()).unwrap_or(0);
+                    let len = pmtiles_fd.metadata().map(|st| st.len()).unwrap_or(0);
                     mmap_file(&pmtiles_fd, len)
                 }
                 // mmap() of the -1 that open() returned
@@ -2047,10 +2046,7 @@ pub fn main() {
 /// Restores the default `SIGPIPE` action that a C program starts with, so that
 /// writing to a closed pipe ends the program quietly instead of failing the write.
 fn restore_sigpipe() {
-    // SAFETY: setting a signal to its default action has no preconditions.
-    unsafe {
-        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
-    }
+    crate::platform::sigpipe_default();
 }
 
 /// `mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0)`. Returns the errno on failure.

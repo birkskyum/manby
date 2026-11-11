@@ -193,7 +193,7 @@ impl Default for TileOptions {
             zlib_tiles: false,
             timing: false,
             trace: false,
-            tmpdir: std::path::PathBuf::from("/tmp"),
+            tmpdir: std::path::PathBuf::from(tippecanoe::platform::default_tmpdir()),
             rest_memory: 16 << 20,
             big_memory: 768 << 20,
             memory_budget: u64::MAX,

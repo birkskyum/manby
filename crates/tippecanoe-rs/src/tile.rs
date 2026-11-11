@@ -8,8 +8,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::os::fd::{FromRawFd, IntoRawFd};
-use std::os::unix::fs::FileExt;
+#[cfg(unix)]
+use std::os::fd::FromRawFd;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicUsize, Ordering};
 
@@ -47,6 +47,7 @@ use crate::mvt::{
     stringified_to_mvt_value,
 };
 use crate::options::*;
+use crate::platform::FileAt;
 use crate::plugin::{
     PipeWriter, filter_layers, is_epipe, parse_feature, perror_io, setup_filter, wait_for_filter,
 };
@@ -2271,7 +2272,7 @@ fn write_tile(
 
         let mut prefilter_write: i32 = -1;
         let mut prefilter_read: i32 = -1;
-        let mut prefilter_pid: libc::pid_t = 0;
+        let mut prefilter_pid: crate::platform::Pid = 0;
 
         if z < minzoom {
             prefilter = None;
@@ -2360,7 +2361,8 @@ fn write_tile(
                     }
 
                     // SAFETY: prefilter_read is the read end of the filter's output pipe, owned here.
-                    prefilter_read_fp = Some(unsafe { File::from_raw_fd(prefilter_read) });
+                    prefilter_read_fp =
+                        Some(unsafe { crate::platform::file_from_fd(prefilter_read) });
                 }
                 None => direct = Some(rpa),
             }
@@ -3005,8 +3007,8 @@ fn write_tile(
             if prefilter.is_some() {
                 drop(prefilter_jp);
                 if let Some(f) = prefilter_read_fp.take() {
-                    // SAFETY: the descriptor came from into_raw_fd and is closed exactly once.
-                    if unsafe { libc::close(f.into_raw_fd()) } != 0 {
+                    // SAFETY: the descriptor came from file_into_fd and is closed exactly once.
+                    if unsafe { libc::close(crate::platform::file_into_fd(f)) } != 0 {
                         perror("close output from prefilter");
                         std::process::exit(EXIT_CLOSE);
                     }
@@ -4024,7 +4026,12 @@ fn run_thread(arg: &mut WriteTileArgs<'_>) -> Option<i32> {
         // previous zoom.
 
         // SAFETY: geomfd[j] is an open descriptor that only this thread uses in this pass.
+        #[cfg(unix)]
         let geom = unsafe { File::from_raw_fd(arg.geomfd[j].load(Ordering::Relaxed)) };
+        // On Windows the File holds a copy of the descriptor's handle, and the
+        // descriptor stays open for the next pass, where Unix has dup() below.
+        #[cfg(windows)]
+        let geom = crate::platform::copy_fd_file(arg.geomfd[j].load(Ordering::Relaxed));
 
         let mut dc = Decompressor::new(geom);
 
@@ -4152,17 +4159,24 @@ fn run_thread(arg: &mut WriteTileArgs<'_>) -> Option<i32> {
         }
 
         if arg.pass == 1 {
+            // SAFETY: the descriptor is this thread's, and nothing uses it after this.
+            #[cfg(windows)]
+            unsafe {
+                libc::close(arg.geomfd[j].load(Ordering::Relaxed));
+            }
             // Since the fclose() has closed the underlying file descriptor
             arg.geomfd[j].store(-1, Ordering::Relaxed);
         } else {
             // SAFETY: duplicating and seeking a descriptor this thread owns.
+            #[cfg(unix)]
             let newfd = unsafe { libc::dup(arg.geomfd[j].load(Ordering::Relaxed)) };
+            #[cfg(windows)]
+            let newfd = arg.geomfd[j].load(Ordering::Relaxed);
             if newfd < 0 {
                 perror("dup geometry");
                 std::process::exit(EXIT_OPEN);
             }
-            // SAFETY: newfd was just opened above.
-            if unsafe { libc::lseek(newfd, 0, libc::SEEK_SET) } < 0 {
+            if crate::platform::lseek(newfd, 0, libc::SEEK_SET) < 0 {
                 perror("lseek geometry");
                 std::process::exit(EXIT_SEEK);
             }

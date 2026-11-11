@@ -14,7 +14,6 @@
 
 use std::ffi::{CStr, c_char};
 use std::fs::File;
-use std::os::unix::fs::{FileExt, MetadataExt};
 use std::sync::mpsc::{Receiver, sync_channel};
 use std::sync::{Arc, Mutex};
 
@@ -22,6 +21,7 @@ use memmap2::Mmap;
 use rusqlite::{Connection, OpenFlags, ffi};
 use tippecanoe::errors::{EXIT_FAILURE, EXIT_JSON, EXIT_MEMORY, EXIT_OPEN, EXIT_SQLITE};
 use tippecanoe::jsonpull::{JsonPull, JsonType};
+use tippecanoe::platform::FileAt;
 use tippecanoe::pmtiles::{self, EntryV3, HeaderV3};
 
 use crate::{Error, Result};
@@ -243,10 +243,8 @@ impl Source {
     /// zooms `minzoom` to `maxzoom` are listed for PMTiles and directories,
     /// as tile-join lists them.
     pub fn open(fname: &str, minzoom: i32, maxzoom: i32) -> Result<Source> {
-        // S_IFDIR is 16 bits on macOS and 32 on Linux
-        #[allow(clippy::unnecessary_cast)]
         let is_dir =
-            std::fs::metadata(fname).is_ok_and(|st| (st.mode() & libc::S_IFDIR as u32) != 0);
+            std::fs::metadata(fname).is_ok_and(|st| tippecanoe::platform::mode_is_dir(&st));
         if is_dir {
             let tiles = enumerate_dirtiles(fname, minzoom, maxzoom)?;
             let generator = dir_generator(fname);
@@ -275,7 +273,7 @@ impl Source {
             )
         };
         let file = File::open(fname).map_err(|_| mmap_error(libc::EBADF))?;
-        let len = file.metadata().map(|st| st.size()).unwrap_or(0);
+        let len = file.metadata().map(|st| st.len()).unwrap_or(0);
         if len == 0 {
             return Err(mmap_error(libc::EINVAL));
         }
@@ -928,7 +926,6 @@ fn atoi_name(s: &[u8]) -> i32 {
 /// `enumerate_dirtiles`, returning errors instead of exiting: the tiles of
 /// the zooms `minzoom` to `maxzoom`, sorted by zoom, x and y reversed.
 fn enumerate_dirtiles(fname: &str, minzoom: i32, maxzoom: i32) -> Result<Vec<TileRef>> {
-    use std::os::unix::ffi::OsStrExt;
     let open_error = |path: &str, e: std::io::Error| {
         Error::new(
             EXIT_OPEN,
@@ -939,7 +936,7 @@ fn enumerate_dirtiles(fname: &str, minzoom: i32, maxzoom: i32) -> Result<Vec<Til
     if let Ok(d1) = std::fs::read_dir(fname) {
         for dp in d1.map_while(std::result::Result::ok) {
             let name = dp.file_name();
-            let name = name.as_bytes();
+            let name = name.as_encoded_bytes();
             if !(numeric(name) && atoi_name(name) >= minzoom && atoi_name(name) <= maxzoom) {
                 continue;
             }
@@ -948,7 +945,7 @@ fn enumerate_dirtiles(fname: &str, minzoom: i32, maxzoom: i32) -> Result<Vec<Til
             let d2 = std::fs::read_dir(&z).map_err(|e| open_error(&z, e))?;
             for dp2 in d2.map_while(std::result::Result::ok) {
                 let name2 = dp2.file_name();
-                let name2 = name2.as_bytes();
+                let name2 = name2.as_encoded_bytes();
                 if !numeric(name2) {
                     continue;
                 }
@@ -957,7 +954,7 @@ fn enumerate_dirtiles(fname: &str, minzoom: i32, maxzoom: i32) -> Result<Vec<Til
                 let d3 = std::fs::read_dir(&x).map_err(|e| open_error(&x, e))?;
                 for dp3 in d3.map_while(std::result::Result::ok) {
                     let name3 = dp3.file_name();
-                    let name3 = name3.as_bytes();
+                    let name3 = name3.as_encoded_bytes();
                     if pbfname(name3) {
                         let mvt = name3.windows(4).any(|w| w == b".mvt");
                         tiles.push((tz as i64, tx as i64, atoi_name(name3) as i64, mvt));

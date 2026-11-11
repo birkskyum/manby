@@ -29,17 +29,34 @@ pub fn resident() -> Option<u64> {
         let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
         Some(pages * page)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(windows)]
+    {
+        process_memory().map(|c| c.WorkingSetSize as u64)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         None
     }
 }
 
+/// The process's memory counters on Windows.
+#[cfg(windows)]
+fn process_memory() -> Option<windows_sys::Win32::System::ProcessStatus::PROCESS_MEMORY_COUNTERS> {
+    use windows_sys::Win32::System::ProcessStatus::{
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    // SAFETY: the counters are plain data, given their own size as the call requires.
+    let mut c: PROCESS_MEMORY_COUNTERS = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+    // SAFETY: c is a PROCESS_MEMORY_COUNTERS of the size given.
+    (unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &mut c, size) } != 0).then_some(c)
+}
+
 /// Lets the pages of part of a file mapping go: they are read from the file
 /// again if they are needed, but no longer count as the process's memory.
 pub fn release_mapped(part: &[u8]) {
-    // SAFETY: sysconf has no preconditions.
-    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+    let page = tippecanoe::platform::get_page_size() as usize;
     let start = (part.as_ptr() as usize).next_multiple_of(page);
     let end = (part.as_ptr() as usize + part.len()) / page * page;
     if end <= start {
@@ -51,12 +68,23 @@ pub fn release_mapped(part: &[u8]) {
     unsafe {
         #[cfg(target_os = "macos")]
         libc::msync(addr, len, libc::MS_INVALIDATE);
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(all(unix, not(target_os = "macos")))]
         libc::madvise(addr, len, libc::MADV_DONTNEED);
+        // Unlocking pages that are not locked takes them out of the
+        // process's working set.
+        #[cfg(windows)]
+        windows_sys::Win32::System::Memory::VirtualUnlock(addr, len);
     }
 }
 
 /// The peak resident set size of the process in bytes.
+#[cfg(windows)]
+pub fn peak_resident() -> Option<u64> {
+    process_memory().map(|c| c.PeakWorkingSetSize as u64)
+}
+
+/// The peak resident set size of the process in bytes.
+#[cfg(unix)]
 pub fn peak_resident() -> Option<u64> {
     // SAFETY: rusage is plain data that getrusage fills in.
     let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
@@ -75,12 +103,12 @@ pub fn peak_resident() -> Option<u64> {
 
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
-use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use tippecanoe::errors::{EXIT_OPEN, EXIT_READ, EXIT_WRITE};
+use tippecanoe::platform::FileAt;
 
 use crate::Error;
 use crate::buf::Buf;

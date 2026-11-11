@@ -3,7 +3,6 @@
 
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
-use std::os::fd::FromRawFd;
 
 use crate::cstd::{perror, set_errno};
 use crate::errors::EXIT_FAILURE;
@@ -49,10 +48,7 @@ fn qsort(buf: &mut Vec<u8>, width: usize, cmp: fn(&[u8], &[u8]) -> i32) {
 fn sort_tmpfile(name: &str) -> File {
     let mut t = name.to_string();
     let fd = mkstemp(&mut t);
-    if let Ok(c) = std::ffi::CString::new(t.clone()) {
-        // SAFETY: unlink of a NUL-terminated path.
-        unsafe { libc::unlink(c.as_ptr()) };
-    }
+    crate::platform::unlink(&t);
 
     if fd < 0 {
         // fdopen(-1) fails this way
@@ -62,7 +58,7 @@ fn sort_tmpfile(name: &str) -> File {
     }
 
     // SAFETY: mkstemp returned a new descriptor, which the File now owns.
-    unsafe { File::from_raw_fd(fd) }
+    unsafe { crate::platform::file_from_fd(fd) }
 }
 
 /// `fp` was written; rewind it so it can be read.
@@ -224,7 +220,10 @@ mod tests {
 
         let mut written = 0;
         for _ in 0..5 {
-            let mut f = BufWriter::new(tmpfile("/tmp/in.XXXXXXX"));
+            let mut f = BufWriter::new(tmpfile(&format!(
+                "{}/in.XXXXXXX",
+                crate::platform::default_tmpdir()
+            )));
             let iterations = 2000 + rng.next() % 200;
             for _ in 0..iterations {
                 // rand() is never negative
@@ -235,11 +234,21 @@ mod tests {
             inputs.push(rewind(f));
         }
 
-        let mut out = BufWriter::new(tmpfile("/tmp/out.XXXXXX"));
+        let mut out = BufWriter::new(tmpfile(&format!(
+            "{}/out.XXXXXX",
+            crate::platform::default_tmpdir()
+        )));
         {
             let mut refs: Vec<&mut dyn Read> =
                 inputs.iter_mut().map(|r| r as &mut dyn Read).collect();
-            fqsort(&mut refs, 4, intcmp, &mut out, 256, "/tmp");
+            fqsort(
+                &mut refs,
+                4,
+                intcmp,
+                &mut out,
+                256,
+                &crate::platform::default_tmpdir(),
+            );
         }
         let mut f = rewind(out);
 

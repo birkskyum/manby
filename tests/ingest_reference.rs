@@ -9,8 +9,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{BufWriter, Read, Write};
-use std::os::fd::FromRawFd;
-use std::os::unix::fs::FileExt;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, Ordering};
 
@@ -18,13 +16,18 @@ use manby::options::{Options, parse_args, set_tippecanoe_globals};
 use manby::store::FeatureStore;
 use tippecanoe::geometry::Draw;
 use tippecanoe::mbtiles::{LayermapEntry, merge_layermaps};
+use tippecanoe::platform::FileAt;
 use tippecanoe::serial::{Reader, SerializationState};
 
 /// tippecanoe-rs's globals are process-wide, so the tests here take turns.
 static GLOBALS: Mutex<()> = Mutex::new(());
 
 fn tmpfd(what: &str) -> (i32, String) {
-    let mut name = format!("/tmp/manby-ref-{}.XXXXXXXX", what);
+    let mut name = format!(
+        "{}/manby-ref-{}.XXXXXXXX",
+        tippecanoe::platform::default_tmpdir(),
+        what
+    );
     let fd = tippecanoe::tippecanoe_main::mkstemp_cloexec(&mut name);
     assert!(fd >= 0);
     (fd, name)
@@ -306,8 +309,8 @@ fn reference(o: &Options) -> Reference {
         }
 
         // SAFETY: the reader's descriptors, which nothing else closes.
-        let geomf = unsafe { File::from_raw_fd(r.geomfd) };
-        let indexf = unsafe { File::from_raw_fd(r.indexfd) };
+        let geomf = unsafe { tippecanoe::platform::file_from_fd(r.geomfd) };
+        let indexf = unsafe { tippecanoe::platform::file_from_fd(r.indexfd) };
         geom_bytes += r.geompos.load(Ordering::Relaxed) as u64;
         let mut geom = vec![0u8; r.geompos.load(Ordering::Relaxed) as usize];
         geomf.read_exact_at(&mut geom, 0).unwrap();
@@ -319,10 +322,9 @@ fn reference(o: &Options) -> Reference {
             None => pf.map.clone(),
             Some(fp) => {
                 fp.flush().unwrap();
-                let poolf = unsafe { File::from_raw_fd(pf.fd) };
+                let poolf = tippecanoe::platform::borrow_fd(pf.fd);
                 let mut b = vec![0u8; pf.off];
                 poolf.read_exact_at(&mut b, 0).unwrap();
-                std::mem::forget(poolf);
                 b
             }
         };
@@ -383,8 +385,8 @@ fn reference(o: &Options) -> Reference {
         drop(indexf);
         // SAFETY: the reader's descriptors, which nothing else closes.
         unsafe {
-            drop(File::from_raw_fd(r.vertexfd));
-            drop(File::from_raw_fd(r.nodefd));
+            drop(tippecanoe::platform::file_from_fd(r.vertexfd));
+            drop(tippecanoe::platform::file_from_fd(r.nodefd));
         }
         tippecanoe::memfile::memfile_close(rs.poolfile.take().unwrap());
         tippecanoe::memfile::memfile_close(rs.treefile.take().unwrap());

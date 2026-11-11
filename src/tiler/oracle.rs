@@ -3,7 +3,6 @@
 
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::os::fd::IntoRawFd;
 use std::sync::atomic::{AtomicI64, AtomicU32, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 
@@ -192,7 +191,7 @@ pub fn reference(store: &FeatureStore, o: &TileOptions) -> Reference {
 
     let mut geomfd = vec![-1i32; o.temp_files];
     let mut geom_size = vec![0i64; o.temp_files];
-    geomfd[0] = file.into_raw_fd();
+    geomfd[0] = tippecanoe::platform::file_into_fd(file);
     geom_size[0] = data.len() as i64;
 
     let pool_ref = StringPoolRef {

@@ -23,6 +23,16 @@ RECIPES += raw-tiles-test pmtiles-test enumerate-test join-test join-filter-test
 # and those of tippecanoe's other programs, all of them manby too.
 RECIPES += pbf-test overzoom-test json-tool-test
 
+# On Windows a difference is shown. parallel-test reads from bash's <(...)
+# files, which only bash's own programs can open. make there, a Windows
+# program, turns the name 堤防.json into ??.json, so the nonascii test is left
+# to tests/file_names.rs.
+ifeq ($(OS),Windows_NT)
+SHOWDIFF = || { diff $@.out $(patsubst %.check,%,$@) | head -20; false; }
+RECIPES := $(filter-out parallel-test,$(RECIPES))
+TESTS := $(filter-out tests/nonascii/%,$(TESTS))
+endif
+
 all: $(addsuffix .check,$(TESTS)) $(RECIPES)
 
 # Work around Makefile and filename punctuation limits:
@@ -48,7 +58,7 @@ testargs = \
 %.json.check:
 	./tippecanoe -q -a@ -f -o $@.mbtiles $(call testargs,$(patsubst %.json.check,%,$(word 4,$(subst /, ,$@)))) $(foreach suffix,$(suffixes),$(sort $(wildcard $(subst $(SPACE),/,$(wordlist 1,2,$(subst /, ,$@)))/*.$(suffix)))) < /dev/null
 	./tippecanoe-decode -x generator $@.mbtiles > $@.out
-	cmp $@.out $(patsubst %.check,%,$@)
+	cmp $@.out $(patsubst %.check,%,$@) $(SHOWDIFF)
 	rm $@.out $@.mbtiles
 
 # The recipes below are copied from tippecanoe's Makefile.
@@ -469,3 +479,10 @@ json-tool-test: tippecanoe-json-tool
 	cmp tests/join-population/tabblock_06001420-null.json.sort.joined tests/join-population/tabblock_06001420-null.json.sort.joined.standard
 	rm -f tests/join-population/tabblock_06001420.json.sort tests/join-population/tabblock_06001420.json.sort.joined
 	rm -f tests/join-population/tabblock_06001420-null.json.sort.joined
+
+# On Windows the programs that the recipes above need are files named .exe.
+ifeq ($(OS),Windows_NT)
+PROGRAMS = tippecanoe tippecanoe-decode tile-join tippecanoe-enumerate tippecanoe-overzoom tippecanoe-json-tool
+$(PROGRAMS): %: %.exe
+	@:
+endif

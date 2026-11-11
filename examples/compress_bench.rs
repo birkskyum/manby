@@ -10,6 +10,7 @@ use rayon::prelude::*;
 
 type Compress<'a> = &'a (dyn Fn(&Vec<u8>) -> Vec<u8> + Sync);
 
+#[cfg(not(windows))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 

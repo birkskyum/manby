@@ -183,5 +183,8 @@ fn serves_tilesets() {
     assert_eq!(request(&base, "GET", "/nothing", "").status, 404);
     assert_eq!(request(&base, "GET", "/states/9/0/0.mvt", "").status, 204);
 
-    std::fs::remove_dir_all(&dir).unwrap();
+    // Windows can't remove the tilesets while the server has them open.
+    if cfg!(unix) {
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

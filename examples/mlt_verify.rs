@@ -24,6 +24,7 @@ use tippecanoe::mvt::{
     MVT_MOVETO, MVT_POINT, MVT_POLYGON, MVT_SINT, MVT_STRING, MVT_UINT, MvtTile, MvtValue,
 };
 
+#[cfg(not(windows))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 

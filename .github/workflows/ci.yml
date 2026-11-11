@@ -1,8 +1,8 @@
 # Checks every pull request and main: the formatting, clippy on manby's code,
 # tests and examples, the pages of its API, the build with the oldest Rust
 # that Cargo.toml's rust-version promises, the unit tests, tippecanoe's golden
-# tests as MVT and as MLT on Linux (x86-64 and ARM) and macOS, the Python module, the R
-# package, and the site.
+# tests as MVT and as MLT on Linux (x86-64 and ARM) and macOS, the unit and
+# golden tests on Windows, the Python module, the R package, and the site.
 name: CI
 
 on:
@@ -66,6 +66,24 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: make test
       - run: make test-golden-mlt
+
+  # The golden tests run in Git's bash, with Unix line endings in the files
+  # they compare.
+  windows:
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install 1.98.1 --profile minimal --component clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Lint manby's Windows code
+        run: cargo clippy --locked --features mlt,remote -p manby --all-targets --no-deps -- -D warnings
+      - run: cargo test --locked --release --no-fail-fast
+      - run: command -v make || choco install make --no-progress
+      - run: make test-golden
 
   python:
     runs-on: ubuntu-24.04

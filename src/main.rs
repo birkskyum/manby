@@ -9,16 +9,24 @@
 
 use std::ffi::OsString;
 
+#[cfg(not(windows))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+#[cfg(windows)]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// jemalloc's settings: a few arenas, so that memory one thread frees is
 /// reused by the others, and freed pages go back to the system at once, so
 /// that the peak memory is the peak of what is in use.
+#[cfg(not(windows))]
 #[repr(transparent)]
 pub struct MallocConf(*const u8);
 // SAFETY: the pointer is to a static string that is never written.
+#[cfg(not(windows))]
 unsafe impl Sync for MallocConf {}
+#[cfg(not(windows))]
 #[unsafe(export_name = "_rjem_malloc_conf")]
 pub static MALLOC_CONF: MallocConf =
     MallocConf(c"narenas:4,dirty_decay_ms:0,muzzy_decay_ms:0,retain:true".as_ptr() as *const u8);
@@ -45,10 +53,18 @@ fn main() {
     let argv: Vec<String> = std::env::args_os()
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
-    let name = argv
-        .first()
-        .map(|a| a.rsplit('/').next().unwrap_or(a))
-        .unwrap_or("manby");
+    // run_as names the program on Windows
+    #[cfg(windows)]
+    let run_as_name = std::env::var(RUN_AS).ok();
+    #[cfg(unix)]
+    let run_as_name: Option<String> = None;
+    let name = match &run_as_name {
+        Some(program) => program.as_str(),
+        None => argv
+            .first()
+            .map(|a| tippecanoe::platform::program_name(a))
+            .unwrap_or("manby"),
+    };
 
     if let Some(&(_, _, tool)) = TOOLS.iter().find(|t| t.1 == name) {
         return tool();
@@ -124,6 +140,10 @@ fn join(options: manby::Result<manby::JoinOptions>) -> manby::Result<bool> {
     options.and_then(|o| manby::join(&o)).map(|_| false)
 }
 
+/// The environment variable that names the program on Windows.
+#[cfg(windows)]
+const RUN_AS: &str = "MANBY_RUN_AS";
+
 /// Runs this program again as `program`, with the arguments after the
 /// subcommand. tippecanoe-rs's programs read the process's own arguments, so
 /// they are given the arguments, and the name, they would have.
@@ -143,11 +163,13 @@ fn run_as(program: &str, argv0: &str) -> ! {
         use std::os::unix::process::CommandExt;
         command.arg0(program).exec()
     };
-    #[cfg(not(unix))]
-    let err = std::io::Error::other(format!(
-        "only under the name {} on this system, through a link for example",
-        program
-    ));
+    // Windows can't name a program's process, so the program comes in an
+    // environment variable that main reads.
+    #[cfg(windows)]
+    let err = match command.env(RUN_AS, program).status() {
+        Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+        Err(e) => e,
+    };
     eprintln!("{}: can't run {}: {}", argv0, program, err);
     std::process::exit(tippecanoe::errors::EXIT_OPEN);
 }

@@ -421,15 +421,17 @@ impl Compressor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::fd::FromRawFd;
 
     fn tmpfile() -> File {
-        let mut name = String::from("/tmp/compression-test.XXXXXX");
+        let mut name = format!(
+            "{}/compression-test.XXXXXX",
+            crate::platform::default_tmpdir()
+        );
         let fd = crate::tippecanoe_main::mkstemp_cloexec(&mut name);
         assert!(fd >= 0);
         std::fs::remove_file(&name).unwrap();
         // SAFETY: mkstemp returned a new descriptor, which the File now owns.
-        unsafe { File::from_raw_fd(fd) }
+        unsafe { crate::platform::file_from_fd(fd) }
     }
 
     #[test]

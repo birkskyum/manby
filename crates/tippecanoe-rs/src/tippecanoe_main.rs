@@ -28,12 +28,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::mem::ManuallyDrop;
-use std::os::fd::FromRawFd;
-use std::os::unix::fs::FileExt;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
-use memmap2::{Advice, Mmap, MmapMut, MmapOptions};
+use memmap2::{Mmap, MmapMut, MmapOptions};
 use rusqlite::Connection;
 
 use crate::attribute::{AttributeOp, set_attribute_accum_arg};
@@ -56,6 +54,7 @@ use crate::mbtiles::{
 use crate::memfile::{memfile_close, memfile_open, memfile_write};
 use crate::mvt::{MVT_BOOL, MVT_DOUBLE, MVT_FLOAT, MVT_INT, MVT_STRING};
 use crate::options::*;
+use crate::platform::{Advice, FileAt, O_CLOEXEC};
 use crate::platform::{
     calc_memsize, get_max_open_files, get_null_device, get_num_avail_cpus, get_page_size,
 };
@@ -239,14 +238,7 @@ pub fn atoll_require(s: &str, what: &str) -> i64 {
 
 /// `open(path, flags)`, returning the descriptor or -1 with errno set.
 fn open_fd(path: &str, flags: i32, mode: i32) -> i32 {
-    match std::ffi::CString::new(path) {
-        // SAFETY: open of a NUL-terminated path.
-        Ok(c) => unsafe { libc::open(c.as_ptr(), flags, mode as libc::c_uint) },
-        Err(_) => {
-            set_errno(libc::ENOENT);
-            -1
-        }
-    }
+    crate::platform::open(path, flags, mode)
 }
 
 fn close_fd(fd: i32) -> i32 {
@@ -255,11 +247,7 @@ fn close_fd(fd: i32) -> i32 {
 }
 
 fn unlink(path: &str) -> i32 {
-    match std::ffi::CString::new(path) {
-        // SAFETY: unlink of a NUL-terminated path.
-        Ok(c) => unsafe { libc::unlink(c.as_ptr()) },
-        Err(_) => -1,
-    }
+    crate::platform::unlink(path)
 }
 
 /// `fstat(fd).st_size`, or `Err(errno)`.
@@ -276,8 +264,7 @@ fn fstat_size(fd: i32) -> Result<i64, i32> {
 
 /// A `File` for a descriptor that something else owns and will close.
 fn borrow_fd(fd: i32) -> ManuallyDrop<File> {
-    // SAFETY: the File is never dropped, so it never closes the descriptor.
-    ManuallyDrop::new(unsafe { File::from_raw_fd(fd) })
+    crate::platform::borrow_fd(fd)
 }
 
 /// `mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd, 0)`. Fails for a zero length,
@@ -287,12 +274,16 @@ fn mmap_fd(fd: i32, len: usize) -> std::io::Result<Mmap> {
         return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
     }
     // SAFETY: the temporary files mapped here are not changed while mapped.
-    unsafe { MmapOptions::new().len(len).map_copy_read_only(fd) }
+    unsafe {
+        MmapOptions::new()
+            .len(len)
+            .map_copy_read_only(&*borrow_fd(fd))
+    }
 }
 
 /// `madvise`, whose result the C++ ignores.
 fn madvise(map: &Mmap, advice: Advice) {
-    let _ = map.advise(advice);
+    crate::platform::madvise(map, advice);
 }
 
 /// `fwrite(buf, size, count, fp) != count`, for the writes that the C++ checks
@@ -359,7 +350,7 @@ pub fn init_cpus() {
     let mut fds: Vec<i32> = vec![0; max_files as usize];
     let mut i: i64 = 0;
     while i < max_files {
-        fds[i as usize] = open_fd(get_null_device(), libc::O_RDONLY | libc::O_CLOEXEC, 0);
+        fds[i as usize] = open_fd(get_null_device(), libc::O_RDONLY | O_CLOEXEC, 0);
         if fds[i as usize] < 0 {
             break;
         }
@@ -946,7 +937,7 @@ impl Stream {
 
 fn streamfdopen(fd: i32, _mode: &str, fname: &str) -> Option<Stream> {
     // SAFETY: the stream takes over the descriptor and closes it.
-    let file = unsafe { File::from_raw_fd(fd) };
+    let file = unsafe { crate::platform::file_from_fd(fd) };
 
     let source = if fname.len() > 3 && fname.ends_with(".gz") {
         StreamSource::Gz(GzFile {
@@ -1050,6 +1041,7 @@ fn run_read_parallel(rpa: ReadParallelArg<'_>) {
         perror("close source file");
         std::process::exit(EXIT_CLOSE);
     }
+    crate::platform::close_shared_fd(rpa.fd);
 
     rpa.is_parsing.store(0, Ordering::SeqCst);
 }
@@ -1087,7 +1079,7 @@ fn temp_pair(name: &mut String, open_failure_code: i32) -> (i32, BufWriter<File>
         perror(name);
         std::process::exit(open_failure_code);
     }
-    let fp = match fopen_oflag(name, "wb", libc::O_WRONLY | libc::O_CLOEXEC) {
+    let fp = match fopen_oflag(name, "wb", libc::O_WRONLY | O_CLOEXEC) {
         Some(f) => BufWriter::new(f),
         None => {
             perror(name);
@@ -1158,14 +1150,14 @@ fn radix1(
             std::process::exit(EXIT_OPEN);
         }
 
-        match fopen_oflag(&geomname, "wb", libc::O_WRONLY | libc::O_CLOEXEC) {
+        match fopen_oflag(&geomname, "wb", libc::O_WRONLY | O_CLOEXEC) {
             Some(f) => geomfiles.push(Some(BufWriter::new(f))),
             None => {
                 perror(&geomname);
                 std::process::exit(EXIT_OPEN);
             }
         }
-        match fopen_oflag(&indexname, "wb", libc::O_WRONLY | libc::O_CLOEXEC) {
+        match fopen_oflag(&indexname, "wb", libc::O_WRONLY | O_CLOEXEC) {
             Some(f) => indexfiles.push(Some(BufWriter::new(f))),
             None => {
                 perror(&indexname);
@@ -1882,28 +1874,28 @@ fn read_input(
                 perror(&treename);
                 std::process::exit(EXIT_OPEN);
             }
-            match fopen_oflag(&geomname, "wb", libc::O_WRONLY | libc::O_CLOEXEC) {
+            match fopen_oflag(&geomname, "wb", libc::O_WRONLY | O_CLOEXEC) {
                 Some(f) => rs.geomfile = Some(BufWriter::new(f)),
                 None => {
                     perror(&geomname);
                     std::process::exit(EXIT_OPEN);
                 }
             }
-            match fopen_oflag(&indexname, "wb", libc::O_WRONLY | libc::O_CLOEXEC) {
+            match fopen_oflag(&indexname, "wb", libc::O_WRONLY | O_CLOEXEC) {
                 Some(f) => rs.indexfile = Some(BufWriter::new(f)),
                 None => {
                     perror(&indexname);
                     std::process::exit(EXIT_OPEN);
                 }
             }
-            match fopen_oflag(&vertexname, "w+b", libc::O_RDWR | libc::O_CLOEXEC) {
+            match fopen_oflag(&vertexname, "w+b", libc::O_RDWR | O_CLOEXEC) {
                 Some(f) => rs.vertexfile = Some(BufWriter::new(f)),
                 None => {
                     perror(&format!("open vertexfile {}", vertexname));
                     std::process::exit(EXIT_OPEN);
                 }
             }
-            match fopen_oflag(&nodename, "w+b", libc::O_RDWR | libc::O_CLOEXEC) {
+            match fopen_oflag(&nodename, "w+b", libc::O_RDWR | O_CLOEXEC) {
                 Some(f) => rs.nodefile = Some(BufWriter::new(f)),
                 None => {
                     perror(&nodename);
@@ -1945,18 +1937,14 @@ fn read_input(
     }
 
     {
-        // SAFETY: fsstat is a valid statfs buffer to fill in.
-        let mut fsstat: libc::statfs = unsafe { std::mem::zeroed() };
-        // SAFETY: fstatfs of a descriptor into a valid buffer.
-        if unsafe { libc::fstatfs(readers[0].geomfd, &mut fsstat) } != 0 {
-            perror("Warning: fstatfs");
-            eprintln!("Tippecanoe cannot check whether disk space will run out during tiling.");
-            DISKFREE.store(i64::MAX, Ordering::Relaxed);
-        } else {
-            DISKFREE.store(
-                (fsstat.f_bsize as i64 as u64).wrapping_mul(fsstat.f_bavail as u64) as i64,
-                Ordering::Relaxed,
-            );
+        match crate::platform::disk_free(readers[0].geomfd) {
+            Err(e) => {
+                set_errno(e);
+                perror("Warning: fstatfs");
+                eprintln!("Tippecanoe cannot check whether disk space will run out during tiling.");
+                DISKFREE.store(i64::MAX, Ordering::Relaxed);
+            }
+            Ok(free) => DISKFREE.store(free, Ordering::Relaxed),
         }
     }
 
@@ -1980,7 +1968,7 @@ fn read_input(
             let src = cstr(src).as_bytes();
             let mut use_ = 0;
             for ocp in 0..src.len() {
-                if src[ocp] == b'/' && ocp + 1 < src.len() {
+                if crate::platform::is_path_separator(src[ocp]) && ocp + 1 < src.len() {
                     use_ = ocp + 1;
                 }
             }
@@ -2043,7 +2031,7 @@ fn read_input(
     let mut overall_offset: i64 = 0;
     let dist = Mutex::new(DistSums::default());
 
-    let files_open_before_reading = open_fd(get_null_device(), libc::O_RDONLY | libc::O_CLOEXEC, 0);
+    let files_open_before_reading = open_fd(get_null_device(), libc::O_RDONLY | O_CLOEXEC, 0);
     if files_open_before_reading < 0 {
         perror("open /dev/null");
         std::process::exit(EXIT_OPEN);
@@ -2077,7 +2065,7 @@ fn read_input(
             fd = 0;
         } else {
             reading = sources[source].file.clone();
-            fd = open_fd(&sources[source].file, libc::O_RDONLY, libc::O_CLOEXEC);
+            fd = open_fd(&sources[source].file, libc::O_RDONLY, O_CLOEXEC);
             if fd < 0 {
                 perror(&sources[source].file);
                 continue;
@@ -2262,8 +2250,7 @@ fn read_input(
 
         if !(sources[source].file.len() > 3 && sources[source].file.ends_with(".gz")) {
             if let Ok(st_size) = fstat_size(fd) {
-                // SAFETY: lseek on a descriptor this function owns.
-                let off = unsafe { libc::lseek(fd, 0, libc::SEEK_CUR) } as i64;
+                let off = crate::platform::lseek(fd, 0, libc::SEEK_CUR);
                 if off >= 0 {
                     map_len = st_size - off;
                     // No error if MAP_FAILED because check is below
@@ -2273,7 +2260,7 @@ fn read_input(
                             MmapOptions::new()
                                 .offset(off as u64)
                                 .len(map_len as usize)
-                                .map_copy_read_only(fd)
+                                .map_copy_read_only(&*borrow_fd(fd))
                         } {
                             madvise(&m, Advice::Random); // sequential, but from several pointers at once
                             map = Some(m);
@@ -2352,7 +2339,9 @@ fn read_input(
                     std::process::exit(EXIT_OPEN);
                 }
                 // SAFETY: the writer takes over the new descriptor.
-                let mut readfp = Some(BufWriter::new(unsafe { File::from_raw_fd(readfd) }));
+                let mut readfp = Some(BufWriter::new(unsafe {
+                    crate::platform::file_sharing_fd(readfd)
+                }));
                 unlink(&readname);
 
                 let is_parsing = AtomicI32::new(0);
@@ -2432,7 +2421,9 @@ fn read_input(
                                     std::process::exit(EXIT_OPEN);
                                 }
                                 // SAFETY: the writer takes over the new descriptor.
-                                let next_fp = BufWriter::new(unsafe { File::from_raw_fd(next_fd) });
+                                let next_fp = BufWriter::new(unsafe {
+                                    crate::platform::file_sharing_fd(next_fd)
+                                });
 
                                 let this_fp = readfp.replace(next_fp).unwrap();
                                 let this_fd = std::mem::replace(&mut readfd, next_fd);
@@ -2526,7 +2517,7 @@ fn read_input(
         }
     }
 
-    let files_open_after_reading = open_fd(get_null_device(), libc::O_RDONLY | libc::O_CLOEXEC, 0);
+    let files_open_after_reading = open_fd(get_null_device(), libc::O_RDONLY | O_CLOEXEC, 0);
     if files_open_after_reading < 0 {
         perror("open /dev/null");
         std::process::exit(EXIT_OPEN);
@@ -2607,7 +2598,7 @@ fn read_input(
         std::process::exit(EXIT_OPEN);
     }
 
-    let mut poolfile = match fopen_oflag(&poolname, "wb", libc::O_WRONLY | libc::O_CLOEXEC) {
+    let mut poolfile = match fopen_oflag(&poolname, "wb", libc::O_WRONLY | O_CLOEXEC) {
         Some(f) => BufWriter::new(f),
         None => {
             perror(&poolname);
@@ -2699,7 +2690,7 @@ fn read_input(
         }
         unlink(&tmpname);
         // SAFETY: the writer takes over the new descriptor.
-        let mut vertex_out = BufWriter::new(unsafe { File::from_raw_fd(vertexfd) });
+        let mut vertex_out = BufWriter::new(unsafe { crate::platform::file_from_fd(vertexfd) });
 
         let mut vertex_readers: Vec<BufReader<File>> = Vec::new();
         for r in readers.iter_mut().take(cpus) {
@@ -2777,7 +2768,7 @@ fn read_input(
         }
         unlink(&tmpname);
         // SAFETY: the writer takes over the new descriptor.
-        let mut node_out = BufWriter::new(unsafe { File::from_raw_fd(nodefd) });
+        let mut node_out = BufWriter::new(unsafe { crate::platform::file_from_fd(nodefd) });
 
         let mut node_readers: Vec<BufReader<File>> = Vec::new();
         for r in readers.iter_mut().take(cpus) {
@@ -2814,7 +2805,7 @@ fn read_input(
         }
         unlink(&tmpname);
         // SAFETY: the writer takes over the new descriptor.
-        let mut sn = BufWriter::new(unsafe { File::from_raw_fd(nodefd) });
+        let mut sn = BufWriter::new(unsafe { crate::platform::file_sharing_fd(nodefd) });
 
         // `written` is to see if this node has already been preserved
         // and doesn't need to be preserved again
@@ -2855,6 +2846,7 @@ fn read_input(
                 }
             }
         }
+        crate::platform::close_shared_fd(nodefd);
 
         shared_nodes = sn;
         drop(node_in);
@@ -3465,21 +3457,24 @@ fn read_input(
         };
         // SAFETY: the sorted geometry file is changed only through this map
         // while it is mapped.
-        let mut geom: MmapMut =
-            match unsafe { MmapOptions::new().len(geomst_size as usize).map_mut(geomfd) } {
-                Ok(m) if geomst_size > 0 => m,
-                Ok(_) => {
-                    set_errno(libc::EINVAL);
-                    perror("mmap geom for fixup");
-                    std::process::exit(EXIT_MEMORY);
-                }
-                Err(e) => {
-                    perror_io("mmap geom for fixup", &e);
-                    std::process::exit(EXIT_MEMORY);
-                }
-            };
-        let _ = geom.advise(Advice::Sequential);
-        let _ = geom.advise(Advice::WillNeed);
+        let mut geom: MmapMut = match unsafe {
+            MmapOptions::new()
+                .len(geomst_size as usize)
+                .map_mut(&*borrow_fd(geomfd))
+        } {
+            Ok(m) if geomst_size > 0 => m,
+            Ok(_) => {
+                set_errno(libc::EINVAL);
+                perror("mmap geom for fixup");
+                std::process::exit(EXIT_MEMORY);
+            }
+            Err(e) => {
+                perror_io("mmap geom for fixup", &e);
+                std::process::exit(EXIT_MEMORY);
+            }
+        };
+        crate::platform::madvise_mut(&geom, Advice::Sequential);
+        crate::platform::madvise_mut(&geom, Advice::WillNeed);
 
         let mut ds: Vec<DropState> = vec![DropState::default(); (maxzoom + 1) as usize];
         prep_drop_states(&mut ds, maxzoom, basezoom, droprate);
@@ -4254,7 +4249,7 @@ pub fn main() {
     let mut droprate: f64 = 2.5;
     let mut gamma: f64 = 0.0;
     let mut buffer: i32 = 5;
-    let mut tmpdir: String = "/tmp".to_string();
+    let mut tmpdir: String = crate::platform::default_tmpdir();
     let mut attribution: Option<String> = None;
     let mut sources: Vec<Source> = Vec::new();
     let mut prefilter: Option<String> = None;
@@ -4905,12 +4900,9 @@ pub fn main() {
         MAX_TILESTATS_SAMPLE_VALUES.store(get(&MAX_TILESTATS_VALUES), Ordering::Relaxed);
     }
 
-    // SAFETY: ignoring SIGPIPE has no preconditions.
-    unsafe {
-        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
-    }
+    crate::platform::sigpipe_ignore();
 
-    files_open_at_start = open_fd(get_null_device(), libc::O_RDONLY | libc::O_CLOEXEC, 0);
+    files_open_at_start = open_fd(get_null_device(), libc::O_RDONLY | O_CLOEXEC, 0);
     if files_open_at_start < 0 {
         perror("open /dev/null");
         std::process::exit(EXIT_OPEN);
@@ -5148,7 +5140,7 @@ pub fn main() {
         }
     }
 
-    let i = open_fd(get_null_device(), libc::O_RDONLY | libc::O_CLOEXEC, 0);
+    let i = open_fd(get_null_device(), libc::O_RDONLY | O_CLOEXEC, 0);
     // i < files_open_at_start is not an error, because reading from a pipe closes stdin
     if i > files_open_at_start {
         eprintln!("Internal error: did not close all files: {}", i);
@@ -5163,19 +5155,15 @@ pub fn main() {
 /// libc `mkstemp`. `name` is a template ending in XXXXXX, which is replaced
 /// with the name of the file created. Returns the file descriptor, or -1.
 pub fn mkstemp(name: &mut String) -> i32 {
-    let mut buf = name.clone().into_bytes();
-    buf.push(0);
-    // SAFETY: buf is a writable NUL-terminated template.
-    let fd = unsafe { libc::mkstemp(buf.as_mut_ptr() as *mut libc::c_char) };
-    buf.pop();
-    *name = String::from_utf8_lossy(&buf).into_owned();
-    fd
+    crate::platform::mkstemp(name)
 }
 
 /// `mkstemp_cloexec`. `name` is a template ending in XXXXXX, which is replaced
 /// with the name of the file created. Returns the file descriptor, or -1.
 pub fn mkstemp_cloexec(name: &mut String) -> i32 {
     let fd = mkstemp(name);
+    // On Windows, a child never inherits it.
+    #[cfg(unix)]
     if fd >= 0 {
         // SAFETY: fcntl on the descriptor just created.
         if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
@@ -5194,7 +5182,7 @@ pub fn fopen_oflag(name: &str, _mode: &str, oflag: i32) -> Option<File> {
         return None;
     }
     // SAFETY: the File takes over the descriptor just opened.
-    Some(unsafe { File::from_raw_fd(fd) })
+    Some(unsafe { crate::platform::file_from_fd(fd) })
 }
 
 /// `progress_time()`: whether enough time has passed to print progress again.
@@ -5209,18 +5197,13 @@ pub fn progress_time() -> bool {
         return true;
     }
 
-    let mut tv = libc::timeval {
-        tv_sec: 0,
-        tv_usec: 0,
+    let now: f64 = match crate::platform::time_of_day() {
+        None => {
+            eprintln!("{}: Can't get the time of day: {}", av(), strerror(errno()));
+            0.0
+        }
+        Some(now) => now,
     };
-    let now: f64;
-    // SAFETY: tv is a valid timeval to fill in.
-    if unsafe { libc::gettimeofday(&mut tv, std::ptr::null_mut()) } != 0 {
-        eprintln!("{}: Can't get the time of day: {}", av(), strerror(errno()));
-        now = 0.0;
-    } else {
-        now = tv.tv_sec as f64 + tv.tv_usec as f64 / 1000000.0;
-    }
 
     if now - LAST_PROGRESS.load() >= progress_interval {
         LAST_PROGRESS.store(now);

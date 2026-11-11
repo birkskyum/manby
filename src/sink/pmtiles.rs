@@ -23,7 +23,6 @@
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::hash::{BuildHasherDefault, Hasher};
-use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -31,6 +30,7 @@ use std::sync::{Mutex, OnceLock};
 use rayon::prelude::*;
 use tippecanoe::errors::{EXIT_EXISTS, EXIT_IMPOSSIBLE, EXIT_OPEN, EXIT_SQLITE, EXIT_WRITE};
 use tippecanoe::mbtiles::Metadata;
+use tippecanoe::platform::FileAt;
 use tippecanoe::pmtiles::{self, EntryV3, HeaderV3};
 use tippecanoe::write_json::JsonWriter;
 

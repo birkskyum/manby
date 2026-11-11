@@ -3,8 +3,6 @@
 use std::cmp::Ordering;
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Write};
-use std::os::fd::IntoRawFd;
-use std::os::unix::ffi::OsStrExt;
 use std::process::exit;
 
 use rusqlite::Connection;
@@ -111,7 +109,7 @@ pub fn dir_write_tile(outdir: &str, z: i32, tx: i32, ty: i32, pbf: &[u8]) {
         exit(EXIT_WRITE);
     }
 
-    let fd = fp.into_raw_fd();
+    let fd = crate::platform::file_into_fd(fp);
     // SAFETY: the File gave up `fd`, so this is the only close of it.
     if unsafe { libc::close(fd) } != 0 {
         eprintln!("{}: {}", newdir, strerror(errno()));
@@ -191,7 +189,7 @@ pub fn enumerate_dirtiles(fname: &str, minzoom: i32, maxzoom: i32) -> Vec<Zxy> {
         // readdir() returning NULL on an error ends the loop in the C++.
         for dp in d1.map_while(Result::ok) {
             let d_name = dp.file_name();
-            let d_name = d_name.as_bytes();
+            let d_name = d_name.as_encoded_bytes();
             if numeric(d_name) && atoi_name(d_name) >= minzoom && atoi_name(d_name) <= maxzoom {
                 let z = fname.to_string() + "/" + &String::from_utf8_lossy(d_name);
                 let tz = atoi_name(d_name);
@@ -206,7 +204,7 @@ pub fn enumerate_dirtiles(fname: &str, minzoom: i32, maxzoom: i32) -> Vec<Zxy> {
 
                 for dp2 in d2.map_while(Result::ok) {
                     let d_name2 = dp2.file_name();
-                    let d_name2 = d_name2.as_bytes();
+                    let d_name2 = d_name2.as_encoded_bytes();
                     if numeric(d_name2) {
                         let x = z.clone() + "/" + &String::from_utf8_lossy(d_name2);
                         let tx = atoi_name(d_name2);
@@ -221,7 +219,7 @@ pub fn enumerate_dirtiles(fname: &str, minzoom: i32, maxzoom: i32) -> Vec<Zxy> {
 
                         for dp3 in d3.map_while(Result::ok) {
                             let d_name3 = dp3.file_name();
-                            let d_name3 = d_name3.as_bytes();
+                            let d_name3 = d_name3.as_encoded_bytes();
                             if pbfname(d_name3) {
                                 let ty = atoi_name(d_name3);
                                 let mut tile = Zxy::new(tz, tx, ty);
@@ -246,7 +244,7 @@ pub fn dir_erase_zoom(fname: &str, zoom: i32) {
     if let Ok(d1) = fs::read_dir(fname) {
         for dp in d1.map_while(Result::ok) {
             let d_name = dp.file_name();
-            let d_name = d_name.as_bytes();
+            let d_name = d_name.as_encoded_bytes();
             if numeric(d_name) && atoi_name(d_name) == zoom {
                 let z = fname.to_string() + "/" + &String::from_utf8_lossy(d_name);
 
@@ -260,7 +258,7 @@ pub fn dir_erase_zoom(fname: &str, zoom: i32) {
 
                 for dp2 in d2.map_while(Result::ok) {
                     let d_name2 = dp2.file_name();
-                    let d_name2 = d_name2.as_bytes();
+                    let d_name2 = d_name2.as_encoded_bytes();
                     if numeric(d_name2) {
                         let x = z.clone() + "/" + &String::from_utf8_lossy(d_name2);
 
@@ -274,7 +272,7 @@ pub fn dir_erase_zoom(fname: &str, zoom: i32) {
 
                         for dp3 in d3.map_while(Result::ok) {
                             let d_name3 = dp3.file_name();
-                            let d_name3 = d_name3.as_bytes();
+                            let d_name3 = d_name3.as_encoded_bytes();
                             if pbfname(d_name3) {
                                 let y = x.clone() + "/" + &String::from_utf8_lossy(d_name3);
                                 if let Err(e) = fs::remove_file(&y) {

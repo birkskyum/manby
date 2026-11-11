@@ -88,7 +88,7 @@ fn layer_name_from_file(src: &str, l: usize) -> String {
     // Find the last component of the pathname
     let mut use_ = 0;
     for ocp in 0..src.len() {
-        if src[ocp] == b'/' && ocp + 1 < src.len() {
+        if tippecanoe::platform::is_path_separator(src[ocp]) && ocp + 1 < src.len() {
             use_ = ocp + 1;
         }
     }

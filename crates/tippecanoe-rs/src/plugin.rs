@@ -6,10 +6,11 @@
 //! they take those two entries, which belong to the calling tiling thread.
 
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(unix)]
 use std::ffi::CString;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
-use std::os::fd::{FromRawFd, IntoRawFd};
+#[cfg(unix)]
 use std::os::raw::c_char;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,6 +25,7 @@ use crate::mbtiles::{LayermapEntry, add_to_tilestats};
 use crate::mvt::{
     MVT_LINESTRING, MVT_NULL, MVT_POINT, MVT_POLYGON, MvtLayer, mvt_value_to_serial_val,
 };
+use crate::platform::Pid;
 use crate::read_json::{
     GEOM_TYPES, GEOMETRY_NAMES, MB_GEOMETRY, json_context, parse_coordinates, stringify_value,
 };
@@ -42,7 +44,7 @@ impl PipeWriter {
     /// `fdopen(fd, "w")`. Takes ownership of the descriptor.
     pub fn fdopen(fd: i32) -> PipeWriter {
         // SAFETY: the caller hands over an open descriptor that nothing else closes.
-        let f = unsafe { File::from_raw_fd(fd) };
+        let f = unsafe { crate::platform::file_from_fd(fd) };
         PipeWriter {
             w: BufWriter::new(f),
             err: None,
@@ -63,8 +65,8 @@ impl PipeWriter {
             Ok(f) => f,
             Err(e) => return Err(e.into_error()),
         };
-        // SAFETY: the descriptor came from into_raw_fd and is closed exactly once.
-        if unsafe { libc::close(f.into_raw_fd()) } != 0 {
+        // SAFETY: the descriptor came from file_into_fd and is closed exactly once.
+        if unsafe { libc::close(crate::platform::file_into_fd(f)) } != 0 {
             return Err(std::io::Error::last_os_error());
         }
         Ok(())
@@ -93,7 +95,11 @@ impl Write for PipeWriter {
 
 /// Whether the error from `fclose` was `EPIPE`.
 pub fn is_epipe(e: &std::io::Error) -> bool {
-    e.raw_os_error() == Some(libc::EPIPE)
+    #[cfg(unix)]
+    return e.raw_os_error() == Some(libc::EPIPE);
+    // ERROR_BROKEN_PIPE, ERROR_NO_DATA
+    #[cfg(windows)]
+    return matches!(e.raw_os_error(), Some(109 | 232));
 }
 
 /// `perror(s)` for an error held in a `std::io::Error` rather than in `errno`.
@@ -190,13 +196,13 @@ fn parse_layers(
     extent: i32,
 ) -> Vec<MvtLayer> {
     // SAFETY: fd is the read end of the filter's output pipe, owned here.
-    let mut f = unsafe { File::from_raw_fd(fd) };
+    let mut f = unsafe { crate::platform::file_from_fd(fd) };
 
     let out =
         crate::read_json::parse_layers(Box::new(BufReader::new(&mut f)), z, x, y, extent, false);
 
-    // SAFETY: the descriptor came from into_raw_fd and is closed exactly once.
-    if unsafe { libc::close(f.into_raw_fd()) } != 0 {
+    // SAFETY: the descriptor came from file_into_fd and is closed exactly once.
+    if unsafe { libc::close(crate::platform::file_into_fd(f)) } != 0 {
         perror("fclose postfilter output");
         std::process::exit(EXIT_CLOSE);
     }
@@ -535,6 +541,7 @@ pub fn parse_feature(
 
 static PIPE_LOCK: Mutex<()> = Mutex::new(());
 
+#[cfg(unix)]
 fn cstring(s: &str) -> CString {
     match CString::new(s) {
         Ok(c) => c,
@@ -545,12 +552,13 @@ fn cstring(s: &str) -> CString {
     }
 }
 
+#[cfg(unix)]
 #[allow(clippy::too_many_arguments)]
 pub fn setup_filter(
     filter: &str,
     write_to: &mut i32,
     read_from: &mut i32,
-    pid: &mut libc::pid_t,
+    pid: &mut Pid,
     z: u32,
     x: u32,
     y: u32,
@@ -669,8 +677,81 @@ pub fn setup_filter(
     }
 }
 
+/// The filter processes running on Windows, by the `Pid` that stands for each.
+#[cfg(windows)]
+static CHILDREN: Mutex<BTreeMap<Pid, std::process::Child>> = Mutex::new(BTreeMap::new());
+
+/// `setup_filter` on Windows, which has no `fork`: `sh` runs the filter, as
+/// on Unix, with pipes to and from it. `sh` comes with Git for Windows.
+#[cfg(windows)]
+#[allow(clippy::too_many_arguments)]
+pub fn setup_filter(
+    filter: &str,
+    write_to: &mut i32,
+    read_from: &mut i32,
+    pid: &mut Pid,
+    z: u32,
+    x: u32,
+    y: u32,
+) {
+    use std::os::windows::io::OwnedHandle;
+    use std::process::{Command, Stdio};
+
+    let guard = match PIPE_LOCK.lock() {
+        Ok(g) => g,
+        Err(_) => {
+            perror("pthread_mutex_lock (pipe)");
+            std::process::exit(EXIT_PTHREAD);
+        }
+    };
+
+    let mut child = match Command::new("sh")
+        .arg("-c")
+        .arg(filter)
+        .arg("sh")
+        .arg(z.to_string())
+        .arg(x.to_string())
+        .arg(y.to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            crate::cstd::perror_io("exec sh", &e);
+            std::process::exit(EXIT_PTHREAD);
+        }
+    };
+
+    let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        perror("pipe");
+        std::process::exit(EXIT_OPEN);
+    };
+    *write_to = crate::platform::file_into_fd(File::from(OwnedHandle::from(stdin)));
+    *read_from = crate::platform::file_into_fd(File::from(OwnedHandle::from(stdout)));
+    if *write_to < 0 || *read_from < 0 {
+        perror("pipe");
+        std::process::exit(EXIT_OPEN);
+    }
+
+    *pid = child.id() as Pid;
+    CHILDREN.lock().unwrap().insert(*pid, child);
+    drop(guard);
+}
+
 /// `waitpid` until the filter process has exited or been killed.
-pub fn wait_for_filter(pid: libc::pid_t, what: &str) {
+#[cfg(windows)]
+pub fn wait_for_filter(pid: Pid, what: &str) {
+    let child = CHILDREN.lock().unwrap().remove(&pid);
+    if child.is_none_or(|mut c| c.wait().is_err()) {
+        perror(what);
+        std::process::exit(EXIT_PTHREAD);
+    }
+}
+
+/// `waitpid` until the filter process has exited or been killed.
+#[cfg(unix)]
+pub fn wait_for_filter(pid: Pid, what: &str) {
     loop {
         let mut stat_loc: i32 = 0;
         // SAFETY: stat_loc is a valid place for the status.
@@ -698,7 +779,7 @@ pub fn filter_layers(
 ) -> Vec<MvtLayer> {
     let mut write_to = -1;
     let mut read_from = -1;
-    let mut pid: libc::pid_t = 0;
+    let mut pid: Pid = 0;
     setup_filter(filter, &mut write_to, &mut read_from, &mut pid, z, x, y);
 
     let wa = WriterArg {
@@ -750,7 +831,7 @@ mod tests {
     fn setup_filter_runs_the_filter_between_two_pipes() {
         let mut write_to = -1;
         let mut read_from = -1;
-        let mut pid: libc::pid_t = 0;
+        let mut pid: Pid = 0;
         setup_filter(
             "tr a-z A-Z; echo \"$1/$2/$3\"",
             &mut write_to,
@@ -766,7 +847,7 @@ mod tests {
         assert!(w.fclose().is_ok());
 
         // SAFETY: read_from is the read end of the filter's output pipe, owned here.
-        let mut r = unsafe { File::from_raw_fd(read_from) };
+        let mut r = unsafe { crate::platform::file_from_fd(read_from) };
         let mut out = String::new();
         r.read_to_string(&mut out).unwrap();
         wait_for_filter(pid, "waitpid");
@@ -778,7 +859,7 @@ mod tests {
     fn pipe_writer_reports_a_broken_pipe_at_fclose() {
         let mut write_to = -1;
         let mut read_from = -1;
-        let mut pid: libc::pid_t = 0;
+        let mut pid: Pid = 0;
         setup_filter(
             "exec 0<&-",
             &mut write_to,

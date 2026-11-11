@@ -11,8 +11,6 @@
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
-use std::os::fd::IntoRawFd;
-use std::os::unix::ffi::OsStrExt;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -204,7 +202,7 @@ fn write_file(
     };
     f.write_all(data)
         .map_err(|e| Error::new(EXIT_WRITE, io_message(&path, &e)))?;
-    let fd = f.into_raw_fd();
+    let fd = tippecanoe::platform::file_into_fd(f);
     // SAFETY: the File gave up `fd`, so this is the only close of it.
     if unsafe { libc::close(fd) } != 0 {
         let e = std::io::Error::last_os_error();
@@ -272,7 +270,7 @@ fn read_names(dir: &str, must: bool) -> Result<Vec<Vec<u8>>> {
     match fs::read_dir(dir) {
         Ok(d) => Ok(d
             .map_while(std::result::Result::ok)
-            .map(|e| e.file_name().as_bytes().to_vec())
+            .map(|e| e.file_name().as_encoded_bytes().to_vec())
             .collect()),
         Err(_) if !must => Ok(Vec::new()),
         Err(e) => Err(Error::new(EXIT_OPEN, io_message(dir, &e))),

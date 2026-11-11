@@ -17,6 +17,7 @@ keywords = ["tippecanoe", "vector-tiles", "pmtiles", "mbtiles", "geojson"]
 classifiers = [
     "Environment :: Console",
     "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Rust",

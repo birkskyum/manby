@@ -2,9 +2,9 @@
 # PR, with the versions and the changelog that the merged PR titles call for
 # (release-plz.toml). Merging that PR publishes the crates that changed to
 # crates.io, and tags and makes manby's GitHub release. The jobs after that build
-# manby for macOS and Linux, run each build on its own platform, and publish the
-# wheels to PyPI and the binaries to the release, from which the R package
-# downloads manby. Run by hand, it only builds and runs.
+# manby for macOS, Linux and Windows, run each build on its own platform, and
+# publish the wheels to PyPI and the binaries to the release, from which the R
+# package downloads manby. Run by hand, it only builds and runs.
 #
 # crates.io and PyPI trust this workflow in the `release` environment, so no
 # tokens are kept here.
@@ -133,10 +133,22 @@ jobs:
             runner: ubuntu-24.04
             manylinux: musllinux_1_2
             docker: -e JEMALLOC_SYS_WITH_LG_PAGE=16
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2025
+          - target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ needs.release.outputs.tag || github.sha }}
+      # Python unpacks the wheel and makes the zip on Windows
+      - if: runner.os == 'Windows'
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
       - uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
@@ -146,6 +158,7 @@ jobs:
           maturin-version: v1.16.0
           args: --release --locked --out dist
       - name: Binary
+        if: runner.os != 'Windows'
         run: |
           d=manby-${{ matrix.target }}
           mkdir $d
@@ -154,6 +167,23 @@ jobs:
           cp LICENSE.md README.md $d/
           cp src/crs/NOTICE.md $d/NOTICE.md
           tar -czf $d.tar.gz $d
+      # Windows programs come in zips
+      - name: Binary
+        if: runner.os == 'Windows'
+        run: |
+          d=manby-${{ matrix.target }}
+          mkdir $d
+          python - $d dist/*.whl <<'EOF'
+          import sys, zipfile
+          d, wheel = sys.argv[1:]
+          with zipfile.ZipFile(wheel) as z:
+              name = next(n for n in z.namelist() if n.endswith(".data/scripts/manby.exe"))
+              with open(d + "/manby.exe", "wb") as f:
+                  f.write(z.read(name))
+          EOF
+          cp LICENSE.md README.md $d/
+          cp src/crs/NOTICE.md $d/NOTICE.md
+          python -m zipfile -c $d.zip $d
       - uses: actions/upload-artifact@v7
         with:
           name: wheel-${{ matrix.target }}
@@ -161,11 +191,13 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: bin-${{ matrix.target }}
-          path: manby-${{ matrix.target }}.tar.gz
+          path: manby-${{ matrix.target }}.*
 
   run:
     name: run ${{ matrix.target }}
     needs: build
+    # by hand too, when the release job, which build waits for, is skipped
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -183,14 +215,31 @@ jobs:
             runner: ubuntu-24.04
           - target: aarch64-unknown-linux-musl
             runner: ubuntu-24.04-arm
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2025
+          - target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/download-artifact@v8
         with:
           name: bin-${{ matrix.target }}
+      - if: runner.os == 'Windows'
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
       - name: Tile
         run: |
-          tar -xzf manby-${{ matrix.target }}.tar.gz
-          m=./manby-${{ matrix.target }}/manby
+          d=manby-${{ matrix.target }}
+          if [ -f $d.zip ]; then
+            python -m zipfile -e $d.zip .
+            m=./$d/manby.exe
+          else
+            tar -xzf $d.tar.gz
+            m=./$d/manby
+          fi
           $m --version
           cat > in.geojson <<'EOF'
           {"type":"Feature","properties":{"n":1},"geometry":{"type":"Point","coordinates":[11.4,48.2]}}
@@ -232,5 +281,5 @@ jobs:
           TAG: ${{ needs.release.outputs.tag }}
         run: |
           cd bin
-          sha256sum *.tar.gz > SHA256SUMS
-          gh release upload "$TAG" *.tar.gz SHA256SUMS --clobber -R "$GITHUB_REPOSITORY"
+          sha256sum *.tar.gz *.zip > SHA256SUMS
+          gh release upload "$TAG" *.tar.gz *.zip SHA256SUMS --clobber -R "$GITHUB_REPOSITORY"

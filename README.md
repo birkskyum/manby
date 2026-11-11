@@ -20,7 +20,7 @@ The [site](https://birkskyum.github.io/manby/) has the guides.
 
 ## Install
 
-manby runs on macOS and Linux, and on Windows in WSL.
+manby runs on macOS, Linux and Windows.
 
 | | |
 | --- | --- |
@@ -30,7 +30,7 @@ manby runs on macOS and Linux, and on Windows in WSL.
 | mise | `mise use -g github:birkskyum/manby` |
 | cargo, with Rust 1.94 or later | `cargo install manby` |
 | R, from [R-universe](https://birkskyum.r-universe.dev/manby) | `install.packages("manby", repos = c("https://birkskyum.r-universe.dev", "https://cloud.r-project.org"))` |
-| The program alone | the [releases](https://github.com/birkskyum/manby/releases), for macOS and Linux on arm64 and x86-64 |
+| The program alone | the [releases](https://github.com/birkskyum/manby/releases), for macOS, Linux and Windows on arm64 and x86-64 |
 
 cargo builds it without MapLibre Tiles and URLs, which `--features mlt,remote` adds, with Rust 1.98.
 

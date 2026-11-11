@@ -7,7 +7,7 @@
 #'
 #' `install_manby()` downloads manby from the GitHub release of the package's
 #' version, checks it against the release's checksums, and keeps it in the
-#' package's cache, [tools::R_user_dir()]. manby runs on macOS and on Linux.
+#' package's cache, [tools::R_user_dir()]. manby runs on macOS, Linux and Windows.
 #'
 #' @param version The version of manby to download. The default is the
 #'   package's own.
@@ -64,7 +64,11 @@ own_version <- function() {
 }
 
 cached <- function(version) {
-  file.path(tools::R_user_dir("manby", "cache"), version, "manby")
+  file.path(tools::R_user_dir("manby", "cache"), version, program())
+}
+
+program <- function() {
+  if (.Platform$OS.type == "windows") "manby.exe" else "manby"
 }
 
 #' The release builds to try for this computer, in order.
@@ -84,7 +88,8 @@ targets <- function() {
     } else {
       paste0(arch, "-unknown-linux-", c("gnu", "musl"))
     },
-    stop("manby runs on macOS and Linux. On Windows, run R in WSL.", call. = FALSE)
+    Windows = paste0(arch, "-pc-windows-msvc"),
+    stop("manby runs on macOS, Linux and Windows.", call. = FALSE)
   )
 }
 
@@ -93,7 +98,8 @@ targets <- function() {
 #' @noRd
 download <- function(version, target, dir) {
   url <- sprintf("https://github.com/birkskyum/manby/releases/download/v%s/", version)
-  name <- sprintf("manby-%s.tar.gz", target)
+  windows <- endsWith(target, "-windows-msvc")
+  name <- sprintf(if (windows) "manby-%s.zip" else "manby-%s.tar.gz", target)
   dir.create(dir)
   timeout <- options(timeout = max(300, getOption("timeout")))
   on.exit(options(timeout), add = TRUE)
@@ -114,13 +120,17 @@ download <- function(version, target, dir) {
     file.path(dir, file)
   }
   sums <- readLines(fetch("SHA256SUMS"))
-  tarball <- fetch(name)
+  archive <- fetch(name)
   expected <- sub(" .*", "", sums[endsWith(sums, paste0(" ", name))])
-  if (length(expected) != 1 || !identical(tolower(expected), sha256(tarball))) {
+  if (length(expected) != 1 || !identical(tolower(expected), sha256(archive))) {
     stop("the download of ", name, " does not match the release's checksum", call. = FALSE)
   }
-  utils::untar(tarball, exdir = dir)
-  file.path(dir, sub("\\.tar\\.gz$", "", name), "manby")
+  if (windows) {
+    utils::unzip(archive, exdir = dir)
+  } else {
+    utils::untar(archive, exdir = dir)
+  }
+  file.path(dir, sub("\\.(tar\\.gz|zip)$", "", name), program())
 }
 
 sha256 <- function(path) {

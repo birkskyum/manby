@@ -1,6 +1,6 @@
 Package: manby
 Title: Vector Tilesets Like 'tippecanoe', Several Times Faster
-Version: 0.2.2
+Version: 0.2.3
 Authors@R: person("Birk", "Skyum", email = "birk.skyum@pm.me", role = c("aut", "cre"))
 Description: Builds vector tilesets in 'PMTiles' and 'MBTiles' from sf data
     frames, 'DuckDB' tables, 'Arrow' tables and files, with the tiles that

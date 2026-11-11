@@ -196,6 +196,8 @@ jobs:
   run:
     name: run ${{ matrix.target }}
     needs: build
+    # by hand too, when the release job, which build waits for, is skipped
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false

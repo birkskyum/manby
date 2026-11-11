@@ -337,6 +337,10 @@ impl TileSink for PmtilesSink {
     }
 
     fn finish(self: Box<Self>, metadata: &Metadata) -> Result<()> {
+        self.finish_with(metadata, &[])
+    }
+
+    fn finish_with(self: Box<Self>, metadata: &Metadata, extra: &[(String, String)]) -> Result<()> {
         let mut this = *self;
         if this.failed.load(Ordering::Relaxed) {
             return Err(Error::new(
@@ -361,7 +365,7 @@ impl TileSink for PmtilesSink {
 
         let layout = Layout::new(&shards)?;
         let metadata = tileset_metadata(metadata, this.tile_format);
-        let archive = Archive::new(&layout, &metadata, this.tile_compression);
+        let archive = Archive::new(&layout, &metadata, extra, this.tile_compression);
 
         let write_error = |e: std::io::Error| {
             Error::new(EXIT_WRITE, io_message(&this.path.to_string_lossy(), &e))
@@ -496,9 +500,14 @@ struct Archive {
 }
 
 impl Archive {
-    fn new(layout: &Layout, m: &Metadata, tile_compression: bool) -> Archive {
+    fn new(
+        layout: &Layout,
+        m: &Metadata,
+        extra: &[(String, String)],
+        tile_compression: bool,
+    ) -> Archive {
         let (root, leaves) = make_root_leaves(&layout.entries);
-        let json = metadata_to_pmtiles_json(m);
+        let json = metadata_json(m, extra);
 
         let mut header = HeaderV3 {
             min_zoom: m.minzoom as u8,
@@ -599,6 +608,11 @@ fn out(state: &mut JsonWriter<'_>, k: &str, v: &str) {
 
 /// tippecanoe's `metadata_to_pmtiles_json()`: the metadata JSON, gzipped.
 pub fn metadata_to_pmtiles_json(m: &Metadata) -> Vec<u8> {
+    metadata_json(m, &[])
+}
+
+/// The metadata JSON with more string keys at the end, gzipped.
+fn metadata_json(m: &Metadata, extra: &[(String, String)]) -> Vec<u8> {
     let mut buf = String::new();
     {
         let mut state = JsonWriter::new_string(&mut buf);
@@ -646,6 +660,9 @@ pub fn metadata_to_pmtiles_json(m: &Metadata) -> Vec<u8> {
             state.json_comma_newline();
             state.json_write_string("tilestats");
             state.json_write_json(&m.tilestats_json);
+        }
+        for (k, v) in extra {
+            out(&mut state, k, v);
         }
 
         state.json_write_newline();

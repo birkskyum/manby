@@ -9,6 +9,7 @@
 mod accum;
 mod encode;
 mod engine;
+pub(crate) use engine::merge_tilestats;
 mod filter;
 mod geom;
 mod make;
@@ -49,6 +50,32 @@ pub struct TileStats {
     /// A tile could not be made small enough. As in tippecanoe, the tiles of
     /// the zooms up to `maxzoom` are complete.
     pub incomplete: bool,
+    /// With `TileOptions::shard`, what `manby merge` needs.
+    pub shard: Option<ShardTiling>,
+}
+
+/// What a shard's tiling found that `manby merge` needs to make the
+/// metadata of the whole run (see `crate::shard`), by zoom level.
+#[derive(Clone, Debug, Default)]
+pub struct ShardTiling {
+    pub tiles: u64,
+    /// The maximum zoom when the tiling stopped, extended or not.
+    pub maxzoom: i32,
+    pub largest_written: i32,
+    pub incomplete: bool,
+    /// With `incomplete`, the last complete zoom.
+    pub incomplete_maxzoom: i32,
+    /// Each finished level's zoom, tippecanoe's zoom counter after it, and
+    /// its strategy.
+    pub strategies: Vec<(i32, i32, tippecanoe::tile::Strategy)>,
+    /// Each finished level's tile with the most vertices, if the level was
+    /// at the maximum zoom then: zoom, vertices, x and y.
+    pub tops: Vec<(i32, i64, u32, u32)>,
+    /// Each finished level's attribute statistics, if it has any.
+    pub layermaps: Vec<(i32, BTreeMap<String, LayermapEntry>)>,
+    /// The zooms at or below the pivot that were made again with stricter
+    /// thresholds, or that extended the maximum zoom.
+    pub again: Vec<i32>,
 }
 
 /// Everything the tiler needs to know: tippecanoe's tiling options and the
@@ -138,6 +165,8 @@ pub struct TileOptions {
     pub memory_budget: u64,
     /// Write MapLibre Tiles instead of MVT (`--tile-format=mlt`).
     pub mlt: Option<crate::mlt::MltSettings>,
+    /// `--shard`: the part of the tiles this run makes.
+    pub shard: Option<crate::shard::Range>,
 }
 
 impl Default for TileOptions {
@@ -198,6 +227,7 @@ impl Default for TileOptions {
             big_memory: 768 << 20,
             memory_budget: u64::MAX,
             mlt: None,
+            shard: None,
         }
     }
 }
@@ -287,6 +317,7 @@ impl TileOptions {
                     gzipped: !o.prevent.get(tippecanoe::options::P_TILE_COMPRESSION),
                 },
             ),
+            shard: None,
         }
     }
 

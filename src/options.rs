@@ -105,6 +105,10 @@ pub struct Options {
     /// for itself, rather than its zoom level being made again with the
     /// highest. Different tiles from tippecanoe's.
     pub as_needed_per_tile: bool,
+    /// `--shard I/N`: make part `I` of `N` of the tileset, for `manby merge`.
+    pub shard: Option<crate::shard::Shard>,
+    /// `--shard-zoom`: the zoom at which the shards split the tiles.
+    pub shard_zoom: Option<i32>,
     /// `--compression=zlib`: store every tile as zlib compresses it, so the
     /// archive is byte for byte tippecanoe's. Otherwise tiles that fit
     /// whatever zlib does are stored compressed with libdeflate.
@@ -316,6 +320,8 @@ impl Default for Options {
             memory_budget: None,
             fast: false,
             as_needed_per_tile: false,
+            shard: None,
+            shard_zoom: None,
             zlib_tiles: false,
             tile_format: crate::mlt::TileFormat::Mvt,
             mlt_profile: crate::mlt::MltProfile::Web,
@@ -504,6 +510,8 @@ impl Options {
         if self.tippecanoe_cpus == 0 {
             self.tippecanoe_cpus = tippecanoe_cpus()?;
         }
+
+        crate::shard::check_options(self)?;
 
         if self.h3 && self.guess_maxzoom && self.h3_base_zoom.is_none() {
             return Err(Error::new(
@@ -734,6 +742,32 @@ fn not_a_number(argv0: &str, what: &str, s: &str) -> Error {
 }
 
 /// `atoi_require`
+/// The command line without `--shard` and `--shard-zoom`, so that every
+/// shard records the command line of the whole run.
+fn without_shard_options(argv: &[String]) -> Vec<String> {
+    let mut out = Vec::with_capacity(argv.len());
+    let mut skip = false;
+    for (i, a) in argv.iter().enumerate() {
+        if skip {
+            skip = false;
+            continue;
+        }
+        if i > 0 && (a == "--shard" || a == "--shard-zoom") {
+            skip = true;
+            continue;
+        }
+        if i > 0 && (a.starts_with("--shard=") || a.starts_with("--shard-zoom=")) {
+            continue;
+        }
+        if a == "--" {
+            out.extend(argv[i..].iter().cloned());
+            break;
+        }
+        out.push(a.clone());
+    }
+    out
+}
+
 fn require_int(s: &str, what: &str, argv0: &str) -> crate::Result<i32> {
     Ok(require_long(s, what, argv0)? as i32)
 }
@@ -1280,6 +1314,8 @@ fn long_options_orig() -> Vec<LongOption> {
         heading("manby"),
         opt("fast", NO, b'~'),
         opt("as-needed-per-tile", NO, b'~'),
+        opt("shard", REQ, b'~'),
+        opt("shard-zoom", REQ, b'~'),
         opt("compression", REQ, b'~'),
         opt("threads", REQ, b'~'),
         opt("memory-budget", REQ, b'~'),
@@ -1361,7 +1397,7 @@ pub fn parse_args(argv: &[String]) -> crate::Result<Options> {
 
     let mut o = Options {
         program: argv0.clone(),
-        commandline: tippecanoe::text::format_commandline(&argv),
+        commandline: tippecanoe::text::format_commandline(&without_shard_options(&argv)),
         ..Default::default()
     };
 
@@ -1557,6 +1593,18 @@ pub fn parse_args(argv: &[String]) -> crate::Result<Options> {
                     }
                     "fast" => o.fast = true,
                     "as-needed-per-tile" => o.as_needed_per_tile = true,
+                    "shard" => match crate::shard::Shard::parse(arg) {
+                        Some(shard) => o.shard = Some(shard),
+                        None => {
+                            return err_args(format!(
+                                "{}: --shard must be I/N, with I from 0 to N - 1, not {}",
+                                argv0, arg
+                            ));
+                        }
+                    },
+                    "shard-zoom" => {
+                        o.shard_zoom = Some(require_int(&optarg, "Shard zoom", &argv0)?)
+                    }
                     "compression" => match arg {
                         "zlib" => o.zlib_tiles = true,
                         "libdeflate" => o.zlib_tiles = false,

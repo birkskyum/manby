@@ -191,6 +191,8 @@ struct Task {
     rp: ReadParams,
     complexity: Option<i64>,
     mp: MakeParams,
+    /// Whether to make the tile once it is read: not if another shard does.
+    make: bool,
 }
 
 /// What a task reports: the first read of a tile as soon as it is done, so
@@ -806,6 +808,9 @@ struct Driver<'d, 's> {
     /// The estimated memory of the big tiles running, and its limit.
     running_big: u64,
     big_memory: u64,
+    /// `--shard`: the tiles this run reads and makes, and what it found.
+    shard: Option<crate::shard::Range>,
+    tiling: super::ShardTiling,
 }
 
 /// Runs the tiling: a coordinator on the calling thread that hands the tiles
@@ -850,8 +855,11 @@ pub fn drive<'s>(
         variable_depth: o.a(A_VARIABLE_DEPTH_PYRAMID),
         running_big: 0,
         big_memory: o.big_memory as u64,
+        shard: o.shard,
+        tiling: super::ShardTiling::default(),
     };
 
+    let root = root.filter(|r| o.shard.is_none_or(|s| s.keeps(r.z, r.x, r.y)));
     if let Some(root) = root {
         d.levels.push(Level::new(
             o.iz,
@@ -924,6 +932,15 @@ pub fn drive<'s>(
     }
     stats.maxzoom = maxzoom;
     stats.layermap = merge_tilestats(d.tilestats);
+    if d.shard.is_some() {
+        let mut t = d.tiling;
+        t.tiles = stats.tiles;
+        t.maxzoom = d.maxzoom;
+        t.largest_written = d.largest_written;
+        t.incomplete = stats.incomplete;
+        t.incomplete_maxzoom = if stats.incomplete { stats.maxzoom } else { 0 };
+        stats.shard = Some(t);
+    }
     Ok(stats)
 }
 
@@ -1103,6 +1120,7 @@ impl<'d, 's> Driver<'d, 's> {
                 simplification,
                 th: level.th,
             },
+            make: self.shard.is_none_or(|r| r.makes(level.z)),
         }
     }
 
@@ -1253,7 +1271,12 @@ impl<'d, 's> Driver<'d, 's> {
                 }
             }
             for child in children {
-                self.add_input(k + 1, child);
+                if self
+                    .shard
+                    .is_none_or(|s| s.keeps(child.z, child.x, child.y))
+                {
+                    self.add_input(k + 1, child);
+                }
             }
         }
         self.check_children_complete(k);
@@ -1343,6 +1366,18 @@ impl<'d, 's> Driver<'d, 's> {
         if let Some(message) = error {
             self.error = Some(Error::new(EXIT_INCOMPLETE, message));
             return;
+        }
+
+        if let Some(r) = self.shard
+            && level.z >= r.zoom
+        {
+            let extends = extend_zooms
+                && (o.a(A_EXTEND_ZOOMS) || self.extend_zooms_max > 0)
+                && z == self.maxzoom
+                && self.maxzoom < MAX_ZOOM;
+            if (again || extends) && self.tiling.again.last() != Some(&level.z) {
+                self.tiling.again.push(level.z);
+            }
         }
 
         if extend_zooms
@@ -1568,6 +1603,19 @@ impl<'d, 's> Driver<'d, 's> {
             }
         }
 
+        if self.shard.is_some() {
+            let t = &mut self.tiling;
+            t.strategies
+                .push((level.z, level.strategy_z, level.strategy));
+            if let Some((len, x, y)) = level.top {
+                t.tops.push((level.z, len, x, y));
+            }
+            if !level.tilestats.is_empty() {
+                t.layermaps
+                    .push((level.z, merge_tilestats(level.tilestats.clone())));
+            }
+        }
+
         let z = level.strategy_z;
         if z as usize >= self.stats.strategies.len() {
             self.stats
@@ -1658,6 +1706,18 @@ fn run_task(ctx: &Ctx<'_>, t: Task, tx: &Sender<Done>) -> crate::Result<Done> {
             complexity: rt.complexity,
         });
     }
+    if !t.make {
+        return Ok(Done::Made {
+            level: t.level,
+            idx: t.idx,
+            pass: t.pass,
+            big: t.big,
+            result: Box::new(skipped(t.mp.th)),
+            made: None,
+            record: 0,
+            tile: false,
+        });
+    }
     let mut result = make_tile(ctx, &rt, &t.mp);
     drop(rt);
     let tile = result.tile.take();
@@ -1728,7 +1788,9 @@ fn skipped(th: Thresholds) -> MakeResult {
 /// Merges the attribute statistics of several tiles. Every entry came from
 /// tiling, so each stays marked as one to keep, as tippecanoe's tiling
 /// segments are until the final merge.
-fn merge_tilestats(maps: Vec<BTreeMap<String, LayermapEntry>>) -> BTreeMap<String, LayermapEntry> {
+pub(crate) fn merge_tilestats(
+    maps: Vec<BTreeMap<String, LayermapEntry>>,
+) -> BTreeMap<String, LayermapEntry> {
     match maps.len() {
         0 => BTreeMap::new(),
         1 => maps.into_iter().next().unwrap(),

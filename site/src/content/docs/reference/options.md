@@ -11,6 +11,8 @@ manby takes [tippecanoe's options](https://github.com/felt/tippecanoe#readme), a
 | --- | --- |
 | `--memory-budget=SIZE` | Keeps memory near `SIZE`, such as `1G` or `500M`, with the rest in a temporary file. Half the physical memory unless given. See [Inputs larger than memory](../../guides/memory/). |
 | `--threads=N` | The number of threads, one for each CPU unless given. The tiles are the same with any number. |
+| `--shard=I/N` | Makes part `I` of `N` of the tileset, which `manby merge` puts together with the others. See [Builds split across machines](../../guides/shards/). |
+| `--shard-zoom=Z` | The zoom whose tiles the shards split, 6 unless given. |
 | `--largest-maximum-zoom-guess=Z` | Chooses the maximum zoom as `-zg` does, but no higher than `Z`. |
 | `--bbox=MINLON,MINLAT,MAXLON,MAXLAT` | Keeps the rows of GeoParquet and Arrow inputs whose bounding boxes overlap the box. See [GeoParquet, DuckDB and Python](../../guides/python/). |
 | `--h3` | Bins each layer's points into H3 hexagons below a base zoom. See [H3 hexagons and categories](../../guides/h3/). |
@@ -35,6 +37,10 @@ Two options make tiles that are not tippecanoe's.
 - **`-s`, `--projection`** also takes any of the 9,508 EPSG and ESRI codes of [crs-defs](https://github.com/birkskyum/crs-defs), such as `-s EPSG:28992`.
 - **`-j`, `-J`** feature filters also take [`like`, `ilike` and `intersects`](../../guides/programs/#feature-filters).
 - **Inputs** can also be GeoParquet and Arrow files, and GeoParquet at `s3://`, `gs://`, `az://` and `https://` URLs.
+
+## manby merge
+
+`manby merge -o out.pmtiles part-0.pmtiles part-1.pmtiles ...` puts the parts made with `--shard` together. `-o` writes PMTiles or MBTiles, `-e` a directory, `-f` replaces an existing tileset, and `-q` leaves out the notes. See [Builds split across machines](../../guides/shards/).
 
 ## manby join
 

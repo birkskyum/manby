@@ -184,6 +184,16 @@ DESIGN.md describes the choices behind the tiles, and `make test-golden-mlt` che
 
 When a tile is too big, tippecanoe raises its threshold for dropping, coalescing or clustering until it fits, then makes the whole zoom level again with the highest threshold any tile needed. `--as-needed-per-tile` keeps each tile's own threshold instead. Only the tiles that are too big are thinned, so the others keep more, but neighboring tiles can be thinned differently, which can show at tile edges. On the census tracts, the tiles of z5 keep 67,163 tract polygons rather than 17,094, and the run is 1.2 times faster. The tiles are not tippecanoe's.
 
+## Builds split across machines
+
+`--shard I/N` makes part `I` of `N` of a tileset, so the parts can run on different machines at once, and `manby merge` puts them together as the whole run makes them, byte for byte. Each shard reads all of the input and makes the tiles below its share of the pivot zoom's tiles (zoom 6 unless `--shard-zoom` says), and shard 0 also makes the zooms above. At the pivot zoom and below, a zoom that an `-as-needed` option makes again with a stricter threshold is made again only for the shard's own tiles, and the merge lists such zooms. With `--as-needed-per-tile` there are none.
+
+```sh
+manby -z12 --drop-densest-as-needed --shard 0/2 -o part-0.pmtiles areas.geojsonl
+manby -z12 --drop-densest-as-needed --shard 1/2 -o part-1.pmtiles areas.geojsonl
+manby merge -o areas.pmtiles part-0.pmtiles part-1.pmtiles
+```
+
 ## Thanks
 
 manby is built on tippecanoe. [Erica Fischer](https://github.com/e-n-f) started it in 2014 and, over twelve years at Mapbox and then at Felt, wrote nearly all of it. The way it thins features evenly across a zoom level until every tile fits, and the test suite that pins all of that down, are what manby keeps, and they are her work. Thank you, Erica.

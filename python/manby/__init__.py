@@ -148,7 +148,7 @@ def _write_ipc(data: Any, f: Any) -> None:
 
 
 class _Feed(threading.Thread):
-    """Writes a table to a named pipe that manby reads."""
+    """Writes a table to a named pipe that manby reads, on Unix."""
 
     def __init__(self, path: str, data: Any, proc: subprocess.Popen):
         super().__init__(daemon=True)
@@ -204,28 +204,36 @@ def tile(
 
     feeds = []
     tmp = None
-    for name, d in layers.items():
-        stream = _arrow(d)
-        if stream is None:
-            if name is None:
-                argv.append(os.fspath(d))
-            else:
-                argv.append("-L" + json.dumps({"file": os.fspath(d), "layer": name}))
-            continue
-        if tmp is None:
-            tmp = tempfile.mkdtemp(prefix="manby-")
-        # named as the tileset, which an unnamed layer is named after
-        stem = os.path.basename(os.fspath(output)).rsplit(".", 1)[0] or "layer"
-        path = os.path.join(tmp, str(len(feeds)), stem + ".arrows")
-        os.mkdir(os.path.dirname(path))
-        os.mkfifo(path)
-        source = {"file": path, "format": "arrow"}
-        if name is not None:
-            source["layer"] = name
-        argv.append("-L" + json.dumps(source))
-        feeds.append((path, stream))
-
     try:
+        for i, (name, d) in enumerate(layers.items()):
+            stream = _arrow(d)
+            if stream is None:
+                if name is None:
+                    argv.append(os.fspath(d))
+                else:
+                    argv.append(
+                        "-L" + json.dumps({"file": os.fspath(d), "layer": name})
+                    )
+                continue
+            if tmp is None:
+                tmp = tempfile.mkdtemp(prefix="manby-")
+            # named as the tileset, which an unnamed layer is named after
+            stem = os.path.basename(os.fspath(output)).rsplit(".", 1)[0] or "layer"
+            path = os.path.join(tmp, str(i), stem + ".arrows")
+            os.mkdir(os.path.dirname(path))
+            if hasattr(os, "mkfifo"):
+                os.mkfifo(path)
+                feeds.append((path, stream))
+            else:
+                # Windows has no named pipes among its files, so the table is
+                # written out first, as the R package writes its tables
+                with open(path, "wb") as f:
+                    _write_ipc(stream, f)
+            source = {"file": path, "format": "arrow"}
+            if name is not None:
+                source["layer"] = name
+            argv.append("-L" + json.dumps(source))
+
         proc = subprocess.Popen([binary(), *argv])
         threads = [_Feed(path, stream, proc) for path, stream in feeds]
         for t in threads:

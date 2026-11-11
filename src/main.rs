@@ -87,6 +87,12 @@ fn main() {
         manby::stats::parse_args(&stats_argv)
             .and_then(|o| manby::stats::stats(&o))
             .map(|_| false)
+    } else if subcommand == "merge" {
+        let mut merge_argv = vec![format!("{} merge", argv[0])];
+        merge_argv.extend_from_slice(&argv[2..]);
+        manby::shard::parse_args(&merge_argv)
+            .and_then(|o| manby::merge(&o))
+            .map(|summary| summary.incomplete)
     } else if subcommand == "serve" {
         let mut serve_argv = vec![format!("{} serve", argv[0])];
         serve_argv.extend_from_slice(&argv[2..]);

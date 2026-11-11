@@ -71,6 +71,7 @@ pub mod options;
 pub mod order;
 pub mod overzoom;
 pub mod serve;
+pub mod shard;
 #[doc(hidden)]
 pub mod sink;
 pub mod stats;
@@ -82,8 +83,10 @@ pub mod tiler;
 /// tippecanoe-rs, for the types of its that the options have.
 pub use tippecanoe;
 
+use std::collections::BTreeMap;
+
 use tippecanoe::errors::EXIT_NODATA;
-use tippecanoe::mbtiles::{make_metadata, merge_layermaps};
+use tippecanoe::mbtiles::{LayermapEntry, Metadata, make_metadata, merge_layermaps};
 use tippecanoe::options::{P_TILE_COMPRESSION, P_TILE_STATS};
 use tippecanoe::projection::tile2lonlat;
 
@@ -92,6 +95,7 @@ pub use filter::Filter;
 pub use join::{JoinOptions, JoinSummary, join};
 pub use mlt::{MltProfile, TileFormat};
 pub use options::Options;
+pub use shard::{MergeOptions, MergeSummary, merge};
 
 /// What a run produced.
 #[derive(Clone, Debug, Default)]
@@ -150,7 +154,21 @@ pub fn run(options: &Options) -> Result<Summary> {
     let plan = order::order(&mut store, &o)?;
     options::set_tippecanoe_globals(&o, plan.cluster_maxzoom);
 
-    let stats = tiler::tile_with(&store, &tile_options(&o, &plan, &store), sink.as_ref())?;
+    let mut topts = tile_options(&o, &plan, &store);
+    let split = o.shard.map(|s| {
+        let zoom = shard::pivot(&o, &plan);
+        let ranges = shard::split(&store, &o, &plan, zoom, s.count);
+        let (lo, hi) = ranges[s.index as usize];
+        topts.shard = Some(shard::Range {
+            index: s.index,
+            zoom,
+            lo,
+            hi,
+            minzoom: plan.minzoom,
+        });
+        (s, zoom, ranges)
+    });
+    let stats = tiler::tile_with(&store, &topts, sink.as_ref())?;
 
     // The tiler can also extend the zoom levels beyond the plan.
     let minzoom = plan.minzoom;
@@ -170,70 +188,28 @@ pub fn run(options: &Options) -> Result<Summary> {
         }
     }
 
-    // mbtiles-style bounding box and center
-    let (midx, midy) = (stats.midx, stats.midy);
-    let (mut minlon, mut maxlat) = tile2lonlat(midx as i64, midy as i64, maxzoom);
-    let (mut maxlon, mut minlat) = tile2lonlat(
-        midx.wrapping_add(1) as i64,
-        midy.wrapping_add(1) as i64,
-        maxzoom,
-    );
-
-    let mut midlat = (maxlat + minlat) / 2.0;
-    let mut midlon = (maxlon + minlon) / 2.0;
-
-    let b = store.bbox;
-    (minlon, maxlat) = tile2lonlat(b[0], b[1], 32);
-    (maxlon, minlat) = tile2lonlat(b[2], b[3], 32);
-
-    midlat = midlat.clamp(minlat, maxlat);
-    midlon = midlon.clamp(minlon, maxlon);
-
-    // antimeridian-aware bounding box: whichever of the two is narrower
-    let (b1, b2) = (store.bbox1, store.bbox2);
-    let nb = if b2[2] - b2[0] < b1[2] - b1[0] {
-        b2
-    } else {
-        b1
-    };
-    let (minlon2, maxlat2) = tile2lonlat(nb[0], nb[1], 32);
-    let (maxlon2, minlat2) = tile2lonlat(nb[2], nb[3], 32);
-
-    let mut merged = merge_layermaps(&[store.layermap(), stats.layermap.clone()]);
-    for v in merged.values_mut() {
-        v.minzoom = minzoom;
-        v.maxzoom = maxzoom;
+    let inputs = MetaInputs::new(&o, &plan, &store);
+    let metadata = inputs.metadata(&o.tileset_name(), &stats);
+    match split {
+        Some((s, zoom, ranges)) => {
+            let tiling = stats.shard.clone().unwrap_or_default();
+            if !tiling.again.is_empty() {
+                eprintln!("{}", shard::again_note(s, &tiling.again));
+            }
+            let record = shard::Record {
+                index: s.index,
+                count: s.count,
+                zoom,
+                fingerprint: shard::fingerprint(&inputs, &plan, &store, zoom, &ranges),
+                ranges,
+                name: o.name.clone(),
+                meta: inputs,
+                tiling,
+            };
+            sink.finish_with(&metadata, &[(shard::KEY.to_string(), record.to_json())])?;
+        }
+        None => sink.finish(&metadata)?,
     }
-
-    let fname = o.tileset_name();
-    let metadata = make_metadata(
-        &fname,
-        minzoom,
-        maxzoom,
-        minlat,
-        minlon,
-        maxlat,
-        maxlon,
-        minlat2,
-        minlon2,
-        maxlat2,
-        maxlon2,
-        midlat,
-        midlon,
-        o.attribution.as_deref(),
-        &merged,
-        true,
-        o.description.as_deref(),
-        !o.prevent.get(P_TILE_STATS),
-        &o.attribute_descriptions,
-        "tippecanoe",
-        &o.commandline,
-        &stats.strategies,
-        plan.basezoom,
-        plan.droprate,
-        o.retain_points_multiplier,
-    );
-    sink.finish(&metadata)?;
 
     Ok(Summary {
         features: store.features.len() as u64,
@@ -242,4 +218,120 @@ pub fn run(options: &Options) -> Result<Summary> {
         maxzoom,
         incomplete,
     })
+}
+
+/// What a run's metadata is made of besides its name and what the tiling
+/// found, which `manby merge` gets from each shard.
+#[doc(hidden)]
+#[derive(Clone, Debug, Default)]
+pub struct MetaInputs {
+    pub minzoom: i32,
+    /// The input's bounding boxes in world coordinates: the whole one, and
+    /// the two that put the antimeridian in different places.
+    pub bbox: [i64; 4],
+    pub bbox1: [i64; 4],
+    pub bbox2: [i64; 4],
+    pub attribution: Option<String>,
+    pub description: Option<String>,
+    pub tilestats: bool,
+    pub attribute_descriptions: BTreeMap<String, String>,
+    pub commandline: String,
+    pub basezoom: i32,
+    pub droprate: f64,
+    pub retain_points_multiplier: i32,
+    /// The input's layers.
+    pub layermap: BTreeMap<String, LayermapEntry>,
+    /// How the output stores its tiles.
+    pub tile_compression: bool,
+    pub tile_format: TileFormat,
+}
+
+impl MetaInputs {
+    pub fn new(o: &Options, plan: &order::Plan, store: &store::FeatureStore) -> MetaInputs {
+        MetaInputs {
+            minzoom: plan.minzoom,
+            bbox: store.bbox,
+            bbox1: store.bbox1,
+            bbox2: store.bbox2,
+            attribution: o.attribution.clone(),
+            description: o.description.clone(),
+            tilestats: !o.prevent.get(P_TILE_STATS),
+            attribute_descriptions: o.attribute_descriptions.clone(),
+            commandline: o.commandline.clone(),
+            basezoom: plan.basezoom,
+            droprate: plan.droprate,
+            retain_points_multiplier: o.retain_points_multiplier,
+            layermap: store.layermap(),
+            tile_compression: !o.prevent.get(P_TILE_COMPRESSION),
+            tile_format: o.tile_format,
+        }
+    }
+
+    /// The tileset's metadata, as tippecanoe makes it.
+    pub fn metadata(&self, name: &str, stats: &tiler::TileStats) -> Metadata {
+        let maxzoom = stats.maxzoom;
+
+        // mbtiles-style bounding box and center
+        let (midx, midy) = (stats.midx, stats.midy);
+        let (mut minlon, mut maxlat) = tile2lonlat(midx as i64, midy as i64, maxzoom);
+        let (mut maxlon, mut minlat) = tile2lonlat(
+            midx.wrapping_add(1) as i64,
+            midy.wrapping_add(1) as i64,
+            maxzoom,
+        );
+
+        let mut midlat = (maxlat + minlat) / 2.0;
+        let mut midlon = (maxlon + minlon) / 2.0;
+
+        let b = self.bbox;
+        (minlon, maxlat) = tile2lonlat(b[0], b[1], 32);
+        (maxlon, minlat) = tile2lonlat(b[2], b[3], 32);
+
+        midlat = midlat.clamp(minlat, maxlat);
+        midlon = midlon.clamp(minlon, maxlon);
+
+        // antimeridian-aware bounding box: whichever of the two is narrower
+        let (b1, b2) = (self.bbox1, self.bbox2);
+        let nb = if b2[2] - b2[0] < b1[2] - b1[0] {
+            b2
+        } else {
+            b1
+        };
+        let (minlon2, maxlat2) = tile2lonlat(nb[0], nb[1], 32);
+        let (maxlon2, minlat2) = tile2lonlat(nb[2], nb[3], 32);
+
+        let mut merged = merge_layermaps(&[self.layermap.clone(), stats.layermap.clone()]);
+        for v in merged.values_mut() {
+            v.minzoom = self.minzoom;
+            v.maxzoom = maxzoom;
+        }
+
+        make_metadata(
+            name,
+            self.minzoom,
+            maxzoom,
+            minlat,
+            minlon,
+            maxlat,
+            maxlon,
+            minlat2,
+            minlon2,
+            maxlat2,
+            maxlon2,
+            midlat,
+            midlon,
+            self.attribution.as_deref(),
+            &merged,
+            true,
+            self.description.as_deref(),
+            self.tilestats,
+            &self.attribute_descriptions,
+            "tippecanoe",
+            &self.commandline,
+            &stats.strategies,
+            self.basezoom,
+            self.droprate,
+            self.retain_points_multiplier,
+        )
+    }
 }

@@ -51,6 +51,7 @@ export default defineConfig({
 						{ label: 'Inputs larger than memory', slug: 'guides/memory' },
 						{ label: 'Joining tilesets', slug: 'guides/join' },
 						{ label: 'Fitting each tile on its own', slug: 'guides/per-tile' },
+						{ label: 'Builds split across machines', slug: 'guides/shards' },
 						{ label: "tippecanoe's other programs", slug: 'guides/programs' },
 						{ label: 'MapLibre Tiles', slug: 'guides/mlt' },
 						{ label: 'GeoParquet, DuckDB and Python', slug: 'guides/python' },

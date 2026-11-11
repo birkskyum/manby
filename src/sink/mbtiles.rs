@@ -40,6 +40,9 @@ macro_rules! mprintf {
     };
 }
 
+/// More metadata keys of manby's own, and their values.
+type Extra = Vec<(String, String)>;
+
 enum Message {
     Tile {
         z: u8,
@@ -54,6 +57,7 @@ enum Message {
     },
     Finish {
         metadata: Box<Metadata>,
+        extra: Extra,
     },
 }
 
@@ -146,9 +150,18 @@ impl TileSink for MbtilesSink {
         answer.recv().unwrap_or_else(|_| Err(self.writer_error()))
     }
 
-    fn finish(mut self: Box<Self>, metadata: &Metadata) -> Result<()> {
+    fn finish(self: Box<Self>, metadata: &Metadata) -> Result<()> {
+        self.finish_with(metadata, &[])
+    }
+
+    fn finish_with(
+        mut self: Box<Self>,
+        metadata: &Metadata,
+        extra: &[(String, String)],
+    ) -> Result<()> {
         let sent = self.send(Message::Finish {
             metadata: Box::new(tileset_metadata(metadata, self.tile_format).into_owned()),
+            extra: extra.to_vec(),
         });
         self.sender.take();
         let joined = match self.writer.take() {
@@ -233,7 +246,7 @@ pub fn mbtiles_open(path: &str, settings: &SinkSettings) -> Result<Connection> {
 /// The writer thread: inserts tiles until `Finish`, then writes the metadata
 /// and closes the database as `mbtiles_close` does.
 fn write_tiles(db: Connection, receiver: Receiver<Message>, allow_existing: bool) -> Result<()> {
-    let mut finish: Option<Box<Metadata>> = None;
+    let mut finish: Option<(Box<Metadata>, Extra)> = None;
     {
         let begin = |db: &Connection| {
             sqlite3_exec(db, c"BEGIN").map_err(|e| sqlite_error(format!("BEGIN: {}", e)))
@@ -331,8 +344,8 @@ fn write_tiles(db: Connection, receiver: Receiver<Message>, allow_existing: bool
                         return Err(e);
                     }
                 }
-                Message::Finish { metadata } => {
-                    finish = Some(metadata);
+                Message::Finish { metadata, extra } => {
+                    finish = Some((metadata, extra));
                     break;
                 }
             }
@@ -340,8 +353,15 @@ fn write_tiles(db: Connection, receiver: Receiver<Message>, allow_existing: bool
         commit(&db)?;
     }
 
-    if let Some(m) = finish {
+    if let Some((m, extra)) = finish {
         mbtiles_write_metadata(&db, &m, allow_existing)?;
+        for (k, v) in extra {
+            db.execute(
+                "INSERT INTO metadata (name, value) VALUES (?1, ?2)",
+                (&k, &v),
+            )
+            .map_err(|e| sqlite_error(format!("set {} in metadata: {}", k, e)))?;
+        }
     }
     mbtiles_close(db)
 }

@@ -82,6 +82,8 @@ pub struct Meta {
     /// The `vector_layers` array, as JSON.
     pub vector_layers: String,
     pub mlt: bool,
+    /// What a shard made with `--shard` records for `manby merge`.
+    pub shard: Option<String>,
 }
 
 pub struct Tileset {
@@ -554,6 +556,7 @@ fn pmtiles_meta(h: &HeaderV3, json: &[u8]) -> Meta {
         ]),
         vector_layers: vector_layers(json),
         mlt: h.tile_type == TILETYPE_MLT,
+        shard: string(get(crate::shard::KEY)),
     }
 }
 
@@ -589,5 +592,6 @@ fn pairs_meta(pairs: &HashMap<String, String>) -> Meta {
             .map(|j| vector_layers(j.as_bytes()))
             .unwrap_or_else(|| "[]".to_string()),
         mlt: pairs.get("format").is_some_and(|f| f == "mlt"),
+        shard: pairs.get(crate::shard::KEY).cloned(),
     }
 }

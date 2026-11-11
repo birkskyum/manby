@@ -55,6 +55,17 @@ pub trait TileSink: Send + Sync {
 
     /// Writes the metadata and closes the output.
     fn finish(self: Box<Self>, metadata: &Metadata) -> crate::Result<()>;
+
+    /// Writes the metadata with more keys of manby's own after it (string
+    /// values), and closes the output.
+    fn finish_with(
+        self: Box<Self>,
+        metadata: &Metadata,
+        extra: &[(String, String)],
+    ) -> crate::Result<()> {
+        let _ = extra;
+        self.finish(metadata)
+    }
 }
 
 /// How to prepare and write the output.

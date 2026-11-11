@@ -239,12 +239,24 @@ impl TileSink for DirSink {
         dir_erase_zoom(&self.dir, z as i32, self.tile_format)
     }
 
-    fn finish(mut self: Box<Self>, metadata: &Metadata) -> Result<()> {
+    fn finish(self: Box<Self>, metadata: &Metadata) -> Result<()> {
+        self.finish_with(metadata, &[])
+    }
+
+    fn finish_with(
+        mut self: Box<Self>,
+        metadata: &Metadata,
+        extra: &[(String, String)],
+    ) -> Result<()> {
         self.stop();
         if let Some(e) = self.failed() {
             return Err(e);
         }
-        dir_write_metadata(&self.dir, &tileset_metadata(metadata, self.tile_format))
+        write_metadata(
+            &self.dir,
+            &tileset_metadata(metadata, self.tile_format),
+            extra,
+        )
     }
 }
 
@@ -354,6 +366,11 @@ fn out(state: &mut JsonWriter<'_>, k: &str, v: &str) {
 
 /// tippecanoe's `dir_write_metadata`, returning errors instead of exiting.
 pub fn dir_write_metadata(dir: &str, m: &Metadata) -> Result<()> {
+    write_metadata(dir, m, &[])
+}
+
+/// The metadata with more string keys at the end.
+fn write_metadata(dir: &str, m: &Metadata, extra: &[(String, String)]) -> Result<()> {
     let metadata = dir.to_string() + "/metadata.json";
     if fs::metadata(&metadata).is_ok() {
         // Leave existing metadata in place with --allow-existing
@@ -434,6 +451,9 @@ pub fn dir_write_metadata(dir: &str, m: &Metadata) -> Result<()> {
             }
             json += "}";
             out(&mut state, "json", &json);
+        }
+        for (k, v) in extra {
+            out(&mut state, k, v);
         }
 
         state.json_write_newline();

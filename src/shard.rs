@@ -41,7 +41,7 @@ use crate::store::FeatureStore;
 pub const DEFAULT_ZOOM: i32 = 6;
 
 /// The metadata key of a shard's record.
-pub const KEY: &str = "manby_shard";
+pub(crate) const KEY: &str = "manby_shard";
 
 /// `--shard I/N`: part `index` of `count`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,11 +63,12 @@ impl Shard {
 /// The position of tile `z/x/y` along its zoom's Hilbert curve, from 0 to
 /// `4^z - 1`. The four children of the tile at `d` are at `4d` to `4d + 3`,
 /// so a run of tiles at one zoom is a run at every zoom below it.
-pub fn hilbert(z: i32, x: u32, y: u32) -> u64 {
+pub(crate) fn hilbert(z: i32, x: u32, y: u32) -> u64 {
     tippecanoe::pmtiles::zxy_to_tileid(z as u8, x, y) - crate::sink::first_tile_id(z as u8)
 }
 
 /// The part of the tiles that one shard makes.
+#[doc(hidden)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Range {
     pub index: u32,
@@ -111,7 +112,7 @@ impl Range {
 
 /// The pivot zoom of a run: `--shard-zoom`, or 6, kept from the first tile's
 /// zoom and the minimum zoom down to the maximum zoom.
-pub fn pivot(o: &Options, plan: &Plan) -> i32 {
+pub(crate) fn pivot(o: &Options, plan: &Plan) -> i32 {
     let low = plan.minzoom.max(plan.iz as i32);
     let high = plan.maxzoom.max(low);
     o.shard_zoom.unwrap_or(DEFAULT_ZOOM).clamp(low, high)
@@ -124,7 +125,7 @@ pub fn pivot(o: &Options, plan: &Plan) -> i32 {
 /// over the pivot tiles its bounding box covers. Shard 0 also makes the
 /// zooms above the pivot, which count as reading each vertex once more for
 /// every two of them.
-pub fn split(
+pub(crate) fn split(
     store: &FeatureStore,
     o: &Options,
     plan: &Plan,
@@ -265,7 +266,7 @@ fn cut(cells: &[(u64, u64)], zoom: i32, count: u32, above: u64) -> Vec<(u64, u64
 /// What a shard records in its tileset's metadata for `manby merge`: what
 /// the whole run's metadata is made of, and what its own tiling found.
 #[derive(Clone, Debug, Default)]
-pub struct Record {
+pub(crate) struct Record {
     pub index: u32,
     pub count: u32,
     pub zoom: i32,
@@ -1099,7 +1100,7 @@ fn get_bool(v: JsonRef<'_>, k: &str) -> Option<bool> {
 }
 
 /// The checks `--shard` makes of the other options.
-pub fn check_options(o: &Options) -> Result<()> {
+pub(crate) fn check_options(o: &Options) -> Result<()> {
     let Some(_) = o.shard else {
         if o.shard_zoom.is_some() {
             return Err(Error::new(

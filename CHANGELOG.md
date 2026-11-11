@@ -1,5 +1,15 @@
 The changes in each version of manby, from the titles of the pull requests that made them.
 
+## [0.2.3](https://github.com/birkskyum/manby/compare/v0.2.2...v0.2.3) - 2026-11-11
+
+### Added
+
+- --shard and manby merge, builds split across machines ([#54](https://github.com/birkskyum/manby/pull/54))
+
+### Fixed
+
+- Keep the shard record off the public tileset Meta ([#56](https://github.com/birkskyum/manby/pull/56))
+
 ## [0.2.2](https://github.com/birkskyum/manby/compare/v0.2.1...v0.2.2) - 2026-11-11
 
 ### Added

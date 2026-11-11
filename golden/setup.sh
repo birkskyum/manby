@@ -41,6 +41,25 @@ mirror() {
 
 rm -rf "$dst/tests"
 mirror "$src" "$dst/tests"
+
+# tippecanoe records its command line in the metadata, and Git's bash starts a
+# Windows program with its full path as its name: ./tippecanoe-decode puts the
+# names that the expected outputs have back in what it prints. It is written
+# before tippecanoe-decode.exe exists, since Git's bash otherwise takes
+# tippecanoe-decode to mean tippecanoe-decode.exe and writes over it.
+if [ -n "$exe" ]; then
+	rm -f "$dst/tippecanoe-decode.exe"
+	{
+		echo '#!/bin/bash'
+		echo 'set -o pipefail'
+		echo "MANBY_RUN_AS=tippecanoe-decode '$manby' \"\$@\" |"
+		cat <<'END'
+	sed -E "s#'[A-Za-z]:[^' ]*[\\\\/](tippecanoe|tile-join)\\.exe'#./\\1#g"
+END
+	} >"$dst/tippecanoe-decode"
+	chmod +x "$dst/tippecanoe-decode"
+fi
+
 ln -sf "$manby" "$dst/tippecanoe$exe"
 ln -sf "$manby" "$dst/tile-join$exe"
 ln -sf "$manby" "$dst/tippecanoe-decode$exe"
@@ -48,16 +67,3 @@ ln -sf "$manby" "$dst/tippecanoe-enumerate$exe"
 ln -sf "$manby" "$dst/tippecanoe-json-tool$exe"
 ln -sf "$manby" "$dst/tippecanoe-overzoom$exe"
 ln -sf "$bin/examples/json2geobuf$exe" "$dst/json2geobuf$exe"
-
-# tippecanoe records its command line in the metadata, and Git's bash starts a
-# Windows program with its full path as its name: ./tippecanoe-decode puts the
-# names that the expected outputs have back in what it prints.
-if [ -n "$exe" ]; then
-	cat >"$dst/tippecanoe-decode" <<'END'
-#!/bin/bash
-set -o pipefail
-"$(dirname "$0")/tippecanoe-decode.exe" "$@" |
-	sed -E "s#'[A-Za-z]:[^' ]*[\\\\/](tippecanoe|tile-join)\\.exe'#./\\1#g"
-END
-	chmod +x "$dst/tippecanoe-decode"
-fi

@@ -646,7 +646,7 @@ pub fn merge(o: &MergeOptions) -> Result<MergeSummary> {
     for path in &o.inputs {
         let ts = crate::serve::tileset::Tileset::new(path, String::new()).map_err(open)?;
         let opened = ts.opened().map_err(open)?;
-        let text = opened.meta.shard.clone().ok_or_else(|| {
+        let text = opened.shard.clone().ok_or_else(|| {
             Error::new(
                 EXIT_ARGS,
                 format!("{}: {}: not a shard, made with --shard", o.program, path),

@@ -1,5 +1,12 @@
 The changes in each version of manby, from the titles of the pull requests that made them.
 
+## [0.2.2](https://github.com/birkskyum/manby/compare/v0.2.1...v0.2.2) - 2026-11-11
+
+### Added
+
+- Release manby for Windows ([#53](https://github.com/birkskyum/manby/pull/53))
+- Build and test manby on Windows ([#50](https://github.com/birkskyum/manby/pull/50))
+
 ## [0.2.1](https://github.com/birkskyum/manby/compare/v0.2.0...v0.2.1) - 2026-11-10
 
 ### Added

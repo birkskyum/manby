@@ -168,10 +168,10 @@ const fn decode_tables() -> ([u8; 256], [u8; 256]) {
     let mut decodex = [0u8; 256];
     let mut decodey = [0u8; 256];
 
-    let mut ix: usize = 0;
+    let mut ix: u64 = 0;
     while ix < 256 {
-        let mut xx: usize = 0;
-        let mut yy: usize = 0;
+        let mut xx: u64 = 0;
+        let mut yy: u64 = 0;
 
         let mut i = 0;
         while i < 32 {
@@ -180,8 +180,8 @@ const fn decode_tables() -> ([u8; 256], [u8; 256]) {
             i += 1;
         }
 
-        decodex[ix] = xx as u8;
-        decodey[ix] = yy as u8;
+        decodex[ix as usize] = xx as u8;
+        decodey[ix as usize] = yy as u8;
         ix += 1;
     }
 

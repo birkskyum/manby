@@ -19,6 +19,9 @@
 #' }
 #' @export
 manby_binary <- function() {
+  if (in_webr()) {
+    not_in_webr("The manby program")
+  }
   path <- getOption("manby.binary", Sys.getenv("MANBY_BINARY"))
   if (nzchar(path)) {
     if (!file.exists(path)) {
@@ -36,6 +39,9 @@ manby_binary <- function() {
 #' @rdname manby_binary
 #' @export
 install_manby <- function(version = own_version(), force = FALSE) {
+  if (in_webr()) {
+    not_in_webr("The manby program")
+  }
   version <- sub("^v", "", version)
   path <- cached(version)
   if (file.exists(path) && !force) {

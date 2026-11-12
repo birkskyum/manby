@@ -466,10 +466,7 @@ fn open_source(src: &Source) -> Result<(Option<std::fs::File>, Option<memmap2::M
 /// Reads every input named in `options` into one store, in input order.
 pub fn read_inputs(options: &Options) -> crate::Result<FeatureStore> {
     let threads = options.thread_count();
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build()
-        .map_err(|e| Error::new(EXIT_PTHREAD, e.to_string()))?;
+    let pool = crate::pool::Pool::new(threads)?;
     pool.install(|| read_inputs1(options, threads))
 }
 

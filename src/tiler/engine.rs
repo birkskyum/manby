@@ -605,8 +605,8 @@ struct Level {
     /// the most vertices (`Totals::top`).
     top: Option<(i64, u32, u32)>,
     tilestats: Vec<BTreeMap<String, LayermapEntry>>,
-    zoom_tile_size: usize,
-    zoom_feature_count: usize,
+    zoom_tile_size: u64,
+    zoom_feature_count: u64,
     strategy: Strategy,
     /// The zoom counter after the last pass, where the strategies go.
     strategy_z: i32,
@@ -1393,8 +1393,8 @@ impl<'d, 's> Driver<'d, 's> {
         }
 
         let level = &mut self.levels[k];
-        strategy.tile_size = level.zoom_tile_size;
-        strategy.feature_count = level.zoom_feature_count;
+        strategy.tile_size = level.zoom_tile_size as usize;
+        strategy.feature_count = level.zoom_feature_count as usize;
         level.strategy = strategy;
         level.strategy_z = z;
 
@@ -1671,6 +1671,7 @@ impl<'d, 's> Driver<'d, 's> {
 }
 
 /// How long the coordinator waits for the next result before it sleeps.
+#[cfg(not(target_family = "wasm"))]
 const COORDINATOR_SPIN: std::time::Duration = std::time::Duration::from_micros(200);
 
 /// The next result, waited for awake for a moment before sleeping. Results
@@ -1678,6 +1679,7 @@ const COORDINATOR_SPIN: std::time::Duration = std::time::Duration::from_micros(2
 /// time the coordinator sleeps, waking it costs more than that (much more
 /// in a virtual machine, where it wakes a virtual processor), while the
 /// pool runs out of tasks.
+#[cfg(not(target_family = "wasm"))]
 fn recv_soon(rx: &Receiver<Done>) -> Option<Done> {
     let started = std::time::Instant::now();
     loop {
@@ -1688,6 +1690,23 @@ fn recv_soon(rx: &Receiver<Done>) -> Option<Done> {
                 return rx.recv().ok();
             }
             Err(TryRecvError::Empty) => std::hint::spin_loop(),
+        }
+    }
+}
+
+/// The next result. Without threads the tasks wait in this thread's queue,
+/// so it runs them until one is done.
+#[cfg(target_family = "wasm")]
+fn recv_soon(rx: &Receiver<Done>) -> Option<Done> {
+    loop {
+        match rx.try_recv() {
+            Ok(done) => return Some(done),
+            Err(TryRecvError::Disconnected) => return None,
+            Err(TryRecvError::Empty) => {
+                if rayon::yield_now() != Some(rayon::Yield::Executed) {
+                    return rx.recv().ok();
+                }
+            }
         }
     }
 }

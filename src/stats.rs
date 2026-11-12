@@ -334,6 +334,12 @@ fn mlt_counts(_: &[u8]) -> std::result::Result<Counts, String> {
 
 /// Prints the reports, as tables or as JSON.
 pub fn stats(o: &StatsOptions) -> Result<()> {
+    print!("{}", text(o)?);
+    Ok(())
+}
+
+/// The reports that [`stats`] prints.
+pub fn text(o: &StatsOptions) -> Result<String> {
     let reports: Vec<Report> = o
         .tilesets
         .iter()
@@ -349,8 +355,7 @@ pub fn stats(o: &StatsOptions) -> Result<()> {
     } else {
         reports.iter().map(table).collect::<Vec<_>>().join("\n")
     };
-    print!("{}", text);
-    Ok(())
+    Ok(text)
 }
 
 /// Numbers with thousands separators.

@@ -551,13 +551,7 @@ impl Options {
 
     /// The number of worker threads to use.
     pub fn thread_count(&self) -> usize {
-        if self.threads > 0 {
-            self.threads
-        } else {
-            std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(1)
-        }
+        crate::pool::threads(self.threads)
     }
 
     /// The checks and adjustments tippecanoe's main.cpp makes once the options

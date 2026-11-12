@@ -14,7 +14,7 @@
 
 use std::ffi::{CStr, c_char};
 use std::fs::File;
-use std::sync::mpsc::{Receiver, sync_channel};
+use std::sync::mpsc::{Receiver, channel, sync_channel};
 use std::sync::{Arc, Mutex};
 
 use memmap2::Mmap;
@@ -235,6 +235,43 @@ const TILES_QUERY: &CStr =
     c"SELECT zoom_level, tile_column, tile_row, tile_data from tiles order by zoom_level, tile_column, tile_row;";
 
 /// Rows per chunk handed over by an MBTiles reader thread.
+/// Reads the tiles of the MBTiles database `path` and hands them to `send`
+/// in chunks, until it refuses one.
+fn read_rows(path: &str, mut send: impl FnMut(Vec<TileRef>) -> bool) {
+    let Ok(db) = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
+        return;
+    };
+    let Ok(mut stmt) = RawStmt::prepare(&db, TILES_QUERY) else {
+        return;
+    };
+    let mut chunk = Vec::with_capacity(CHUNK_ROWS);
+    // As in tile-join, anything but a row ends the tiles.
+    while stmt.step() == ffi::SQLITE_ROW {
+        let zoom = stmt.column_int(0) as i64;
+        let tms_y = stmt.column_int(2);
+        chunk.push(TileRef {
+            z: zoom,
+            x: stmt.column_int(1) as i64,
+            y: 1i64
+                .wrapping_shl(zoom as u32)
+                .wrapping_sub(1)
+                .wrapping_sub(tms_y as i64),
+            loc: Loc::Data(Arc::from(stmt.column_blob(3))),
+        });
+        if chunk.len() == CHUNK_ROWS
+            && !send(std::mem::replace(
+                &mut chunk,
+                Vec::with_capacity(CHUNK_ROWS),
+            ))
+        {
+            return;
+        }
+    }
+    if !chunk.is_empty() {
+        send(chunk);
+    }
+}
+
 const CHUNK_ROWS: usize = 4096;
 
 impl Source {
@@ -322,49 +359,21 @@ impl Source {
         let generator = metadata_text(&db, c"SELECT value from metadata where name = 'generator'")
             .map(|g| String::from_utf8_lossy(&g).into_owned());
 
-        // The rows are read on a thread of their own, on a connection of its own.
-        let (sender, receiver) = sync_channel::<Vec<TileRef>>(4);
+        // The rows are read on a thread of their own, on a connection of its
+        // own, or on WebAssembly, which has no threads, all of them at once.
         let path = fname.to_string();
-        std::thread::Builder::new()
-            .name("mbtiles reader".to_string())
-            .spawn(move || {
-                let Ok(db) = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-                else {
-                    return;
-                };
-                let Ok(mut stmt) = RawStmt::prepare(&db, TILES_QUERY) else {
-                    return;
-                };
-                let mut chunk = Vec::with_capacity(CHUNK_ROWS);
-                // As in tile-join, anything but a row ends the tiles.
-                while stmt.step() == ffi::SQLITE_ROW {
-                    let zoom = stmt.column_int(0) as i64;
-                    let tms_y = stmt.column_int(2);
-                    chunk.push(TileRef {
-                        z: zoom,
-                        x: stmt.column_int(1) as i64,
-                        y: 1i64
-                            .wrapping_shl(zoom as u32)
-                            .wrapping_sub(1)
-                            .wrapping_sub(tms_y as i64),
-                        loc: Loc::Data(Arc::from(stmt.column_blob(3))),
-                    });
-                    if chunk.len() == CHUNK_ROWS
-                        && sender
-                            .send(std::mem::replace(
-                                &mut chunk,
-                                Vec::with_capacity(CHUNK_ROWS),
-                            ))
-                            .is_err()
-                    {
-                        return;
-                    }
-                }
-                if !chunk.is_empty() {
-                    let _ = sender.send(chunk);
-                }
-            })
-            .map_err(|e| Error::new(EXIT_FAILURE, format!("mbtiles reader: {}", e)))?;
+        let receiver = if cfg!(target_family = "wasm") {
+            let (sender, receiver) = channel::<Vec<TileRef>>();
+            read_rows(&path, |chunk| sender.send(chunk).is_ok());
+            receiver
+        } else {
+            let (sender, receiver) = sync_channel::<Vec<TileRef>>(4);
+            std::thread::Builder::new()
+                .name("mbtiles reader".to_string())
+                .spawn(move || read_rows(&path, |chunk| sender.send(chunk).is_ok()))
+                .map_err(|e| Error::new(EXIT_FAILURE, format!("mbtiles reader: {}", e)))?;
+            receiver
+        };
 
         Ok(Source {
             name: fname.to_string(),

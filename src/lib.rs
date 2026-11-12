@@ -53,6 +53,8 @@ pub mod buf;
 #[doc(hidden)]
 pub mod clean;
 #[doc(hidden)]
+pub mod command;
+#[doc(hidden)]
 pub mod compress;
 #[doc(hidden)]
 pub mod crs;
@@ -70,6 +72,7 @@ pub mod options;
 #[doc(hidden)]
 pub mod order;
 pub mod overzoom;
+mod pool;
 pub mod serve;
 pub mod shard;
 #[doc(hidden)]

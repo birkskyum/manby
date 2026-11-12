@@ -3,7 +3,7 @@
 # that Cargo.toml's rust-version promises, the unit tests, tippecanoe's golden
 # tests as MVT and as MLT on Linux (x86-64 and ARM) and macOS, the unit and
 # golden tests on Windows, the Python module and the R package on Linux and
-# Windows, and the site.
+# Windows, the R package in webR, and the site.
 name: CI
 
 on:
@@ -134,6 +134,25 @@ jobs:
           working-directory: r
         env:
           MANBY_BINARY: ${{ github.workspace }}/target/debug/manby${{ runner.os == 'Windows' && '.exe' || '' }}
+
+  # The R package as R-universe builds it for webR, with manby from this
+  # commit, and its tests run in webR in Node.js.
+  webr:
+    runs-on: ubuntu-24.04
+    container: ghcr.io/r-wasm/webr:main
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the R package for webR
+        run: |
+          export PATH=/opt/R/current/bin:$PATH
+          R CMD build --no-build-vignettes --no-manual r
+          mkdir webr-repo
+          MANBY_SOURCE=$GITHUB_WORKSPACE PKG_SYSREQS=false R -q -e "rwasm::build(paste0('./', Sys.glob('manby_*.tar.gz')), out_dir = 'webr-repo')"
+      - name: Run its tests in webR
+        working-directory: tests/webr
+        run: |
+          npm ci --no-audit --no-fund
+          node run.mjs ../../webr-repo/manby_*.tgz
 
   site:
     runs-on: ubuntu-24.04

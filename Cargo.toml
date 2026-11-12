@@ -48,12 +48,14 @@ object_store = { version = "0.14", default-features = false, features = ["aws", 
 tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
 futures = { version = "0.3", optional = true }
 url = { version = "2", optional = true }
-bytes = { version = "1", optional = true }
+# GeoParquet held in memory, from object storage, or on WebAssembly from a file
+bytes = "1"
 webpki-root-certs = { version = "1", optional = true }
 arrow-select = "60.1"
 
-# jemalloc doesn't build for Windows, where mimalloc takes its place
-[target.'cfg(not(windows))'.dependencies]
+# jemalloc doesn't build for Windows, where mimalloc takes its place, or
+# for WebAssembly, which keeps Rust's own allocator
+[target.'cfg(not(any(windows, target_family = "wasm")))'.dependencies]
 tikv-jemallocator = "0.7"
 
 [target.'cfg(windows)'.dependencies]
@@ -68,7 +70,7 @@ libz-sys = "1.1"
 # cargo +1.98.1 build --release --features mlt
 mlt = ["dep:mlt-core"]
 # GeoParquet read from s3://, gs://, az:// and https:// URLs
-remote = ["dep:object_store", "dep:tokio", "dep:futures", "dep:url", "dep:bytes", "dep:webpki-root-certs", "parquet/object_store"]
+remote = ["dep:object_store", "dep:tokio", "dep:futures", "dep:url", "dep:webpki-root-certs", "parquet/object_store"]
 
 [[example]]
 name = "mlt_sizes"

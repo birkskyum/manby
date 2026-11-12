@@ -346,17 +346,8 @@ pub fn tile_with(
     topts: &TileOptions,
     sink: &dyn TileSink,
 ) -> crate::Result<TileStats> {
-    let threads = if topts.threads == 0 {
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
-    } else {
-        topts.threads
-    };
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build()
-        .map_err(|e| crate::Error::new(tippecanoe::errors::EXIT_PTHREAD, e.to_string()))?;
+    let threads = crate::pool::threads(topts.threads);
+    let pool = crate::pool::Pool::new(threads)?;
     let started = std::time::Instant::now();
     let helpers = std::sync::Arc::new(util::Helpers::new(threads.saturating_sub(1)));
     let ctx = pool.install(|| engine::Ctx::new(store, topts, helpers));

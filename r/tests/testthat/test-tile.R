@@ -1,7 +1,9 @@
 # The same features from sf, a data frame, nanoarrow, Arrow and DuckDB make
 # the tiles that manby makes from GDAL's FlatGeobuf of them, as tippecanoe.
+# In webR, manby is built into the package, and the programs are left out.
 
-skip_if(inherits(try(manby_binary(), silent = TRUE), "try-error"), "manby is not available")
+webr <- manby:::in_webr()
+skip_if(!webr && inherits(try(manby_binary(), silent = TRUE), "try-error"), "manby is not available")
 skip_if_not_installed("sf")
 
 # A PMTiles archive's tile data and layers.
@@ -105,6 +107,7 @@ test_that("options become tippecanoe's long options", {
 })
 
 test_that("serve serves a tileset and its map", {
+  skip_if(webr, "webR can't run programs")
   server <- serve(file.path(dir, "fgb", "points.pmtiles"), port = 0, open = FALSE)
   on.exit(server$stop())
   expect_s3_class(server, "manby_server")
@@ -125,6 +128,20 @@ test_that("tile_stats reports the tiles' sizes and features", {
   expect_equal(sum(s$layers$tiles), sum(s$zooms$tiles))
 })
 
+test_that("serve and the program are not in webR", {
+  skip_if_not(webr)
+  expect_error(serve(file.path(dir, "fgb", "points.pmtiles")), "does not run in webR")
+  expect_error(manby_binary(), "does not run in webR")
+})
+
 test_that("manby runs", {
+  # in webR, manby writes to the console itself
+  skip_if(webr, "manby's messages don't go through R in webR")
   expect_match(paste(capture.output(manby("--version"), type = "message"), collapse = ""), "^manby ")
+})
+
+test_that("manby runs in webR", {
+  skip_if_not(webr)
+  expect_no_error(manby("--version"))
+  expect_error(manby("--nothing-like-this"), class = "manby_error")
 })

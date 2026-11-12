@@ -694,7 +694,8 @@ pub fn center_of_mass(dv: &DrawVec, start: usize, end: usize, centre: Draw) -> D
 pub fn center_of_mass_mp(dv: &DrawVec) -> Draw {
     let mut ringx: f64 = 0.0;
     let mut ringy: f64 = 0.0;
-    let mut ringcount: usize = 0;
+    // size_t, which is 64 bits where tippecanoe runs
+    let mut ringcount: u64 = 0;
 
     let mut i = 0;
     while i < dv.len() {
@@ -725,7 +726,7 @@ pub fn center_of_mass_mp(dv: &DrawVec) -> Draw {
             ringx += center.x as f64 * area;
             ringy += center.y as f64 * area;
             // size_t += double converts the sum back to size_t
-            ringcount = (ringcount as f64 + area) as usize;
+            ringcount = (ringcount as f64 + area) as u64;
 
             i = j - 1;
         }
@@ -877,7 +878,7 @@ fn candidate_cmp(a: &Candidate, c: &Candidate) -> Ordering {
 pub fn polygon_to_anchor(geom: &DrawVec) -> DrawVec {
     let mut start: usize = 0;
     let mut end: usize = 0;
-    let mut best_area: usize = 0;
+    let mut best_area: u64 = 0;
     let mut points: Vec<Sorty> = Vec::new();
 
     // find the largest outer ring, which will be the best thing
@@ -903,7 +904,7 @@ pub fn polygon_to_anchor(geom: &DrawVec) -> DrawVec {
             if area > best_area as f64 {
                 start = i;
                 end = j;
-                best_area = area as usize;
+                best_area = area as u64;
             }
 
             i = j - 1;

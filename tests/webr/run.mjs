@@ -1,28 +1,24 @@
-// Runs the R package's tests in webR, in Node.js, with the package as
-// webR's build of it, in the repository of R packages that rwasm made.
+// Runs the R package's tests in webR, in Node.js, with webR's build of the
+// package that rwasm made.
 //
-//   node tests/webr/run.mjs <rwasm's repository>
+//   node tests/webr/run.mjs <manby_*.tgz>
 import { WebR } from 'webr';
-import { readdirSync } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { resolve, dirname, basename } from 'node:path';
 
-const repo = resolve(process.argv[2]);
+const built = resolve(process.argv[2]);
 const tests = resolve(import.meta.dirname, '../../r/tests');
-const contrib = join(repo, 'bin/emscripten/contrib');
-const version = readdirSync(contrib)[0];
-const built = readdirSync(join(contrib, version)).find((f) => /^manby_.*\.tgz$/.test(f));
 
 const webR = new WebR();
 await webR.init();
-for (const [dir, at] of [[repo, '/repo'], [tests, '/tests']]) {
+for (const [dir, at] of [[dirname(built), '/built'], [tests, '/tests']]) {
   await webR.FS.mkdir(at);
   await webR.FS.mount('NODEFS', { root: dir }, at);
 }
-await webR.installPackages(['jsonlite', 'nanoarrow', 'processx', 'sf', 'testthat', 'withr'], { quiet: true });
+await webR.installPackages(['dbplyr', 'dplyr', 'duckdb', 'jsonlite', 'nanoarrow', 'processx', 'sf', 'testthat', 'withr'], { quiet: true });
 
 const shelter = await new webR.Shelter();
 const result = await shelter.captureR(`
-  untar("/repo/bin/emscripten/contrib/${version}/${built}", exdir = .libPaths()[1])
+  untar("/built/${basename(built)}", exdir = .libPaths()[1], tar = "internal")
   library(manby)
   results <- as.data.frame(testthat::test_dir(
     "/tests/testthat", package = "manby", load_package = "installed",

@@ -62,8 +62,8 @@ pub struct MakeResult {
     /// The strategy counts, if the tile succeeded (`strategy_out->add_from`).
     pub strategy: Option<Strategy>,
     pub th_out: Thresholds,
-    pub tile_size_out: usize,
-    pub feature_count_out: usize,
+    pub tile_size_out: u64,
+    pub feature_count_out: u64,
     pub still_dropping: bool,
     /// Attribute statistics added while making the tile.
     pub tilestats: BTreeMap<String, LayermapEntry>,
@@ -935,8 +935,10 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
     };
 
     let retain_points_multiplier = o.retain_points_multiplier;
-    let max_tile_size = o.max_tile_size;
-    let max_tile_features = o.max_tile_features;
+    // these and the counts scaled by them are tippecanoe's size_t, 64 bits
+    // also where usize is 32
+    let max_tile_size = o.max_tile_size as u64;
+    let max_tile_features = o.max_tile_features as u64;
     let cluster_distance = o.cluster_distance;
     let cluster_maxzoom = o.cluster_maxzoom;
     let drop_by_attribute = o.drop_by_attribute.as_deref().unwrap_or("");
@@ -1055,14 +1057,14 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
         let mut shared_nodes = DrawVec::new();
 
         let mut tile_detail = line_detail;
-        let mut skipped: usize = 0;
-        let mut kept: usize = 0;
+        let mut skipped: u64 = 0;
+        let mut kept: u64 = 0;
 
         let mut unsimplified_geometry_size: usize = 0;
         let mut simplified_geometry_through: usize = 0;
 
-        let mut lead_features_count: usize = 0;
-        let mut other_multiplier_cluster_features_count: usize = 0;
+        let mut lead_features_count: u64 = 0;
+        let mut other_multiplier_cluster_features_count: u64 = 0;
 
         let mut too_many_features = false;
         let mut too_many_bytes = false;
@@ -1815,11 +1817,11 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
         let mut tile: Vec<LayerEnc<'_>> = Vec::new();
         let mut mvt_tile = MvtTile::default();
         let mut tile_geoms: Vec<&DrawVec> = Vec::new();
-        let mut feature_count: usize = 0;
+        let mut feature_count: u64 = 0;
 
         for (li, lf) in layer_list.iter_mut() {
             let layer_features = &mut lf.features;
-            feature_count += layer_features.len();
+            feature_count += layer_features.len() as u64;
             for f in layer_features.iter_mut() {
                 let t = f.t as i32;
                 if t == VT_LINE || t == VT_POLYGON {
@@ -1972,7 +1974,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                     &mut res,
                     adjusted_max_tile_features as f64,
                     adjusted_feature_count as f64,
-                    feature_count > layer_list.len(),
+                    feature_count > layer_list.len() as u64,
                     0.95,
                     &mut Retry {
                         gamma: &mut gamma,
@@ -2041,7 +2043,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                 && !o.zlib_tiles
                 && !too_many_bytes
                 && (o.p(P_KILOBYTE_LIMIT) || {
-                    let bound = crate::compress::zlib_bound(pbf.len());
+                    let bound = crate::compress::zlib_bound(pbf.len()) as u64;
                     let adjusted = match kept {
                         0 => Some(bound),
                         _ => bound.checked_mul(kept + skipped).map(|b| b / kept),
@@ -2076,7 +2078,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                 );
             }
 
-            let mut adjusted_tile_size = compressed.len();
+            let mut adjusted_tile_size = compressed.len() as u64;
             if kept > 0 {
                 adjusted_tile_size = adjusted_tile_size.wrapping_mul(kept + skipped) / kept;
             }
@@ -2090,7 +2092,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                 }
 
                 if !quiet {
-                    if adjusted_tile_size != compressed.len() {
+                    if adjusted_tile_size != compressed.len() as u64 {
                         eprintln!(
                             "tile {}/{}/{} size is {} (probably really {}) with detail {}, >{}    ",
                             z,
@@ -2124,7 +2126,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
                     &mut res,
                     adjusted_max_tile_size as f64,
                     adjusted_tile_size as f64,
-                    feature_count > layer_list.len(),
+                    feature_count > layer_list.len() as u64,
                     0.75,
                     &mut Retry {
                         gamma: &mut gamma,

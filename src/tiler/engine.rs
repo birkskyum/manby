@@ -605,8 +605,8 @@ struct Level {
     /// the most vertices (`Totals::top`).
     top: Option<(i64, u32, u32)>,
     tilestats: Vec<BTreeMap<String, LayermapEntry>>,
-    zoom_tile_size: usize,
-    zoom_feature_count: usize,
+    zoom_tile_size: u64,
+    zoom_feature_count: u64,
     strategy: Strategy,
     /// The zoom counter after the last pass, where the strategies go.
     strategy_z: i32,
@@ -1393,8 +1393,8 @@ impl<'d, 's> Driver<'d, 's> {
         }
 
         let level = &mut self.levels[k];
-        strategy.tile_size = level.zoom_tile_size;
-        strategy.feature_count = level.zoom_feature_count;
+        strategy.tile_size = level.zoom_tile_size as usize;
+        strategy.feature_count = level.zoom_feature_count as usize;
         level.strategy = strategy;
         level.strategy_z = z;
 

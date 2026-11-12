@@ -173,6 +173,14 @@ Compressing with zlib to compare costs processor time where shared tiles are man
 - **Damaged PMTiles.** Where tile-join throws for an archive it cannot read and aborts with the C++ runtime's message, manby join names the archive, says what is wrong, and exits with `EXIT_READ`.
 - **Errors inside tippecanoe-rs.** A feature filter that tippecanoe-rs's evaluator does not understand still ends the process from inside it, as in tile-join, rather than coming back as an error.
 
+## WebAssembly and webR
+
+manby builds for `wasm32-unknown-emscripten`, for the R package in webR, where R can't run programs. There are no threads there. `src/pool.rs` makes a pool of the calling thread, as rayon's global pool, and the tile driver, which otherwise waits for its tasks, runs them from its own queue (`rayon::yield_now`) until one is done. The writers and readers that have threads of their own write and read in place: MBTiles and tile directories as each tile comes, and `manby join`'s MBTiles reader all of its rows at once. Large vectors stay on the heap, with no pager thread, and jemalloc is left out. GeoParquet files are read into memory, since the parquet crate's file reader clones the file, which emscripten can't.
+
+`usize` is 32 bits there, where tippecanoe's `size_t` has 64. Where the value decides the tiles, it is a `u64`: the sum of coordinates that picks a feature's index point, the area of the rings in `center_of_mass_mp` and `polygon_to_anchor`, the size and feature limits scaled by the share of features kept, and the shard of a PMTiles tile's hash. Under Node.js, tippecanoe's golden tests pass with the WebAssembly build, apart from the ones that run other programs, and its PMTiles decode the same as the native build's.
+
+The R package builds `src/rust`, a static library over `manby::command::run` and `manby::stats::text`, only for webR, as R-universe's rwasm does. Its `configure` takes manby from the package's commit (`RemoteSha`), a checkout that `MANBY_SOURCE` names, or the crate of the package's version. On other platforms `src/Makevars` builds nothing and the package runs the program. CI builds the package in the webR image and runs its tests in webR in Node.js (`tests/webr/run.mjs`).
+
 ## Library and command
 
 `manby::run(&Options) -> Result<Summary>` is the entry point for tiling, and `manby::join(&JoinOptions) -> Result<JoinSummary>` for joining. Transitionally, the algorithm functions borrowed from tippecanoe-rs read tippecanoe-rs's globals. manby sets those once from `Options` and replaces each borrowed function with its own parameterized copy when it needs to change it.

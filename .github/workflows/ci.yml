@@ -151,7 +151,7 @@ jobs:
         working-directory: tests/webr
         run: |
           npm ci --no-audit --no-fund
-          node run.mjs ../../webr-repo
+          node run.mjs ../../webr-repo/manby_*.tgz
 
   site:
     runs-on: ubuntu-24.04

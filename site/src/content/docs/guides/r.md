@@ -12,7 +12,7 @@ install.packages(
 )
 ```
 
-It runs the manby program, which it downloads once from the GitHub release of its own version and keeps in its cache. To run a manby installed another way, set the `MANBY_BINARY` environment variable to its path.
+It runs the manby program, which it downloads once from the GitHub release of its own version and keeps in its cache. To run a manby installed another way, set the `MANBY_BINARY` environment variable to its path. In webR, manby is built into the package ([In the browser](#in-the-browser)).
 
 ## Tiling
 
@@ -72,3 +72,13 @@ server$stop()
 ```r
 manby("join", "-o", "map.pmtiles", "roads.pmtiles", "places.pmtiles")
 ```
+
+## In the browser
+
+In [webR](https://docs.r-wasm.org/webr/latest/), R in a browser or in Node.js, R can't run programs, so there the package has manby built into it and runs it in R's own process, on one thread.
+
+```r
+webr::install("manby", repos = c("https://birkskyum.r-universe.dev", "https://repo.r-wasm.org"))
+```
+
+`tile()`, `tile_stats()` and `manby()` work as elsewhere, on files in webR's file system, with sf data frames, DuckDB tables, data frames and nanoarrow streams. The tiles are the same as the program's. `serve()` doesn't run there, nor do tippecanoe's `-C` and `-c` filters, which are programs, and manby's messages go to the console without passing through R. The features and tiles have to fit in webR's memory, at most 4 GB.

@@ -1,6 +1,6 @@
 [package]
 name = "tippecanoe-rs"
-version = "2.83.0"
+version = "2.82.3"
 description = "A faithful Rust port of tippecanoe, which builds vector tilesets from GeoJSON, FlatGeobuf, or CSV features"
 edition = "2024"
 license = "BSD-2-Clause"

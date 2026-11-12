@@ -166,6 +166,7 @@ Compressing with zlib to compare costs processor time where shared tiles are man
 
 - **Messages.** The progress line names the first tile of each batch, and tiles over the size limit are reported as threads finish them, so in another order.
 - **Duplicate tiles.** An MBTiles database without a unique index can have two rows for one z/x/y. tile-join can write such a tile twice; manby join joins the rows into one tile.
+- **Damaged PMTiles.** Where tile-join throws for an archive it cannot read and aborts with the C++ runtime's message, manby join names the archive, says what is wrong, and exits with `EXIT_READ`.
 - **Errors inside tippecanoe-rs.** A feature filter that tippecanoe-rs's evaluator does not understand still ends the process from inside it, as in tile-join, rather than coming back as an error.
 
 ## Library and command

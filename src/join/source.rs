@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 
 use memmap2::Mmap;
 use rusqlite::{Connection, OpenFlags, ffi};
-use tippecanoe::errors::{EXIT_FAILURE, EXIT_JSON, EXIT_MEMORY, EXIT_OPEN, EXIT_SQLITE};
+use tippecanoe::errors::{EXIT_FAILURE, EXIT_JSON, EXIT_MEMORY, EXIT_OPEN, EXIT_READ, EXIT_SQLITE};
 use tippecanoe::jsonpull::{JsonPull, JsonType};
 use tippecanoe::platform::FileAt;
 use tippecanoe::pmtiles::{self, EntryV3, HeaderV3};
@@ -111,18 +111,18 @@ fn sqlite_error(message: String) -> Error {
     Error::new(EXIT_SQLITE, message)
 }
 
-/// The exit status of a C++ program that aborts.
-const EXIT_ABORT: i32 = 134;
+/// A PMTiles archive that cannot be read. tile-join throws an exception for
+/// it and aborts with the C++ runtime's message; manby says what is wrong.
+fn corrupt(what: &str) -> Error {
+    Error::new(
+        EXIT_READ,
+        format!("not a readable PMTiles archive: {}", what),
+    )
+}
 
-/// What tippecanoe-rs prints for an exception that ends the program, which
-/// it then aborts.
-fn uncaught(type_name: &str, what: &str) -> Error {
-    let message = if cfg!(target_os = "macos") {
-        format!("libc++abi: terminating due to uncaught exception of type {type_name}: {what}")
-    } else {
-        format!("terminate called after throwing an instance of '{type_name}'\n  what():  {what}")
-    };
-    Error::new(EXIT_ABORT, message)
+/// `e` about the archive `name`.
+fn in_archive(name: &str, e: Error) -> Error {
+    Error::new(e.exit_code, format!("{}: {}", name, e.message))
 }
 
 /// tile-join's `sqlite3_open`, which creates the database if it is missing,
@@ -281,7 +281,7 @@ impl Source {
         let map = unsafe { Mmap::map(&file) }
             .map_err(|e| mmap_error(e.raw_os_error().unwrap_or(libc::EINVAL)))?;
 
-        let header = read_header(&map)?;
+        let header = read_header(&map).map_err(|e| in_archive(fname, e))?;
         let mut entries = Vec::new();
         collect_entries(
             &map,
@@ -289,7 +289,8 @@ impl Source {
             header.root_dir_offset,
             header.root_dir_bytes,
             &mut entries,
-        )?;
+        )
+        .map_err(|e| in_archive(fname, e))?;
         // pmtiles::entries_tms: a stable sort by zoom, x, then y reversed
         entries.sort_by(|a: &TileRef, b: &TileRef| {
             a.z.cmp(&b.z).then(a.x.cmp(&b.x)).then(b.y.cmp(&a.y))
@@ -478,7 +479,8 @@ impl Source {
             }
             Kind::Pmtiles => {
                 let map = self.map.as_ref().expect("a PMTiles source has its mapping");
-                let (offset, len) = get_tile(map, z as u8, x as u32, y as u32)?;
+                let (offset, len) = get_tile(map, z as u8, x as u32, y as u32)
+                    .map_err(|e| in_archive(&self.name, e))?;
                 if len == 0 {
                     return Ok(Vec::new());
                 }
@@ -522,7 +524,7 @@ impl Source {
             }
             Kind::Pmtiles => {
                 let map = self.map.as_ref().expect("a PMTiles source has its mapping");
-                let header = read_header(map)?;
+                let header = read_header(map).map_err(|e| in_archive(&self.name, e))?;
                 // the checks pmtilesmeta2tmp makes before it reads the
                 // metadata, so that it has no reason to exit
                 if header.internal_compression != pmtiles::COMPRESSION_NONE
@@ -690,16 +692,10 @@ fn read_header(map: &[u8]) -> Result<HeaderV3> {
     let n = map.len().min(127);
     s[..n].copy_from_slice(&map[..n]);
     if &s[0..7] != b"PMTiles" {
-        return Err(uncaught(
-            "pmtiles::pmtiles_magic_number_exception",
-            "pmtiles magic number exception",
-        ));
+        return Err(corrupt("it does not start with PMTiles"));
     }
     if s[7] != 0x3 {
-        return Err(uncaught(
-            "pmtiles::pmtiles_version_exception",
-            "pmtiles version: must be 3",
-        ));
+        return Err(corrupt("only version 3 is supported"));
     }
     Ok(pmtiles::deserialize_header(&s))
 }
@@ -710,10 +706,7 @@ fn decode_varint(data: &[u8], pos: &mut usize) -> Result<u64> {
     let mut shift = 0;
     loop {
         let Some(&b) = data.get(*pos) else {
-            return Err(uncaught(
-                "pmtiles::end_of_buffer_exception",
-                "end of buffer exception",
-            ));
+            return Err(corrupt("a directory ends early"));
         };
         *pos += 1;
         val |= ((b & 0x7f) as u64) << shift;
@@ -722,10 +715,7 @@ fn decode_varint(data: &[u8], pos: &mut usize) -> Result<u64> {
         }
         shift += 7;
         if shift >= 70 {
-            return Err(uncaught(
-                "pmtiles::varint_too_long_exception",
-                "varint too long exception",
-            ));
+            return Err(corrupt("a directory has a number too long to read"));
         }
     }
 }
@@ -737,10 +727,7 @@ fn deserialize_directory(d: &[u8]) -> Result<Vec<EntryV3>> {
     let mut result = vec![EntryV3::default(); n.min(d.len())];
     if n > d.len() {
         // more entries than bytes cannot be read
-        return Err(uncaught(
-            "pmtiles::end_of_buffer_exception",
-            "end of buffer exception",
-        ));
+        return Err(corrupt("a directory ends early"));
     }
     let mut last_id: u64 = 0;
     for e in result.iter_mut() {
@@ -764,10 +751,7 @@ fn deserialize_directory(d: &[u8]) -> Result<Vec<EntryV3>> {
         };
     }
     if t != d.len() {
-        return Err(Error::new(
-            EXIT_FAILURE,
-            "Error: malformed pmtiles directory",
-        ));
+        return Err(corrupt("a directory is malformed"));
     }
     Ok(result)
 }
@@ -776,7 +760,7 @@ fn deserialize_directory(d: &[u8]) -> Result<Vec<EntryV3>> {
 fn directory(map: &[u8], header: &HeaderV3, offset: u64, len: u64) -> Result<Vec<EntryV3>> {
     let raw = map
         .get(offset as usize..(offset as usize).saturating_add(len as usize))
-        .ok_or_else(|| uncaught("std::out_of_range", "pmtiles directory past the end"))?;
+        .ok_or_else(|| corrupt("a directory is past the end of the file"))?;
     match header.internal_compression {
         pmtiles::COMPRESSION_NONE => deserialize_directory(raw),
         pmtiles::COMPRESSION_GZIP => {
@@ -786,10 +770,7 @@ fn directory(map: &[u8], header: &HeaderV3, offset: u64, len: u64) -> Result<Vec
             }
             deserialize_directory(&out)
         }
-        _ => Err(uncaught(
-            "std::runtime_error",
-            "Unknown or unsupported compression.",
-        )),
+        _ => Err(corrupt("its directories use an unknown compression")),
     }
 }
 
@@ -839,10 +820,7 @@ fn tileid_to_zxy(id: u64) -> Result<(u8, u32, u32)> {
         }
         acc += n;
     }
-    Err(uncaught(
-        "std::overflow_error",
-        "tile zoom exceeds 64-bit limit",
-    ))
+    Err(corrupt("a tile is past zoom 31"))
 }
 
 /// `pmtiles::find_tile`, including that it narrows the difference of tile
@@ -876,16 +854,10 @@ fn find_tile(entries: &[EntryV3], tile_id: u64) -> EntryV3 {
 /// `pmtiles::get_tile`: the offset and length of z/x/y, or (0, 0).
 fn get_tile(map: &[u8], z: u8, x: u32, y: u32) -> Result<(u64, u32)> {
     if z > 31 {
-        return Err(uncaught(
-            "std::overflow_error",
-            "tile zoom exceeds 64-bit limit",
-        ));
+        return Err(corrupt("a tile is past zoom 31"));
     }
     if x > (1u32 << z).wrapping_sub(1) || y > (1u32 << z).wrapping_sub(1) {
-        return Err(uncaught(
-            "std::overflow_error",
-            "tile x/y outside zoom level bounds",
-        ));
+        return Err(corrupt("a tile is outside its zoom"));
     }
     let tile_id = pmtiles::zxy_to_tileid(z, x, y);
     let h = read_header(map)?;
@@ -974,4 +946,60 @@ fn enumerate_dirtiles(fname: &str, minzoom: i32, maxzoom: i32) -> Result<Vec<Til
             loc: Loc::File { mvt },
         })
         .collect())
+}
+
+#[cfg(test)]
+mod corrupt_archives {
+    use super::*;
+
+    /// An archive that cannot be read is named in a plain message, not in
+    /// the C++ runtime's for the exception tile-join throws.
+    #[test]
+    fn are_named_in_plain_messages() {
+        let dir = std::env::temp_dir().join(format!("manby-corrupt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let header = |root_dir_bytes: u64| {
+            pmtiles::HeaderV3 {
+                root_dir_offset: 127,
+                root_dir_bytes,
+                internal_compression: pmtiles::COMPRESSION_NONE,
+                ..Default::default()
+            }
+            .serialize()
+        };
+        let mut v2 = header(0);
+        v2[7] = 2;
+        // a root directory past the end, one of more entries than bytes,
+        // another version, and not PMTiles at all
+        let mut short = header(2);
+        short.extend_from_slice(&[5, 0]);
+        for (name, bytes, what) in [
+            (
+                "past.pmtiles",
+                header(1000),
+                "a directory is past the end of the file",
+            ),
+            ("short.pmtiles", short, "a directory ends early"),
+            ("v2.pmtiles", v2, "only version 3 is supported"),
+            (
+                "text.pmtiles",
+                b"not an archive".to_vec(),
+                "it does not start with PMTiles",
+            ),
+        ] {
+            let path = dir.join(name);
+            std::fs::write(&path, &bytes).unwrap();
+            let path = path.to_string_lossy().into_owned();
+            let e = match Source::open(&path, 0, 32) {
+                Ok(_) => panic!("{} opened", name),
+                Err(e) => e,
+            };
+            assert_eq!(
+                e.message,
+                format!("{}: not a readable PMTiles archive: {}", path, what)
+            );
+            assert_eq!(e.exit_code, EXIT_READ);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

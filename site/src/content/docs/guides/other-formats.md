@@ -1,19 +1,26 @@
 ---
 title: Other formats
-description: Tiling GeoPackage files directly, and Shapefile and OpenStreetMap data converted to FlatGeobuf with GDAL's ogr2ogr.
+description: Tiling shapefiles and GeoPackage files directly, and OpenStreetMap data converted to FlatGeobuf with GDAL's ogr2ogr.
 ---
 
-manby reads what tippecanoe reads, GeoJSON, FlatGeobuf, CSV and Geobuf, and also [GeoParquet and Arrow](../python/) and GeoPackage. Convert other formats to FlatGeobuf first, which manby reads in parallel. The examples use GDAL's `ogr2ogr`, and other converters that write FlatGeobuf, such as DuckDB's spatial extension or terrio, work the same way.
+manby reads what tippecanoe reads, GeoJSON, FlatGeobuf, CSV and Geobuf, and also [GeoParquet and Arrow](../python/), shapefiles and GeoPackage. Convert other formats to FlatGeobuf first, which manby reads in parallel. The examples use GDAL's `ogr2ogr`, and other converters that write FlatGeobuf, such as DuckDB's spatial extension or terrio, work the same way.
 
 ## Shapefile
 
+manby reads a shapefile as it is, with its `.dbf`, `.shx`, `.prj` and `.cpg` files beside it.
+
 ```sh
-ogr2ogr -nlt PROMOTE_TO_MULTI -t_srs EPSG:4326 \
-  tracts.fgb cb_2023_us_tract_500k.shp
-manby -zg --coalesce-densest-as-needed -o tracts.pmtiles tracts.fgb
+manby -zg --coalesce-densest-as-needed -o tracts.pmtiles cb_2023_us_tract_500k.shp
 ```
 
-A FlatGeobuf layer has one geometry type, and `-nlt PROMOTE_TO_MULTI` makes mixed polygons and multipolygons, or lines and multilines, all multi.
+The tiles are the ones manby makes from the FlatGeobuf file that GDAL writes of the shapefile. The rings of each shape become polygons and their holes as GDAL groups them, the columns are typed as GDAL types them, and the text is recoded from the encoding that the `.cpg` file or the `.dbf` language driver names (UTF-8, ISO-8859-1 or Windows-1252; other encodings are read as UTF-8). Deleted records are left out. Reading the 85,186 census tracts takes 2.1 s at `-zg --coalesce-densest-as-needed`, against 2.0 s from FlatGeobuf.
+
+The coordinates are reprojected from the CRS of the `.prj` file: the EPSG code it gives, or that of a common CRS by the name ESRI gives it, such as WGS 84, NAD83, NAD27, ETRS89, Web Mercator, their UTM zones, British National Grid, RD New, Lambert 93, LAEA Europe and Conus Albers. For another one, give its code with `-s`, or reproject first:
+
+```sh
+manby -zg -s EPSG:2056 -o buildings.pmtiles buildings.shp
+ogr2ogr -t_srs EPSG:4326 buildings-wgs84.shp buildings.shp
+```
 
 ## GeoPackage
 
@@ -26,7 +33,7 @@ manby -zg --drop-densest-as-needed -o natural-earth.pmtiles \
   -L '{"file":"natural_earth_vector.gpkg","layer":"ne_10m_populated_places"}'
 ```
 
-The tiles are the ones manby makes from the FlatGeobuf file that GDAL writes of the table, with the columns as GDAL types them. The integer primary key is the feature's number, not an attribute, and the coordinates are reprojected from the table's CRS. Reading the 85,186 census tracts from a GeoPackage takes 2.1 s at `-zg --coalesce-densest-as-needed`, against 2.0 s from FlatGeobuf, with no conversion before it.
+The tiles are the ones manby makes from the FlatGeobuf file that GDAL writes of the table, with the columns as GDAL types them. The integer primary key is the feature's number, not an attribute, and the coordinates are reprojected from the table's CRS, unless `-s` names another. Reading the 85,186 census tracts from a GeoPackage takes 2.1 s at `-zg --coalesce-densest-as-needed`, against 2.0 s from FlatGeobuf, with no conversion before it.
 
 ## OpenStreetMap
 

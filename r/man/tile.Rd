@@ -29,7 +29,7 @@ from the same features.
 }
 \details{
 \code{data} is a file that manby reads, such as GeoJSON, FlatGeobuf, CSV,
-GeoParquet or GeoPackage, or a table:
+GeoParquet, GeoPackage or Shapefile, or a table:
 \itemize{
 \item An sf data frame. One in a CRS other than WGS 84 or Web Mercator is
 reprojected to WGS 84 first.

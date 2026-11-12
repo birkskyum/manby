@@ -1,5 +1,12 @@
 The changes in each version of manby, from the titles of the pull requests that made them.
 
+## [0.2.6](https://github.com/birkskyum/manby/compare/v0.2.5...v0.2.6) - 2026-11-12
+
+### Added
+
+- Read shapefiles ([#64](https://github.com/birkskyum/manby/pull/64))
+- Read GeoPackage files ([#62](https://github.com/birkskyum/manby/pull/62))
+
 ## [0.2.5](https://github.com/birkskyum/manby/compare/v0.2.4...v0.2.5) - 2026-11-12
 
 ### Added

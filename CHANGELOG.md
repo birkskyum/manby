@@ -1,5 +1,15 @@
 The changes in each version of manby, from the titles of the pull requests that made them.
 
+## [0.2.4](https://github.com/birkskyum/manby/compare/v0.2.3...v0.2.4) - 2026-11-12
+
+### Added
+
+- --supercluster, clusters as MapLibre makes them ([#58](https://github.com/birkskyum/manby/pull/58))
+
+### Fixed
+
+- Name a damaged PMTiles archive in manby join's message ([#57](https://github.com/birkskyum/manby/pull/57))
+
 ## [0.2.3](https://github.com/birkskyum/manby/compare/v0.2.2...v0.2.3) - 2026-11-11
 
 ### Added

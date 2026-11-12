@@ -1,5 +1,11 @@
 The changes in each version of manby, from the titles of the pull requests that made them.
 
+## [0.2.5](https://github.com/birkskyum/manby/compare/v0.2.4...v0.2.5) - 2026-11-12
+
+### Added
+
+- Run the R package in webR ([#60](https://github.com/birkskyum/manby/pull/60))
+
 ## [0.2.4](https://github.com/birkskyum/manby/compare/v0.2.3...v0.2.4) - 2026-11-12
 
 ### Added

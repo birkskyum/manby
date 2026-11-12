@@ -31,6 +31,8 @@ pub struct Config<'o> {
     pub projection_alias: String,
     /// `--h3`: how points are binned into hexagons.
     pub h3: Option<std::sync::Arc<super::h3::Setup>>,
+    /// `--supercluster`: the points are kept for clustering.
+    pub supercluster: bool,
     pub encode_index: fn(u32, u32) -> u64,
     pub geometry_scale: i32,
     pub want_dist: bool,
@@ -59,6 +61,7 @@ impl<'o> Config<'o> {
                     o.h3_categories.clone(),
                 ))
             }),
+            supercluster: o.supercluster,
             encode_index: if a(A_HILBERT) {
                 encode_hilbert
             } else {
@@ -270,6 +273,22 @@ pub fn serialize_feature(
     }
 
     // try to remind myself that the geometry in this function is in SCALED COORDINATES
+    // --supercluster: where a point is, in Supercluster's projection and
+    // precision, before it is scaled to the geometry's
+    let supercluster_point = if cfg.supercluster && sf.t as i32 == VT_POINT {
+        let mut moves = sf.geometry.iter().filter(|g| g.op == VT_MOVETO);
+        match (moves.next(), moves.next()) {
+            (Some(g), None) => {
+                let world = 4294967296.0;
+                let x = g.x as f64 / world;
+                let y = (g.y as f64 / world).clamp(0.0, 1.0);
+                Some((x as f32 as f64, y as f32 as f64))
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
     let mut scaled_geometry: DrawVec = std::mem::take(&mut sf.geometry);
     scale_geometry(cfg, &mut sf_bbox, &mut scaled_geometry);
     let t = sf.t as i32;
@@ -697,6 +716,13 @@ pub fn serialize_feature(
             &sf.full_values,
         );
         tippecanoe_minzoom = tippecanoe_minzoom.max(h3.base);
+    }
+
+    // --supercluster: a point is kept to cluster once every input is read
+    if let Some((x, y)) = supercluster_point {
+        chunk
+            .supercluster
+            .push((layer, chunk.features.len() as u32, x, y));
     }
 
     let seq = chunk.features.len() as u64;

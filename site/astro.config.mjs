@@ -59,6 +59,7 @@ export default defineConfig({
 						{ label: 'From Rust', slug: 'guides/rust' },
 						{ label: 'Looking at tilesets', slug: 'guides/serve' },
 						{ label: 'H3 hexagons and categories', slug: 'guides/h3' },
+						{ label: 'Clusters as MapLibre makes them', slug: 'guides/supercluster' },
 						{ label: 'Other formats', slug: 'guides/other-formats' },
 					],
 				},

@@ -28,6 +28,7 @@ pub mod json;
 pub mod remote;
 pub mod serialize;
 pub mod serialized;
+pub mod supercluster;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Write};
@@ -881,7 +882,82 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
         );
     }
 
+    if cfg.supercluster {
+        add_superclusters(&mut parts, &cfg, &layer_names, unit_count, overall_offset);
+    }
+
     Ok(merge(parts, &sources, &layer_names, &layer_source, options))
+}
+
+/// `--supercluster`: each layer's points, in input order, clustered as
+/// Supercluster clusters them. Each point shows on its own from the zoom
+/// after the one where it was last clustered, and the clusters go in as one
+/// more chunk, after every input's features.
+fn add_superclusters(
+    parts: &mut Parts,
+    cfg: &Config<'_>,
+    layer_names: &[String],
+    unit: usize,
+    seq: i64,
+) {
+    let o = cfg.o;
+    let settings = supercluster::Settings {
+        radius: o.supercluster_radius,
+        extent: 512.0,
+        min_points: o.supercluster_min_points,
+        max_zoom: o.supercluster_maxzoom(),
+    };
+    // each layer's points: their chunk, their index in it, and where they are
+    let mut layers: std::collections::BTreeMap<String, Vec<(usize, u32, f64, f64)>> =
+        Default::default();
+    for (c, a) in parts.chunks.iter_mut().enumerate() {
+        let names: Vec<String> = a.chunk.layers.iter().map(|l| l.name.clone()).collect();
+        for (layer, f, x, y) in std::mem::take(&mut a.chunk.supercluster) {
+            layers
+                .entry(names[layer as usize].clone())
+                .or_default()
+                .push((c, f, x, y));
+        }
+    }
+    let mut chunk = Chunk::new(layer_names);
+    let mut points = 0;
+    for (name, layer) in layers {
+        let xy: Vec<(f64, f64)> = layer.iter().map(|p| (p.2, p.3)).collect();
+        let clustered = supercluster::cluster(&xy, &settings);
+        for (p, &z) in layer.iter().zip(&clustered.alone_from) {
+            if z > 0 {
+                let f = &mut parts.chunks[p.0].chunk.features[p.1 as usize];
+                f.tippecanoe_minzoom = f.tippecanoe_minzoom.max(z.min(i8::MAX as i32) as i8);
+            }
+        }
+        points += layer.len();
+        for c in &clustered.clusters {
+            serialize::serialize_feature(&mut chunk, cfg, &mut supercluster::feature(c), &name);
+        }
+    }
+    if chunk.features.is_empty() {
+        return;
+    }
+    // the guess of a maximum zoom goes by the features read
+    chunk.dist_terms = Buf::new();
+    chunk.area_terms = Buf::new();
+    chunk.dist_count = 0;
+    chunk.finish();
+    if !o.quiet {
+        eprintln!(
+            "{} clusters of {} points, at zooms up to {}",
+            chunk.features.len(),
+            points,
+            settings.max_zoom
+        );
+    }
+    parts.seq_base.push(seq);
+    parts.segment.push(0);
+    parts.chunks.push(Accepted {
+        chunk,
+        unit,
+        line_offset: 0,
+    });
 }
 
 /// `--h3`: the hexagons of the points that the chunks counted, as one more

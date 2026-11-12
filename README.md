@@ -184,6 +184,14 @@ DESIGN.md describes the choices behind the tiles, and `make test-golden-mlt` che
 
 When a tile is too big, tippecanoe raises its threshold for dropping, coalescing or clustering until it fits, then makes the whole zoom level again with the highest threshold any tile needed. `--as-needed-per-tile` keeps each tile's own threshold instead. Only the tiles that are too big are thinned, so the others keep more, but neighboring tiles can be thinned differently, which can show at tile edges. On the census tracts, the tiles of z5 keep 67,163 tract polygons rather than 17,094, and the run is 1.2 times faster. The tiles are not tippecanoe's.
 
+## Clusters as MapLibre makes them
+
+`--supercluster` clusters each layer's points with Supercluster 8's algorithm, as a MapLibre GeoJSON source with `cluster: true` does, and writes the clusters into the tiles with Supercluster's properties (`cluster`, `cluster_id`, `point_count`, `point_count_abbreviated`) and `cluster_expansion_zoom`, the zoom a click on a cluster can zoom to. At each zoom the tiles hold what Supercluster has at that zoom, which `tests/supercluster.rs` checks against Supercluster itself.
+
+```sh
+manby -z14 --supercluster -o places.pmtiles places.geojson
+```
+
 ## Builds split across machines
 
 `--shard I/N` makes part `I` of `N` of a tileset, so the parts can run on different machines at once, and `manby merge` puts them together as the whole run makes them, byte for byte. Each shard reads all of the input and makes the tiles below its share of the pivot zoom's tiles (zoom 6 unless `--shard-zoom` says), and shard 0 also makes the zooms above. At the pivot zoom and below, a zoom that an `-as-needed` option makes again with a stricter threshold is made again only for the shard's own tiles, and the merge lists such zooms. With `--as-needed-per-tile` there are none.

@@ -154,6 +154,13 @@ pub struct Options {
     pub h3_base_zoom: Option<i32>,
     /// `--h3-categories`
     pub h3_categories: Option<String>,
+    /// `--supercluster`: each layer's points clustered as MapLibre clusters
+    /// a GeoJSON source, with Supercluster's properties.
+    pub supercluster: bool,
+    /// `--supercluster-radius`: in pixels of a 512-pixel tile, 50 unless given.
+    pub supercluster_radius: f64,
+    /// `--supercluster-min-points`: 2 unless given.
+    pub supercluster_min_points: u64,
     /// `--cluster-categories=kind`, or `kind:park,museum`: each feature
     /// gets `kind:<value>` of 1, which clustering and coalescing add up, so
     /// a cluster counts the values of its points; values not listed count
@@ -337,6 +344,9 @@ impl Default for Options {
             projection: 0,
             source_crs: None,
             h3: false,
+            supercluster: false,
+            supercluster_radius: 50.0,
+            supercluster_min_points: 2,
             h3_base_zoom: None,
             h3_categories: None,
             cluster_categories: None,
@@ -443,6 +453,56 @@ impl Options {
     }
 
     /// `--h3`'s base zoom: given, or two zooms below the maximum.
+    /// The last zoom `--supercluster` clusters at: `-k`, or one below the
+    /// maximum zoom, as MapLibre's `clusterMaxZoom` is.
+    pub fn supercluster_maxzoom(&self) -> i32 {
+        if self.cluster_maxzoom < MAX_ZOOM && !self.guess_cluster_maxzoom {
+            self.cluster_maxzoom
+        } else {
+            (self.maxzoom - 1).max(0)
+        }
+    }
+
+    /// What `--supercluster` needs of the other options. Every point and
+    /// cluster shows at the zooms Supercluster puts it at, so nothing is
+    /// dropped by rate (`-r1`), and tippecanoe's clustering is off.
+    fn check_supercluster(&mut self) -> crate::Result<()> {
+        let argv0 = &self.program;
+        let refuse = |what: &str| {
+            Err(Error::new(
+                EXIT_ARGS,
+                format!("{}: --supercluster does not work with {}", argv0, what),
+            ))
+        };
+        if self.cluster_distance > 0 {
+            return refuse("-K (--cluster-distance), tippecanoe's clustering");
+        }
+        if self.additional.get(A_CLUSTER_DENSEST_AS_NEEDED) {
+            return refuse("--cluster-densest-as-needed");
+        }
+        if self.h3 {
+            return refuse("--h3");
+        }
+        if self.cluster_categories.is_some() {
+            return refuse("--cluster-categories");
+        }
+        if self.guess_maxzoom && (self.cluster_maxzoom >= MAX_ZOOM || self.guess_cluster_maxzoom) {
+            return Err(Error::new(
+                EXIT_ARGS,
+                format!(
+                    "{}: --supercluster with -zg needs -k (--cluster-maxzoom), the last zoom with clusters",
+                    argv0
+                ),
+            ));
+        }
+        if self.droprate == 2.5 {
+            self.droprate = 1.0;
+        } else if self.droprate != 1.0 {
+            return refuse("-r other than -r1, as it places every point and cluster itself");
+        }
+        Ok(())
+    }
+
     pub fn h3_base(&self) -> i32 {
         self.h3_base_zoom
             .unwrap_or(self.maxzoom - 2)
@@ -512,6 +572,10 @@ impl Options {
         }
 
         crate::shard::check_options(self)?;
+
+        if self.supercluster {
+            self.check_supercluster()?;
+        }
 
         if self.h3 && self.guess_maxzoom && self.h3_base_zoom.is_none() {
             return Err(Error::new(
@@ -1324,6 +1388,9 @@ fn long_options_orig() -> Vec<LongOption> {
         opt("bbox", REQ, b'~'),
         opt("h3", NO, b'~'),
         opt("h3-base-zoom", REQ, b'~'),
+        opt("supercluster", NO, b'~'),
+        opt("supercluster-radius", REQ, b'~'),
+        opt("supercluster-min-points", REQ, b'~'),
         opt("h3-categories", REQ, b'~'),
         opt("cluster-categories", REQ, b'~'),
         opt("use-attribute-for-minzoom", REQ, b'~'),
@@ -1640,6 +1707,31 @@ pub fn parse_args(argv: &[String]) -> crate::Result<Options> {
                         }
                     },
                     "h3" => o.h3 = true,
+                    "supercluster" => o.supercluster = true,
+                    "supercluster-radius" => match arg.parse::<f64>() {
+                        Ok(r) if r > 0.0 && r.is_finite() => {
+                            o.supercluster = true;
+                            o.supercluster_radius = r
+                        }
+                        _ => {
+                            return err_args(format!(
+                                "{}: --supercluster-radius must be a number of pixels above 0, not {}",
+                                argv0, arg
+                            ));
+                        }
+                    },
+                    "supercluster-min-points" => match arg.parse::<u64>() {
+                        Ok(n) if n >= 2 => {
+                            o.supercluster = true;
+                            o.supercluster_min_points = n
+                        }
+                        _ => {
+                            return err_args(format!(
+                                "{}: --supercluster-min-points must be 2 or more, not {}",
+                                argv0, arg
+                            ));
+                        }
+                    },
                     "h3-base-zoom" => {
                         o.h3 = true;
                         o.h3_base_zoom = Some(require_int(&optarg, "H3 base zoom", &argv0)?)

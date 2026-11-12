@@ -377,6 +377,9 @@ pub struct Chunk {
     pub error_at_end: bool,
     /// `--h3`: the points counted into hexagons.
     pub h3: Option<Box<super::h3::Bins>>,
+    /// `--supercluster`: each point feature's layer in the chunk, its index,
+    /// and where it is in Supercluster's projection.
+    pub supercluster: Vec<(u32, u32, f64, f64)>,
 }
 
 impl Chunk {

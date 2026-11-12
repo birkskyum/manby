@@ -18,6 +18,9 @@ manby takes [tippecanoe's options](https://github.com/felt/tippecanoe#readme), a
 | `--h3` | Bins each layer's points into H3 hexagons below a base zoom. See [H3 hexagons and categories](../../guides/h3/). |
 | `--h3-base-zoom=Z` | The zoom from which the points themselves show, two below the maximum zoom unless given. Implies `--h3`. |
 | `--h3-categories=NAME` | Counts the values of an attribute in each hexagon. Implies `--h3`. |
+| `--supercluster` | Clusters each layer's points with Supercluster, as a MapLibre GeoJSON source does, with its properties and `cluster_expansion_zoom`. See [Clusters as MapLibre makes them](../../guides/supercluster/). |
+| `--supercluster-radius=PIXELS` | The radius of a cluster in pixels of a 512-pixel tile, 50 unless given. |
+| `--supercluster-min-points=N` | The fewest points that make a cluster, 2 unless given. |
 | `--cluster-categories=NAME` | Counts the values of an attribute in each cluster. `NAME:a,b` counts only `a` and `b` by name, and the rest together. |
 | `--use-attribute-for-minzoom=NAME` | Takes the lowest zoom each feature shows at from an attribute, as the `tippecanoe` object gives it in GeoJSON. See [Zooms from a column](../../guides/python/#zooms-from-a-column). |
 | `--use-attribute-for-maxzoom=NAME` | The same for the highest zoom each feature shows at. |

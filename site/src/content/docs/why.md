@@ -18,7 +18,7 @@ description: What manby is for, how it compares with tippecanoe and the other wa
 | --- | --- | --- | --- | --- |
 | tippecanoe | C++ | GeoJSON, FlatGeobuf, CSV, Geobuf | Drops, coalesces or clusters features evenly across each zoom level until its tiles fit | In review |
 | <span class="whitespace-nowrap">tippecanoe-rs</span> | Rust | As tippecanoe | As tippecanoe, with its tiles | No |
-| manby | Rust, also from Python and R | As tippecanoe, GeoParquet (on disk or in object storage), Arrow, DuckDB queries and data frames, and [other formats by way of GDAL](../guides/other-formats/) | As tippecanoe, with its tiles, or [each tile on its own](../guides/per-tile/), or [H3 hexagons](../guides/h3/) below a base zoom | Yes |
+| manby | Rust, also from Python and R | As tippecanoe, GeoParquet (on disk or in object storage), Arrow, GeoPackage, DuckDB queries and data frames, and [other formats by way of GDAL](../guides/other-formats/) | As tippecanoe, with its tiles, or [each tile on its own](../guides/per-tile/), or [H3 hexagons](../guides/h3/) below a base zoom | Yes |
 | tylertoo | Rust, also from Python | GeoParquet | A size limit on each tile on its own, with its own thinning and simplification, so not tippecanoe's tiles | No |
 | planetiler | Java | OpenStreetMap, Shapefile, GeoPackage, GeoJSON, GeoParquet | A profile, in Java or YAML, decides what each zoom level keeps | Yes |
 | GDAL (ogr2ogr) | C++ | Almost any vector format | Each tile on its own, at a lower resolution past 500 kB, then only its largest features | No |

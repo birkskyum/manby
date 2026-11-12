@@ -23,6 +23,7 @@ pub mod csv;
 pub mod flatgeobuf;
 pub mod geobuf;
 pub mod geojson;
+pub mod gpkg;
 pub mod h3;
 pub mod json;
 pub mod remote;
@@ -476,6 +477,8 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
     let fname = options.tileset_name();
     let cpus = options.tippecanoe_cpus.max(1);
     let mut stderr: Vec<u8> = Vec::new();
+    // a GeoPackage's table is the layer named for it
+    let named: Vec<bool> = sources.iter().map(|s| !s.layer.is_empty()).collect();
 
     for (l, s) in sources.iter_mut().enumerate() {
         if s.layer.is_empty() {
@@ -483,6 +486,8 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
                 remote::stem(&s.file)
             } else if arrow::is_parquet(&s.format, &s.file) || arrow::is_arrow(&s.format, &s.file) {
                 arrow::without_extension(&s.file).to_string()
+            } else if gpkg::is_gpkg(&s.format, &s.file) {
+                gpkg::without_extension(&s.file).to_string()
             } else {
                 s.file.clone()
             };
@@ -529,8 +534,14 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
         let layer = layer_source[&src.layer];
 
         let bbox = options.bbox.map(arrow::WorldBox::new);
-        if remote::is_remote(&src.file) {
-            let opened = remote::open_parquet(&src.file, &cfg, bbox.as_ref());
+        let geopackage = gpkg::is_gpkg(&src.format, &src.file);
+        if remote::is_remote(&src.file) || geopackage {
+            let opened = if geopackage {
+                let table = named[source].then_some(src.layer.as_str());
+                gpkg::open_gpkg(&src.file, &reading_name, table).map(|(s, b)| (s, b, None))
+            } else {
+                remote::open_parquet(&src.file, &cfg, bbox.as_ref())
+            };
             let (schema, batches, kept) = match opened {
                 Ok(o) => o,
                 Err(e) => {

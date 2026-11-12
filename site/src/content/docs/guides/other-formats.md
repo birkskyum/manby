@@ -1,9 +1,9 @@
 ---
 title: Other formats
-description: Tiling GeoPackage, Shapefile and OpenStreetMap data, converted to FlatGeobuf with GDAL's ogr2ogr.
+description: Tiling GeoPackage files directly, and Shapefile and OpenStreetMap data converted to FlatGeobuf with GDAL's ogr2ogr.
 ---
 
-manby reads what tippecanoe reads, GeoJSON, FlatGeobuf, CSV and Geobuf, and also [GeoParquet and Arrow](../python/). Convert other formats to FlatGeobuf first, which manby reads in parallel. The examples use GDAL's `ogr2ogr`, and other converters that write FlatGeobuf, such as DuckDB's spatial extension or terrio, work the same way.
+manby reads what tippecanoe reads, GeoJSON, FlatGeobuf, CSV and Geobuf, and also [GeoParquet and Arrow](../python/) and GeoPackage. Convert other formats to FlatGeobuf first, which manby reads in parallel. The examples use GDAL's `ogr2ogr`, and other converters that write FlatGeobuf, such as DuckDB's spatial extension or terrio, work the same way.
 
 ## Shapefile
 
@@ -17,15 +17,16 @@ A FlatGeobuf layer has one geometry type, and `-nlt PROMOTE_TO_MULTI` makes mixe
 
 ## GeoPackage
 
-A GeoPackage holds several layers. Convert each one, and name it in the tileset with `-L`.
+manby reads a GeoPackage as it is. A GeoPackage with one table of features needs nothing more. One with several needs the table named, as the layer, which `-L` or `-l` names.
 
 ```sh
-ogr2ogr -nlt PROMOTE_TO_MULTI roads.fgb natural_earth_vector.gpkg ne_10m_roads
-ogr2ogr -nlt PROMOTE_TO_MULTI places.fgb \
-  natural_earth_vector.gpkg ne_10m_populated_places
+manby -zg --coalesce-densest-as-needed -o tracts.pmtiles tracts.gpkg
 manby -zg --drop-densest-as-needed -o natural-earth.pmtiles \
-  -L roads:roads.fgb -L places:places.fgb
+  -L '{"file":"natural_earth_vector.gpkg","layer":"ne_10m_roads"}' \
+  -L '{"file":"natural_earth_vector.gpkg","layer":"ne_10m_populated_places"}'
 ```
+
+The tiles are the ones manby makes from the FlatGeobuf file that GDAL writes of the table, with the columns as GDAL types them. The integer primary key is the feature's number, not an attribute, and the coordinates are reprojected from the table's CRS. Reading the 85,186 census tracts from a GeoPackage takes 2.1 s at `-zg --coalesce-densest-as-needed`, against 2.0 s from FlatGeobuf, with no conversion before it.
 
 ## OpenStreetMap
 

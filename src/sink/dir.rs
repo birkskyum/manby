@@ -7,6 +7,7 @@
 //! out of each other's directories and lets each make its directories once
 //! without locking. Each tile file is created with `O_EXCL`, which refuses an
 //! existing file in one step where tippecanoe uses `stat` and then `fopen`.
+//! WebAssembly has no threads, so there the tiles are written as they come.
 
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
@@ -43,6 +44,9 @@ pub struct DirSink {
     tile_format: TileFormat,
     senders: Vec<SyncSender<Job>>,
     writers: Vec<JoinHandle<()>>,
+    /// On WebAssembly, the zooms and columns whose directories are made, for
+    /// the tiles written as they come.
+    here: Option<Mutex<Made>>,
     /// The first error a writer met.
     failure: Failure,
 }
@@ -80,7 +84,12 @@ impl DirSink {
         let failure: Failure = Arc::new(Mutex::new(None));
         let mut senders = Vec::new();
         let mut writers = Vec::new();
-        for i in 0..settings.file_writers.max(1) {
+        let writer_count = if cfg!(target_family = "wasm") {
+            0
+        } else {
+            settings.file_writers.max(1)
+        };
+        for i in 0..writer_count {
             let (sender, receiver) = sync_channel(1024);
             let (dir, failure) = (dir.to_string(), failure.clone());
             let extension = settings.tile_format.extension();
@@ -97,6 +106,7 @@ impl DirSink {
             tile_format: settings.tile_format,
             senders,
             writers,
+            here: (writer_count == 0).then(|| Mutex::new(([false; 32], HashSet::new()))),
             failure,
         })
     }
@@ -138,6 +148,9 @@ impl Drop for DirSink {
         self.stop();
     }
 }
+
+/// The zooms and the (zoom, column)s whose directories a writer has made.
+type Made = ([bool; 32], HashSet<(u8, u32)>);
 
 /// One writer thread: writes the tiles it is sent until the sink closes.
 fn write_files(dir: &str, extension: &str, receiver: Receiver<Job>, failure: &Failure) {
@@ -218,6 +231,12 @@ impl TileSink for DirSink {
         check_tile(z, x, y)?;
         if let Some(e) = self.failed() {
             return Err(e);
+        }
+        if let Some(here) = &self.here {
+            let mut made = here.lock().unwrap_or_else(|p| p.into_inner());
+            let (zooms, columns) = &mut *made;
+            let extension = self.tile_format.extension();
+            return write_file(&self.dir, extension, z, x, y, data, zooms, columns);
         }
         let column = (z as u64) << 32 | x as u64;
         let writer =

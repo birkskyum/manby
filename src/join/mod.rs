@@ -27,7 +27,7 @@ mod tests;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-use tippecanoe::errors::{EXIT_CSV, EXIT_EXISTS, EXIT_PTHREAD};
+use tippecanoe::errors::{EXIT_CSV, EXIT_EXISTS};
 use tippecanoe::jsonpull::{JsonPull, JsonRef, JsonType};
 use tippecanoe::mbtiles::{LayermapEntry, make_metadata, merge_layermaps};
 use tippecanoe::tile::Strategy;
@@ -209,17 +209,8 @@ struct Stats {
 
 /// Joins the tilesets as `o` says.
 pub fn join(o: &JoinOptions) -> Result<JoinSummary> {
-    let threads = if o.threads > 0 {
-        o.threads
-    } else {
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
-    };
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build()
-        .map_err(|e| Error::new(EXIT_PTHREAD, e.to_string()))?;
+    let threads = crate::pool::threads(o.threads);
+    let pool = crate::pool::Pool::new(threads)?;
     pool.install(|| join_in_pool(o, threads))
 }
 

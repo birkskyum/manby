@@ -114,7 +114,8 @@ pub fn on_heap<R>(f: impl FnOnce() -> R) -> R {
 
 fn place_in_file(bytes: usize) -> bool {
     let budget = PAGER.budget.load(Relaxed);
-    bytes >= FILE_MIN
+    !cfg!(target_family = "wasm")
+        && bytes >= FILE_MIN
         && budget != u64::MAX
         && PAGER.heap.load(Relaxed) + bytes as u64 > budget / 8
         && !ON_HEAP.get()

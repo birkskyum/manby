@@ -102,6 +102,26 @@ pub fn open_parquet(
     cfg: &Config<'_>,
     bbox: Option<&WorldBox>,
 ) -> crate::Result<(SchemaRef, Batches, Kept)> {
+    // Reading a File clones it, which WebAssembly can't, so there the file
+    // is read into memory.
+    #[cfg(target_family = "wasm")]
+    let file = {
+        use std::io::Read;
+        let mut file = file;
+        let mut data = Vec::new();
+        file.read_to_end(&mut data)
+            .map_err(|e| read_error(fname, e))?;
+        bytes::Bytes::from(data)
+    };
+    open_parquet_from(file, fname, cfg, bbox)
+}
+
+fn open_parquet_from<R: parquet::file::reader::ChunkReader + 'static>(
+    file: R,
+    fname: &str,
+    cfg: &Config<'_>,
+    bbox: Option<&WorldBox>,
+) -> crate::Result<(SchemaRef, Batches, Kept)> {
     let builder =
         ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| read_error(fname, e))?;
     let full = Table::new(builder.schema(), fname, cfg)?;

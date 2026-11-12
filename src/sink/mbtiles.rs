@@ -4,6 +4,8 @@
 //! hash their tiles on their own threads and hand them to the writer thread
 //! over a bounded channel; the writer inserts them with prepared statements and
 //! commits every so often instead of after every tile, as tippecanoe does.
+//! WebAssembly has no threads, so there the callers write the tiles
+//! themselves, one at a time.
 
 use std::collections::HashSet;
 use std::ffi::{CStr, c_double, c_int};
@@ -64,6 +66,9 @@ enum Message {
 pub struct MbtilesSink {
     sender: Option<SyncSender<Message>>,
     writer: Option<JoinHandle<Result<()>>>,
+    /// On WebAssembly, which has no threads, the writer itself, which takes
+    /// each message as it is sent.
+    here: Option<Mutex<Writer>>,
     /// The writer's error, once it has stopped because of one.
     failure: Arc<Mutex<Option<(i32, String)>>>,
     tile_format: crate::mlt::TileFormat,
@@ -81,11 +86,21 @@ impl MbtilesSink {
             let _ = fs::remove_file(path);
         }
         let db = mbtiles_open(path, settings)?;
+        let failure = Arc::new(Mutex::new(None));
+        let tile_format = settings.tile_format;
+        let allow_existing = settings.allow_existing;
+        if cfg!(target_family = "wasm") {
+            return Ok(MbtilesSink {
+                sender: None,
+                writer: None,
+                here: Some(Mutex::new(Writer::new(db, allow_existing)?)),
+                failure,
+                tile_format,
+            });
+        }
 
         let (sender, receiver) = sync_channel(4096);
-        let failure = Arc::new(Mutex::new(None));
         let writer_failure = failure.clone();
-        let allow_existing = settings.allow_existing;
         let writer = std::thread::Builder::new()
             .name("mbtiles writer".to_string())
             .spawn(move || {
@@ -101,12 +116,28 @@ impl MbtilesSink {
         Ok(MbtilesSink {
             sender: Some(sender),
             writer: Some(writer),
+            here: None,
             failure,
-            tile_format: settings.tile_format,
+            tile_format,
         })
     }
 
     fn send(&self, message: Message) -> Result<()> {
+        if let Some(here) = &self.here {
+            if let Some((code, message)) = &*self.failure.lock().unwrap_or_else(|p| p.into_inner())
+            {
+                return Err(Error::new(*code, message.clone()));
+            }
+            let taken = here
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take(message);
+            if let Err(e) = &taken {
+                *self.failure.lock().unwrap_or_else(|p| p.into_inner()) =
+                    Some((e.exit_code, e.message.clone()));
+            }
+            return taken.map(|_| ());
+        }
         let sent = self.sender.as_ref().map(|s| s.send(message));
         match sent {
             Some(Ok(())) => Ok(()),
@@ -120,6 +151,16 @@ impl MbtilesSink {
             None => Error::new(EXIT_IMPOSSIBLE, "mbtiles writer stopped"),
         }
     }
+
+    /// Closes the database of a writer without a thread, unless it failed.
+    fn close_here(&mut self) -> Result<()> {
+        match self.here.take() {
+            Some(here) if self.failure.lock().unwrap_or_else(|p| p.into_inner()).is_none() => {
+                here.into_inner().unwrap_or_else(|p| p.into_inner()).close()
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 impl Drop for MbtilesSink {
@@ -129,6 +170,7 @@ impl Drop for MbtilesSink {
         if let Some(writer) = self.writer.take() {
             let _ = writer.join();
         }
+        let _ = self.close_here();
     }
 }
 
@@ -168,7 +210,7 @@ impl TileSink for MbtilesSink {
             Some(writer) => writer
                 .join()
                 .unwrap_or_else(|_| Err(Error::new(EXIT_IMPOSSIBLE, "mbtiles writer panicked"))),
-            None => Ok(()),
+            None => self.close_here(),
         };
         sent.and(joined)
     }
@@ -246,125 +288,157 @@ pub fn mbtiles_open(path: &str, settings: &SinkSettings) -> Result<Connection> {
 /// The writer thread: inserts tiles until `Finish`, then writes the metadata
 /// and closes the database as `mbtiles_close` does.
 fn write_tiles(db: Connection, receiver: Receiver<Message>, allow_existing: bool) -> Result<()> {
-    let mut finish: Option<(Box<Metadata>, Extra)> = None;
-    {
-        let begin = |db: &Connection| {
-            sqlite3_exec(db, c"BEGIN").map_err(|e| sqlite_error(format!("BEGIN: {}", e)))
+    let mut writer = Writer::new(db, allow_existing)?;
+    for message in receiver.iter() {
+        if !writer.take(message)? {
+            break;
+        }
+    }
+    writer.close()
+}
+
+/// The database and what has been written to it, in a transaction that is
+/// committed every so often.
+struct Writer {
+    db: Connection,
+    allow_existing: bool,
+    /// (zoom, hash) of the images this writer has stored, so that a tile
+    /// seen before at the same zoom does not replace its row again.
+    stored: HashSet<(u8, u64)>,
+    tiles_in_batch: usize,
+    bytes_in_batch: usize,
+    finish: Option<(Box<Metadata>, Extra)>,
+}
+
+impl Writer {
+    fn new(db: Connection, allow_existing: bool) -> Result<Writer> {
+        let writer = Writer {
+            db,
+            allow_existing,
+            stored: HashSet::new(),
+            tiles_in_batch: 0,
+            bytes_in_batch: 0,
+            finish: None,
         };
-        let commit = |db: &Connection| {
-            sqlite3_exec(db, c"COMMIT").map_err(|e| sqlite_error(format!("COMMIT: {}", e)))
-        };
+        for (sql, what) in [
+            (INSERT_IMAGE, "images"),
+            (INSERT_MAP, "map"),
+            (DELETE_MAP, "delete map"),
+            (DELETE_IMAGES, "delete images"),
+        ] {
+            writer.prepare(sql, what)?;
+        }
+        writer.begin()?;
+        Ok(writer)
+    }
 
-        let prepare = |sql: &str, what: &str| {
-            db.prepare(sql)
-                .map_err(|_| sqlite_error(format!("sqlite3 {} prep failed", what)))
-        };
-        let mut images = prepare(
-            "replace into images (zoom_level, tile_id, tile_data) values (?, ?, ?)",
-            "images",
-        )?;
-        let mut map = prepare(
-            "insert into map (zoom_level, tile_column, tile_row, tile_id) values (?, ?, ?, ?)",
-            "map",
-        )?;
-        let mut delete_map = prepare("delete from map where zoom_level = ?", "delete map")?;
-        let mut delete_images =
-            prepare("delete from images where zoom_level = ?", "delete images")?;
+    fn prepare(&self, sql: &str, what: &str) -> Result<rusqlite::CachedStatement<'_>> {
+        self.db
+            .prepare_cached(sql)
+            .map_err(|_| sqlite_error(format!("sqlite3 {} prep failed", what)))
+    }
 
-        // (zoom, hash) of the images this writer has stored, so that a tile
-        // seen before at the same zoom does not replace its row again.
-        let mut stored: HashSet<(u8, u64)> = HashSet::new();
-        let mut tiles_in_batch = 0usize;
-        let mut bytes_in_batch = 0usize;
-        begin(&db)?;
+    fn begin(&self) -> Result<()> {
+        sqlite3_exec(&self.db, c"BEGIN").map_err(|e| sqlite_error(format!("BEGIN: {}", e)))
+    }
 
-        for message in receiver.iter() {
-            match message {
-                Message::Tile {
-                    z,
-                    x,
-                    y,
-                    hash,
-                    data,
-                } => {
-                    let hash_text = hash.to_string();
-                    if stored.insert((z, hash)) {
-                        images
-                            .execute(rusqlite::params![z as i32, hash_text, data])
-                            .map_err(|_| {
-                                sqlite_error(format!(
-                                    "sqlite3 images insert failed: {}",
-                                    sqlite3_errmsg(&db)
-                                ))
-                            })?;
-                    }
-                    let tile_row = ((1i64 << z) - 1 - y as i64) as i32;
-                    map.execute(rusqlite::params![z as i32, x as i32, tile_row, hash_text])
-                        .map_err(|_| {
-                            sqlite_error(format!(
-                                "sqlite3 map insert failed: {}",
-                                sqlite3_errmsg(&db)
-                            ))
-                        })?;
+    fn commit(&self) -> Result<()> {
+        sqlite3_exec(&self.db, c"COMMIT").map_err(|e| sqlite_error(format!("COMMIT: {}", e)))
+    }
 
-                    tiles_in_batch += 1;
-                    bytes_in_batch += data.len();
-                    if tiles_in_batch >= BATCH_TILES || bytes_in_batch >= BATCH_BYTES {
-                        commit(&db)?;
-                        begin(&db)?;
-                        tiles_in_batch = 0;
-                        bytes_in_batch = 0;
-                    }
+    fn failed(&self, what: &str) -> Error {
+        sqlite_error(format!("sqlite3 {} failed: {}", what, sqlite3_errmsg(&self.db)))
+    }
+
+    /// Takes one message, and returns whether more may follow.
+    fn take(&mut self, message: Message) -> Result<bool> {
+        match message {
+            Message::Tile {
+                z,
+                x,
+                y,
+                hash,
+                data,
+            } => {
+                let hash_text = hash.to_string();
+                if self.stored.insert((z, hash)) {
+                    self.prepare(INSERT_IMAGE, "images")?
+                        .execute(rusqlite::params![z as i32, hash_text, data])
+                        .map_err(|_| self.failed("images insert"))?;
                 }
-                Message::Erase { z, reply } => {
-                    let erased = delete_map
-                        .execute([z as i32])
-                        .map_err(|_| {
-                            sqlite_error(format!(
-                                "sqlite3 delete map failed: {}",
-                                sqlite3_errmsg(&db)
-                            ))
-                        })
-                        .and_then(|_| {
-                            delete_images.execute([z as i32]).map_err(|_| {
-                                sqlite_error(format!(
-                                    "sqlite3 delete images failed: {}",
-                                    sqlite3_errmsg(&db)
-                                ))
-                            })
-                        })
-                        .map(|_| ());
-                    stored.retain(|&(zoom, _)| zoom != z);
-                    let failed = erased
-                        .as_ref()
-                        .err()
-                        .map(|e| Error::new(e.exit_code, e.message.clone()));
-                    let _ = reply.send(erased);
-                    if let Some(e) = failed {
-                        return Err(e);
-                    }
+                let tile_row = ((1i64 << z) - 1 - y as i64) as i32;
+                self.prepare(INSERT_MAP, "map")?
+                    .execute(rusqlite::params![z as i32, x as i32, tile_row, hash_text])
+                    .map_err(|_| self.failed("map insert"))?;
+
+                self.tiles_in_batch += 1;
+                self.bytes_in_batch += data.len();
+                if self.tiles_in_batch >= BATCH_TILES || self.bytes_in_batch >= BATCH_BYTES {
+                    self.commit()?;
+                    self.begin()?;
+                    self.tiles_in_batch = 0;
+                    self.bytes_in_batch = 0;
                 }
-                Message::Finish { metadata, extra } => {
-                    finish = Some((metadata, extra));
-                    break;
+                Ok(true)
+            }
+            Message::Erase { z, reply } => {
+                let erased = self
+                    .prepare(DELETE_MAP, "delete map")
+                    .and_then(|mut s| s.execute([z as i32]).map_err(|_| self.failed("delete map")))
+                    .and_then(|_| {
+                        self.prepare(DELETE_IMAGES, "delete images").and_then(|mut s| {
+                            s.execute([z as i32])
+                                .map_err(|_| self.failed("delete images"))
+                        })
+                    })
+                    .map(|_| ());
+                self.stored.retain(|&(zoom, _)| zoom != z);
+                let failed = erased
+                    .as_ref()
+                    .err()
+                    .map(|e| Error::new(e.exit_code, e.message.clone()));
+                let _ = reply.send(erased);
+                match failed {
+                    Some(e) => Err(e),
+                    None => Ok(true),
                 }
             }
+            Message::Finish { metadata, extra } => {
+                self.finish = Some((metadata, extra));
+                Ok(false)
+            }
         }
-        commit(&db)?;
     }
 
-    if let Some((m, extra)) = finish {
-        mbtiles_write_metadata(&db, &m, allow_existing)?;
-        for (k, v) in extra {
-            db.execute(
-                "INSERT INTO metadata (name, value) VALUES (?1, ?2)",
-                (&k, &v),
-            )
-            .map_err(|e| sqlite_error(format!("set {} in metadata: {}", k, e)))?;
+    /// Commits, writes the metadata if `Finish` came, and closes.
+    fn close(self) -> Result<()> {
+        self.commit()?;
+        let Writer {
+            db,
+            allow_existing,
+            finish,
+            ..
+        } = self;
+        db.flush_prepared_statement_cache();
+        if let Some((m, extra)) = finish {
+            mbtiles_write_metadata(&db, &m, allow_existing)?;
+            for (k, v) in extra {
+                db.execute(
+                    "INSERT INTO metadata (name, value) VALUES (?1, ?2)",
+                    (&k, &v),
+                )
+                .map_err(|e| sqlite_error(format!("set {} in metadata: {}", k, e)))?;
+            }
         }
+        mbtiles_close(db)
     }
-    mbtiles_close(db)
 }
+
+const INSERT_IMAGE: &str = "replace into images (zoom_level, tile_id, tile_data) values (?, ?, ?)";
+const INSERT_MAP: &str =
+    "insert into map (zoom_level, tile_column, tile_row, tile_id) values (?, ?, ?, ?)";
+const DELETE_MAP: &str = "delete from map where zoom_level = ?";
+const DELETE_IMAGES: &str = "delete from images where zoom_level = ?";
 
 /// tippecanoe's `mbtiles_close`.
 fn mbtiles_close(db: Connection) -> Result<()> {

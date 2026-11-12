@@ -217,10 +217,7 @@ impl Out {
 /// Sorts `store.features` and fills in `feature_minzoom`. Returns the zoom plan.
 pub fn order(store: &mut FeatureStore, options: &Options) -> crate::Result<Plan> {
     let threads = options.thread_count();
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build()
-        .map_err(|e| Error::new(tippecanoe::errors::EXIT_PTHREAD, e.to_string()))?;
+    let pool = crate::pool::Pool::new(threads)?;
     let mut out = Out {
         quiet: options.quiet,
         err: Vec::new(),

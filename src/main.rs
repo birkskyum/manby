@@ -9,7 +9,7 @@
 
 use std::ffi::OsString;
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_family = "wasm")))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
@@ -20,13 +20,13 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// jemalloc's settings: a few arenas, so that memory one thread frees is
 /// reused by the others, and freed pages go back to the system at once, so
 /// that the peak memory is the peak of what is in use.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_family = "wasm")))]
 #[repr(transparent)]
 pub struct MallocConf(*const u8);
 // SAFETY: the pointer is to a static string that is never written.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_family = "wasm")))]
 unsafe impl Sync for MallocConf {}
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_family = "wasm")))]
 #[unsafe(export_name = "_rjem_malloc_conf")]
 pub static MALLOC_CONF: MallocConf =
     MallocConf(c"narenas:4,dirty_decay_ms:0,muzzy_decay_ms:0,retain:true".as_ptr() as *const u8);
@@ -77,55 +77,9 @@ fn main() {
         run_as(program, &argv[0]);
     }
 
-    let result = if name == "tile-join" {
-        // under tile-join's name, manby is tile-join
-        let commandline = tippecanoe::text::format_commandline(&argv);
-        join(manby::join::args::parse_args(&argv, commandline))
-    } else if subcommand == "stats" {
-        let mut stats_argv = vec![format!("{} stats", argv[0])];
-        stats_argv.extend_from_slice(&argv[2..]);
-        manby::stats::parse_args(&stats_argv)
-            .and_then(|o| manby::stats::stats(&o))
-            .map(|_| false)
-    } else if subcommand == "merge" {
-        let mut merge_argv = vec![format!("{} merge", argv[0])];
-        merge_argv.extend_from_slice(&argv[2..]);
-        manby::shard::parse_args(&merge_argv)
-            .and_then(|o| manby::merge(&o))
-            .map(|summary| summary.incomplete)
-    } else if subcommand == "serve" {
-        let mut serve_argv = vec![format!("{} serve", argv[0])];
-        serve_argv.extend_from_slice(&argv[2..]);
-        manby::serve::parse_args(&serve_argv)
-            .and_then(|o| manby::serve::serve(&o))
-            .map(|_| false)
-    } else if subcommand == "join" || subcommand == "tile-join" {
-        let commandline = tippecanoe::text::format_commandline(&argv);
-        let mut join_argv = vec![format!("{} {}", argv[0], subcommand)];
-        join_argv.extend_from_slice(&argv[2..]);
-        join(manby::join::args::parse_args(&join_argv, commandline))
-    } else {
-        let mut argv = argv.clone();
-        if subcommand == "tippecanoe" {
-            argv.remove(1);
-        }
-        manby::options::parse_args(&argv)
-            .and_then(|options| manby::run(&options))
-            .map(|summary| summary.incomplete)
-    };
-    match result {
-        Ok(incomplete) => {
-            if incomplete {
-                std::process::exit(tippecanoe::errors::EXIT_INCOMPLETE);
-            }
-        }
-        Err(e) => {
-            // The messages are written out in full, as tippecanoe prints them.
-            if !e.message.is_empty() {
-                eprintln!("{}", e.message);
-            }
-            std::process::exit(e.exit_code);
-        }
+    let status = manby::command::run(&argv);
+    if status != 0 {
+        std::process::exit(status);
     }
 }
 
@@ -140,10 +94,6 @@ fn overzoom() {
         }
         std::process::exit(e.exit_code);
     }
-}
-
-fn join(options: manby::Result<manby::JoinOptions>) -> manby::Result<bool> {
-    options.and_then(|o| manby::join(&o)).map(|_| false)
 }
 
 /// The environment variable that names the program on Windows.

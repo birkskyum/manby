@@ -101,7 +101,7 @@ fn errno_location() -> *mut libc::c_int {
     unsafe { libc::__error() }
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "emscripten"))]
 fn errno_location() -> *mut libc::c_int {
     // SAFETY: __errno_location has no preconditions and returns this thread's errno.
     unsafe { libc::__errno_location() }

@@ -455,11 +455,12 @@ pub fn serialize_feature(
     } else {
         // An arbitrary but predictable point from the geometry, chosen by a
         // hash of the geometry, as the index point.
-        let mut ix: usize = 0;
+        // (64 bits, tippecanoe's size_t, also where usize is 32)
+        let mut sum: u64 = 0;
         for g in &scaled_geometry {
-            ix = ix.wrapping_add((g.x + g.y) as usize);
+            sum = sum.wrapping_add((g.x + g.y) as u64);
         }
-        ix %= scaled_geometry.len();
+        let ix = (sum % scaled_geometry.len() as u64) as usize;
 
         // If off the edge of the plane, mask to bring it back into the addressable area
         midx = cfg.SHIFT_LEFT(scaled_geometry[ix].x) & ((1i64 << 32) - 1);

@@ -1671,6 +1671,7 @@ impl<'d, 's> Driver<'d, 's> {
 }
 
 /// How long the coordinator waits for the next result before it sleeps.
+#[cfg(not(target_family = "wasm"))]
 const COORDINATOR_SPIN: std::time::Duration = std::time::Duration::from_micros(200);
 
 /// The next result, waited for awake for a moment before sleeping. Results
@@ -1678,6 +1679,7 @@ const COORDINATOR_SPIN: std::time::Duration = std::time::Duration::from_micros(2
 /// time the coordinator sleeps, waking it costs more than that (much more
 /// in a virtual machine, where it wakes a virtual processor), while the
 /// pool runs out of tasks.
+#[cfg(not(target_family = "wasm"))]
 fn recv_soon(rx: &Receiver<Done>) -> Option<Done> {
     let started = std::time::Instant::now();
     loop {
@@ -1688,6 +1690,23 @@ fn recv_soon(rx: &Receiver<Done>) -> Option<Done> {
                 return rx.recv().ok();
             }
             Err(TryRecvError::Empty) => std::hint::spin_loop(),
+        }
+    }
+}
+
+/// The next result. Without threads the tasks wait in this thread's queue,
+/// so it runs them until one is done.
+#[cfg(target_family = "wasm")]
+fn recv_soon(rx: &Receiver<Done>) -> Option<Done> {
+    loop {
+        match rx.try_recv() {
+            Ok(done) => return Some(done),
+            Err(TryRecvError::Disconnected) => return None,
+            Err(TryRecvError::Empty) => {
+                if rayon::yield_now() != Some(rayon::Yield::Executed) {
+                    return rx.recv().ok();
+                }
+            }
         }
     }
 }

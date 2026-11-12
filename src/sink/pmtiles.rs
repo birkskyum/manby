@@ -284,7 +284,7 @@ impl TileSink for PmtilesSink {
 
         let mut batch = None;
         {
-            let mut shard = self.lock((hash >> 64) as usize % SHARDS);
+            let mut shard = self.lock(((hash >> 64) % SHARDS as u128) as usize);
             let n = match shard.index.get(&hash) {
                 Some(&n) => n,
                 None => {

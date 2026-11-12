@@ -146,6 +146,7 @@ jobs:
         run: |
           export PATH=/opt/R/current/bin:$PATH
           R CMD build --no-build-vignettes --no-manual r
+          mkdir webr-repo
           MANBY_SOURCE=$GITHUB_WORKSPACE PKG_SYSREQS=false R -q -e "rwasm::build(paste0('./', Sys.glob('manby_*.tar.gz')), out_dir = 'webr-repo')"
       - name: Run its tests in webR
         working-directory: tests/webr

@@ -3,8 +3,8 @@
 #' Makes the tileset `output` from `data`, with the tiles that tippecanoe makes
 #' from the same features.
 #'
-#' `data` is a file that manby reads, such as GeoJSON, FlatGeobuf, CSV or
-#' GeoParquet, or a table:
+#' `data` is a file that manby reads, such as GeoJSON, FlatGeobuf, CSV,
+#' GeoParquet or GeoPackage, or a table:
 #'
 #' - An sf data frame. One in a CRS other than WGS 84 or Web Mercator is
 #'   reprojected to WGS 84 first.

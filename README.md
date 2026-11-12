@@ -6,7 +6,7 @@
 [![Homebrew](https://img.shields.io/badge/homebrew-birkskyum%2Ftap-orange)](https://github.com/birkskyum/homebrew-tap)
 [![release](https://img.shields.io/github/v/release/birkskyum/manby)](https://github.com/birkskyum/manby/releases)
 
-manby builds vector tilesets from GeoJSON, FlatGeobuf, CSV, Geobuf, GeoParquet or Arrow features, GeoParquet in object storage, and from DuckDB queries and data frames in Python and R. It makes the same tiles as [tippecanoe](https://github.com/felt/tippecanoe), in less memory, ten to eighteen times faster on a Mac and eight to fifteen times faster on Linux, more where tippecanoe's disk slows it down. `manby join` is tippecanoe's tile-join, two to thirty-five times faster.
+manby builds vector tilesets from GeoJSON, FlatGeobuf, CSV, Geobuf, GeoParquet, Arrow or GeoPackage features, GeoParquet in object storage, and from DuckDB queries and data frames in Python and R. It makes the same tiles as [tippecanoe](https://github.com/felt/tippecanoe), in less memory, ten to eighteen times faster on a Mac and eight to fifteen times faster on Linux, more where tippecanoe's disk slows it down. `manby join` is tippecanoe's tile-join, two to thirty-five times faster.
 
 The `manby` command takes tippecanoe's options:
 

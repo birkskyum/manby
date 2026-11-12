@@ -1,0 +1,6 @@
+/src/Makevars
+/src/rust/Cargo.toml
+/src/rust/Cargo.lock
+/src/rust/target
+/src/*.o
+/src/*.so

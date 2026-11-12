@@ -110,6 +110,13 @@ manby <- function(...) {
 }
 
 run <- function(args) {
+  if (in_webr()) {
+    status <- webr_run(args)
+    if (status != 0) {
+      stop(manby_error(status, args))
+    }
+    return(invisible())
+  }
   out <- function(x, proc) cat(x)
   err <- function(x, proc) cat(x, file = stderr())
   status <- processx::run(

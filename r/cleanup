@@ -1,0 +1,3 @@
+#!/bin/sh
+rm -f src/Makevars src/rust/Cargo.toml src/*.o src/*.so
+rm -rf src/rust/target

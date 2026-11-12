@@ -128,10 +128,7 @@ impl MbtilesSink {
             {
                 return Err(Error::new(*code, message.clone()));
             }
-            let taken = here
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .take(message);
+            let taken = here.lock().unwrap_or_else(|p| p.into_inner()).take(message);
             if let Err(e) = &taken {
                 *self.failure.lock().unwrap_or_else(|p| p.into_inner()) =
                     Some((e.exit_code, e.message.clone()));
@@ -155,7 +152,13 @@ impl MbtilesSink {
     /// Closes the database of a writer without a thread, unless it failed.
     fn close_here(&mut self) -> Result<()> {
         match self.here.take() {
-            Some(here) if self.failure.lock().unwrap_or_else(|p| p.into_inner()).is_none() => {
+            Some(here)
+                if self
+                    .failure
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .is_none() =>
+            {
                 here.into_inner().unwrap_or_else(|p| p.into_inner()).close()
             }
             _ => Ok(()),
@@ -347,7 +350,11 @@ impl Writer {
     }
 
     fn failed(&self, what: &str) -> Error {
-        sqlite_error(format!("sqlite3 {} failed: {}", what, sqlite3_errmsg(&self.db)))
+        sqlite_error(format!(
+            "sqlite3 {} failed: {}",
+            what,
+            sqlite3_errmsg(&self.db)
+        ))
     }
 
     /// Takes one message, and returns whether more may follow.
@@ -386,10 +393,11 @@ impl Writer {
                     .prepare(DELETE_MAP, "delete map")
                     .and_then(|mut s| s.execute([z as i32]).map_err(|_| self.failed("delete map")))
                     .and_then(|_| {
-                        self.prepare(DELETE_IMAGES, "delete images").and_then(|mut s| {
-                            s.execute([z as i32])
-                                .map_err(|_| self.failed("delete images"))
-                        })
+                        self.prepare(DELETE_IMAGES, "delete images")
+                            .and_then(|mut s| {
+                                s.execute([z as i32])
+                                    .map_err(|_| self.failed("delete images"))
+                            })
                     })
                     .map(|_| ());
                 self.stored.retain(|&(zoom, _)| zoom != z);

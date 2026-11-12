@@ -23,6 +23,9 @@
 #' }
 #' @export
 serve <- function(tilesets, port = 8080, host = "127.0.0.1", open = interactive()) {
+  if (in_webr()) {
+    not_in_webr("serve()")
+  }
   err <- tempfile("manby-serve-", fileext = ".txt")
   args <- c(
     "serve", "--port", format(port, scientific = FALSE), "--host", host,

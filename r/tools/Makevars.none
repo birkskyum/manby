@@ -1,0 +1,5 @@
+# Outside webR the package runs the manby program, so nothing is built.
+OBJECTS =
+
+all:
+	@:

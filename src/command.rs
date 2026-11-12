@@ -46,7 +46,10 @@ fn result(argv: &[String]) -> crate::Result<bool> {
             .map(|_| false)
     } else if subcommand == "join" || subcommand == "tile-join" {
         let commandline = tippecanoe::text::format_commandline(argv);
-        join(crate::join::args::parse_args(&after(subcommand), commandline))
+        join(crate::join::args::parse_args(
+            &after(subcommand),
+            commandline,
+        ))
     } else {
         let mut argv = argv.to_vec();
         if subcommand == "tippecanoe" {

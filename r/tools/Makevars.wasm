@@ -1,0 +1,17 @@
+# webR: manby, built from src/rust, linked into the package's library.
+TARGET = wasm32-unknown-emscripten
+LIBDIR = rust/target/$(TARGET)/release
+STATLIB = $(LIBDIR)/libmanby_r.a
+PKG_LIBS = -L$(LIBDIR) -lmanby_r
+
+all: $(SHLIB) clean-rust
+
+$(SHLIB): $(STATLIB)
+
+$(STATLIB):
+	PATH="$(PATH):$(HOME)/.cargo/bin" cargo build --release --lib --target $(TARGET) --manifest-path rust/Cargo.toml --target-dir rust/target
+
+clean-rust: $(SHLIB)
+	rm -rf rust/target
+
+.PHONY: $(STATLIB) clean-rust

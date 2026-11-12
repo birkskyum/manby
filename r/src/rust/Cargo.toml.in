@@ -1,0 +1,21 @@
+# manby for the R package in webR, where it runs in R's own process.
+# configure writes Cargo.toml from this, with manby from the package's commit,
+# a local checkout or crates.io.
+[package]
+name = "manby-r"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+path = "src/lib.rs"
+
+[dependencies]
+@MANBY@
+
+[profile.release]
+panic = "abort"
+
+# not part of the repository's workspace
+[workspace]

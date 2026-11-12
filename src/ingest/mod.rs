@@ -29,6 +29,7 @@ pub mod json;
 pub mod remote;
 pub mod serialize;
 pub mod serialized;
+pub mod shapefile;
 pub mod supercluster;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -488,6 +489,8 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
                 arrow::without_extension(&s.file).to_string()
             } else if gpkg::is_gpkg(&s.format, &s.file) {
                 gpkg::without_extension(&s.file).to_string()
+            } else if shapefile::is_shapefile(&s.format, &s.file) {
+                shapefile::without_extension(&s.file).to_string()
             } else {
                 s.file.clone()
             };
@@ -535,10 +538,16 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
 
         let bbox = options.bbox.map(arrow::WorldBox::new);
         let geopackage = gpkg::is_gpkg(&src.format, &src.file);
-        if remote::is_remote(&src.file) || geopackage {
+        let shapes = shapefile::is_shapefile(&src.format, &src.file);
+        if remote::is_remote(&src.file) || geopackage || shapes {
+            // -s says what the coordinates are, over the file's own CRS
+            let own_crs = options.source_crs.is_none() && options.projection == 0;
             let opened = if geopackage {
                 let table = named[source].then_some(src.layer.as_str());
-                gpkg::open_gpkg(&src.file, &reading_name, table).map(|(s, b)| (s, b, None))
+                gpkg::open_gpkg(&src.file, &reading_name, table, own_crs).map(|(s, b)| (s, b, None))
+            } else if shapes {
+                shapefile::open_shapefile(&src.file, &reading_name, own_crs)
+                    .map(|(s, b)| (s, b, None))
             } else {
                 remote::open_parquet(&src.file, &cfg, bbox.as_ref())
             };

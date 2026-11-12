@@ -9,7 +9,7 @@
 //! rows are read in its order, a batch at a time.
 //!
 //! A GeoPackage with more than one table of features needs the table named,
-//! as the layer of `-L` or `-l`.
+//! as the layer of `-L` or `-l`. `-s` names the CRS over the GeoPackage.
 
 use std::sync::Arc;
 
@@ -98,11 +98,13 @@ fn sqlite_error(fname: &str, e: impl std::fmt::Display) -> Error {
 }
 
 /// Opens the GeoPackage `path` and gives the schema and batches of its table
-/// of features `table`, or its only one.
+/// of features `table`, or its only one. `crs` says to take the CRS from the
+/// GeoPackage, rather than from `-s`.
 pub fn open_gpkg(
     path: &str,
     fname: &str,
     table: Option<&str>,
+    crs: bool,
 ) -> crate::Result<(SchemaRef, Batches)> {
     let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| Error::new(EXIT_OPEN, format!("{}: {}", fname, e)))?;
@@ -112,10 +114,10 @@ pub fn open_gpkg(
     for (name, kind) in &features.columns {
         fields.push(Field::new(name, kind.data_type(), true));
     }
-    let crs = match &features.crs {
+    let crs = match features.crs.as_ref().filter(|_| crs) {
         Some(c) => format!(",\"crs\":\"{}\"", c),
-        // undefined, which for GDAL is longitude and latitude
-        None => String::new(),
+        // undefined: -s says what it is, or else longitude and latitude
+        None => ",\"crs\":null".to_string(),
     };
     let geo = format!(
         "{{\"version\":\"1.1.0\",\"primary_column\":\"geometry\",\"columns\":{{\"geometry\":{{\"encoding\":\"WKB\"{}}}}}}}",

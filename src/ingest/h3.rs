@@ -56,6 +56,8 @@ pub struct Setup {
     pub base: i32,
     /// `--h3-no-points`: the points don't show.
     pub no_points: bool,
+    /// `--h3-fade`: the zooms each resolution shows beyond its own.
+    pub fade: i32,
     /// Each resolution's zooms: resolution, first zoom, last zoom.
     pub windows: Vec<(u8, i32, i32)>,
     /// The resolutions into which the points are counted.
@@ -112,12 +114,36 @@ impl Setup {
                 (base - o.h3_fade).max(o.minzoom)
             },
             no_points: o.h3_no_points,
+            fade: o.h3_fade,
             windows,
             resolutions,
             accumulate,
             median,
             category: o.h3_categories.clone(),
         }
+    }
+}
+
+impl Setup {
+    /// The resolutions, their zooms, `--h3-fade` and the zoom from which the
+    /// points show, as JSON, for `manby serve`'s map:
+    /// `{"windows":[[resolution,minzoom,maxzoom],...],"fade":1,"points":10}`.
+    pub fn json(&self) -> String {
+        let windows: Vec<String> = self
+            .windows
+            .iter()
+            .map(|w| format!("[{},{},{}]", w.0, w.1, w.2))
+            .collect();
+        format!(
+            "{{\"windows\":[{}],\"fade\":{},\"points\":{}}}",
+            windows.join(","),
+            self.fade,
+            if self.no_points {
+                "null".to_string()
+            } else {
+                self.base.to_string()
+            }
+        )
     }
 }
 

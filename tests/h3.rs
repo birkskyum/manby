@@ -93,6 +93,19 @@ fn hexagons_below_the_base_zoom() {
         }
     }
     assert_eq!(sum, points as f64);
+
+    // the resolutions' zooms, for manby serve's map
+    let opened = t.opened().unwrap();
+    let tilejson = manby::serve::tilejson(&t, &opened, "http://localhost");
+    assert!(
+        tilejson.contains(
+            r#""manby_h3":{"windows":[[1,0,1],[2,2,3],[3,4,4],[4,5,5]],"fade":0,"points":6}"#
+        ),
+        "{}",
+        tilejson
+    );
+    drop(opened);
+    drop(t);
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -131,7 +144,18 @@ fn only_hexagons_with_their_modes() {
             r.get(0)
         })
         .unwrap();
+    let h3: String = db
+        .query_row(
+            "SELECT value FROM metadata WHERE name = 'manby_h3'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     drop(db);
+    assert_eq!(
+        h3,
+        r#"{"windows":[[1,0,2],[2,1,4],[3,3,5],[4,4,6],[5,5,8],[6,7,8]],"fade":1,"points":null}"#
+    );
     assert!(json.contains(r#""id":"w_h3""#), "{}", json);
     assert!(!json.contains(r#""id":"w""#), "{}", json);
     for f in [

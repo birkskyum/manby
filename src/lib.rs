@@ -209,9 +209,11 @@ pub fn run(options: &Options) -> Result<Summary> {
                 meta: inputs,
                 tiling,
             };
-            sink.finish_with(&metadata, &[(shard::KEY.to_string(), record.to_json())])?;
+            let mut extra = record.meta.extra();
+            extra.push((shard::KEY.to_string(), record.to_json()));
+            sink.finish_with(&metadata, &extra)?;
         }
-        None => sink.finish(&metadata)?,
+        None => sink.finish_with(&metadata, &inputs.extra())?,
     }
 
     Ok(Summary {
@@ -222,6 +224,9 @@ pub fn run(options: &Options) -> Result<Summary> {
         incomplete,
     })
 }
+
+/// The metadata's key for `--h3`'s resolutions and zooms.
+pub(crate) const H3_KEY: &str = "manby_h3";
 
 /// What a run's metadata is made of besides its name and what the tiling
 /// found, which `manby merge` gets from each shard.
@@ -247,6 +252,9 @@ pub struct MetaInputs {
     /// How the output stores its tiles.
     pub tile_compression: bool,
     pub tile_format: TileFormat,
+    /// `--h3`: the hexagons' resolutions and zooms, as JSON, for
+    /// `manby serve`'s map.
+    pub h3: Option<String>,
 }
 
 impl MetaInputs {
@@ -267,7 +275,17 @@ impl MetaInputs {
             layermap: store.layermap(),
             tile_compression: !o.prevent.get(P_TILE_COMPRESSION),
             tile_format: o.tile_format,
+            h3: o.h3.then(|| ingest::h3::Setup::new(o).json()),
         }
+    }
+
+    /// What the metadata has beyond tippecanoe's: `--h3`'s resolutions and
+    /// zooms, as `manby_h3`.
+    pub fn extra(&self) -> Vec<(String, String)> {
+        self.h3
+            .iter()
+            .map(|h| (H3_KEY.to_string(), h.clone()))
+            .collect()
     }
 
     /// The tileset's metadata, as tippecanoe makes it.

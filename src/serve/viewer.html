@@ -17,6 +17,10 @@
   #panel label { display: flex; align-items: center; gap: 6px; margin: 3px 0; cursor: pointer; }
   #panel .swatch { width: 12px; height: 12px; border-radius: 2px; flex: none; }
   #panel .muted { color: #777; }
+  #panel .h3 { margin: 2px 0 6px 18px; }
+  #panel .h3 select { margin: 2px 0 4px; }
+  #panel .legend { display: flex; flex-wrap: wrap; gap: 2px 8px; }
+  #panel .legend span { display: flex; align-items: center; gap: 4px; }
   #panel hr { border: 0; border-top: 1px solid #eee; margin: 8px 0; }
   #error { color: #b00020; white-space: pre-wrap; }
   .maplibregl-popup-content { max-height: 320px; overflow: auto; font: 12px/1.35 system-ui, sans-serif; }
@@ -47,6 +51,9 @@ const BLANK = { version: 8, sources: {}, layers: [{ id: 'background', type: 'bac
 const POLYGON = ['match', ['geometry-type'], ['Polygon', 'MultiPolygon'], true, false];
 const LINE = ['match', ['geometry-type'], ['LineString', 'MultiLineString', 'Polygon', 'MultiPolygon'], true, false];
 const POINT = ['match', ['geometry-type'], ['Point', 'MultiPoint'], true, false];
+// for the hexagons of --h3, from few points to many
+const RAMP = ['#fde725', '#7ad151', '#22a884', '#2a788e', '#414487', '#440154'];
+const HEX_OPACITY = 0.75;
 
 const $ = id => document.getElementById(id);
 const escape = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
@@ -61,13 +68,157 @@ let tilejson = null;  // its TileJSON
 let hidden = new Set();
 let styleReady = false;  // set on style.load, as isStyleLoaded() waits for the basemap's tiles too
 let fitted = !!startHash;  // a position in the address wins over the tileset's bounds
+let colorBy = {};  // each --h3 layer's field to color by
+let scales = {};   // and the colors it has, as JSON, to set them only when they change
 
 const map = new maplibregl.Map({ container: 'map', style: BASEMAP, center: [0, 20], zoom: 1, hash: true });
 map.addControl(new maplibregl.NavigationControl(), 'top-right');
 map.addControl(new maplibregl.ScaleControl(), 'bottom-left');
 
+// a layer of --h3's hexagons, which have their cell, its resolution and its points
+function isH3(vl) {
+  const f = vl.fields || {};
+  return 'h3' in f && 'h3_resolution' in f && 'point_count' in f;
+}
+
+// each resolution's zooms, with --h3-fade's overlap, or one window for all
+function h3Windows() {
+  const h = tilejson && tilejson.manby_h3;
+  return h && Array.isArray(h.windows) && h.windows.length ? h.windows : null;
+}
+
 function layerIds(id) {
-  return [`manby-${id}-fill`, `manby-${id}-line`, `manby-${id}-circle`];
+  const ids = [`manby-${id}-fill`, `manby-${id}-line`, `manby-${id}-circle`];
+  const vl = (tilejson && tilejson.vector_layers || []).find(l => l.id === id);
+  if (vl && isH3(vl)) {
+    const windows = h3Windows();
+    if (windows) ids.push(...windows.map(w => `manby-${id}-r${w[0]}-${w[1]}`));
+  }
+  return ids;
+}
+
+// An opacity that fades in and out over half a zoom on each side of where
+// the next resolution takes over, if --h3-fade made them overlap.
+function fadeRamp(start, end, fade, first, last, full) {
+  if (!fade) return full;
+  const half = fade / 2;
+  let up = start + half;
+  let down = end + 1 - half;
+  if (!first && !last && up > down) up = down = (start + end + 1) / 2;
+  const stops = [];
+  if (!first) stops.push([start - half, 0], [up, full]);
+  if (!last) stops.push([down, full], [end + 1 + half, 0]);
+  // a resolution of one zoom with much fade peaks once
+  const ascending = stops.filter((st, j) => j === 0 || st[0] > stops[j - 1][0]);
+  return ascending.length > 1 ? ['interpolate', ['linear'], ['zoom'], ...ascending.flat()] : full;
+}
+
+// --h3's points: they fade in where the hexagons fade out
+function pointLayerOf(id) {
+  const h = tilejson && tilejson.manby_h3;
+  if (!h || h.points === null || h.points === undefined || !h.fade) return null;
+  return (tilejson.vector_layers || []).some(l => l.id === `${id}_h3` && isH3(l)) ? h.points + h.fade : null;
+}
+
+function addHexagons(source, vl, i, visibility) {
+  const windows = h3Windows();
+  const h = tilejson.manby_h3 || {};
+  const fade = h.fade || 0;
+  const outline = 'rgba(255, 255, 255, 0.6)';
+  if (!windows) {
+    map.addLayer({ id: `manby-${vl.id}-fill`, type: 'fill', source, 'source-layer': vl.id, layout: { visibility },
+      paint: { 'fill-color': RAMP[2], 'fill-opacity': HEX_OPACITY, 'fill-outline-color': outline } });
+    return;
+  }
+  windows.forEach(([r, minzoom, maxzoom], k) => {
+    const first = k === 0;
+    const last = k === windows.length - 1;
+    // the zooms the resolution is made for, without the overlap
+    const start = first ? minzoom : minzoom + fade;
+    const end = last ? (h.points === null || h.points === undefined ? maxzoom : h.points + fade - 1) : maxzoom - fade;
+    const pointsFollow = last && h.points !== null && h.points !== undefined;
+    map.addLayer({ id: `manby-${vl.id}-r${r}-${minzoom}`, type: 'fill', source, 'source-layer': vl.id,
+      minzoom, maxzoom: maxzoom + 1, filter: ['==', ['get', 'h3_resolution'], r], layout: { visibility },
+      paint: { 'fill-color': RAMP[2], 'fill-outline-color': outline,
+        'fill-opacity': fadeRamp(start, end, fade, first, last && !pointsFollow, HEX_OPACITY) } });
+  });
+}
+
+// the colors again once the hexagons shown have changed
+let scaling = null;
+function scheduleScales() {
+  clearTimeout(scaling);
+  scaling = setTimeout(updateScales, 150);
+}
+
+// The colors of an --h3 layer's hexagons, from the values of those of each
+// resolution shown at this zoom: quantiles of a number, or the commonest
+// values of text. Each resolution has its own, as a coarse hexagon holds
+// many more points than a fine one.
+function scaleOf(values, numeric, field) {
+  if (numeric) {
+    const numbers = values.map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+    const breaks = [...new Set(RAMP.map((_, j) => numbers.length ? numbers[Math.round(j / (RAMP.length - 1) * (numbers.length - 1))] : 0))];
+    if (breaks.length < 2) {
+      const color = RAMP[RAMP.length - 1];
+      return { color, legend: numbers.length ? [[color, breaks[0]]] : [] };
+    }
+    const colors = breaks.map((_, j) => RAMP[Math.round(j / (breaks.length - 1) * (RAMP.length - 1))]);
+    return {
+      color: ['interpolate', ['linear'], ['to-number', ['get', field], 0], ...breaks.flatMap((b, j) => [b, colors[j]])],
+      legend: breaks.map((b, j) => [colors[j], b]),
+    };
+  }
+  const counts = new Map();
+  for (const v of values) counts.set(String(v), (counts.get(String(v)) || 0) + 1);
+  const top = [...counts.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, COLORS.length).map(e => e[0]);
+  const legend = top.map((v, j) => [COLORS[j], v]);
+  if (counts.size > top.length) legend.push(['#bbb', 'other']);
+  return {
+    color: top.length ? ['match', ['to-string', ['get', field]], ...top.flatMap((v, j) => [v, COLORS[j]]), '#bbb'] : '#bbb',
+    legend,
+  };
+}
+
+function updateScales() {
+  if (!tilejson || !styleReady || !map.getSource('manby')) return;
+  const zoom = map.getZoom();
+  const windows = h3Windows();
+  const h = tilejson.manby_h3 || {};
+  for (const vl of tilejson.vector_layers || []) {
+    if (!isH3(vl)) continue;
+    const field = colorBy[vl.id] || 'point_count';
+    const numeric = (vl.fields[field] || '').toLowerCase() === 'number';
+    const features = map.querySourceFeatures('manby', { sourceLayer: vl.id });
+    const values = r => features
+      .filter(f => r === null || f.properties.h3_resolution === r)
+      .map(f => f.properties[field])
+      .filter(v => v !== undefined && v !== null);
+    // each fill layer shown at this zoom, and its resolution
+    const layers = windows
+      ? windows.map(([r, minzoom, maxzoom], k) => ({ id: `manby-${vl.id}-r${r}-${minzoom}`, r, minzoom, maxzoom, k }))
+        .filter(l => l.minzoom <= zoom && zoom < l.maxzoom + 1)
+      : [{ id: `manby-${vl.id}-fill`, r: null }];
+    // the legend is the scale of the resolution made for this zoom
+    const fade = h.fade || 0;
+    const own = layers.find(l => l.r === null || (zoom >= (l.k === 0 ? l.minzoom : l.minzoom + fade) - fade / 2)
+      && zoom < l.maxzoom - fade + 1 + fade / 2) || layers[0];
+    for (const l of layers) {
+      const scale = scaleOf(values(l.r), numeric, field);
+      const key = JSON.stringify(scale.color);
+      if (scales[l.id] !== key && map.getLayer(l.id)) {
+        scales[l.id] = key;
+        map.setPaintProperty(l.id, 'fill-color', scale.color);
+      }
+      if (l !== own) continue;
+      const box = document.querySelector(`[data-legend="${CSS.escape(vl.id)}"]`);
+      if (box) {
+        const label = v => typeof v === 'number' ? (Math.abs(v) >= 1000 ? Math.round(v).toLocaleString() : +v.toPrecision(3)) : v;
+        box.innerHTML = scale.legend.map(([c, v]) => `<span><span class="swatch" style="background:${c}"></span>${escape(label(v))}</span>`).join('') +
+          (l.r === null ? '' : `<span class="muted">resolution ${l.r}</span>`);
+      }
+    }
+  }
 }
 
 function addTileset() {
@@ -85,18 +236,26 @@ function addTileset() {
     bounds: tilejson.bounds,
     encoding: current.format === 'mlt' ? 'mlt' : 'mvt',
   });
+  scales = {};
   (tilejson.vector_layers || []).forEach((vl, i) => {
     const color = COLORS[i % COLORS.length];
     const [fill, line, circle] = layerIds(vl.id);
     const visibility = hidden.has(vl.id) ? 'none' : 'visible';
+    if (isH3(vl)) {
+      addHexagons(source, vl, i, visibility);
+      return;
+    }
+    const base = pointLayerOf(vl.id);
+    const fade = base === null ? 1 : fadeRamp(base, Infinity, tilejson.manby_h3.fade, false, true, 1);
     map.addLayer({ id: fill, type: 'fill', source, 'source-layer': vl.id, filter: POLYGON,
       layout: { visibility }, paint: { 'fill-color': color, 'fill-opacity': 0.2 } });
     map.addLayer({ id: line, type: 'line', source, 'source-layer': vl.id, filter: LINE,
       layout: { visibility }, paint: { 'line-color': color, 'line-width': ['interpolate', ['linear'], ['zoom'], 0, 0.6, 14, 1.6] } });
     map.addLayer({ id: circle, type: 'circle', source, 'source-layer': vl.id, filter: POINT,
       layout: { visibility }, paint: { 'circle-color': color, 'circle-radius': ['interpolate', ['linear'], ['zoom'], 0, 2, 14, 4.5],
-        'circle-stroke-color': '#fff', 'circle-stroke-width': 0.6 } });
+        'circle-stroke-color': '#fff', 'circle-stroke-width': 0.6, 'circle-opacity': fade, 'circle-stroke-opacity': fade } });
   });
+  updateScales();
 }
 
 function showLayers() {
@@ -114,6 +273,21 @@ function showLayers() {
       }
     });
     box.appendChild(label);
+    if (isH3(vl)) {
+      // the field the hexagons are colored by, and its colors
+      const h3 = document.createElement('div');
+      h3.className = 'h3';
+      const fields = Object.keys(vl.fields).filter(f => f !== 'h3' && f !== 'h3_resolution' && f !== 'modal_tie');
+      const chosen = colorBy[vl.id] || 'point_count';
+      h3.innerHTML = `<select title="Color by">${fields.map(f => `<option${f === chosen ? ' selected' : ''}>${escape(f)}</option>`).join('')}</select>` +
+        `<div class="legend" data-legend="${escape(vl.id)}"></div>`;
+      h3.querySelector('select').addEventListener('change', e => {
+        colorBy[vl.id] = e.target.value;
+        scales = {};
+        updateScales();
+      });
+      box.appendChild(h3);
+    }
   });
 }
 
@@ -152,6 +326,7 @@ async function poll() {
 
 $('tilesets').addEventListener('change', e => {
   hidden = new Set();
+  colorBy = {};
   fitted = false;
   history.replaceState(null, '', `?tileset=${encodeURIComponent(e.target.value)}`);
   load(tilesets.find(t => t.name === e.target.value));
@@ -165,6 +340,9 @@ map.on('style.load', () => {
   styleReady = true;
   addTileset();
 });
+map.on('idle', scheduleScales);
+map.on('moveend', scheduleScales);
+map.on('sourcedata', e => { if (e.sourceId === 'manby' && e.isSourceLoaded) scheduleScales(); });
 map.on('zoomend', () => {
   $('zoom').textContent = `Zoom ${map.getZoom().toFixed(1)}` + (tilejson ? `, tiles to z${tilejson.maxzoom}` : '');
 });

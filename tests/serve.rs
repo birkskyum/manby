@@ -208,8 +208,16 @@ fn stops() {
     assert_eq!(request(&base, "GET", "/w.json", "").status, 200);
     assert_eq!(request(&base, "GET", "/w/0/0/0.mvt", "").status, 200);
     running.stop();
-    // the port is closed
+    // the port closes, on Windows once tiny_http's thread that accepts
+    // connections has taken one more
     let addr = base.trim_start_matches("http://").trim_end_matches('/');
-    assert!(std::net::TcpStream::connect(addr).is_err());
+    let closed = (0..50).any(|_| {
+        let refused = std::net::TcpStream::connect(addr).is_err();
+        if !refused {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        refused
+    });
+    assert!(closed, "{} still open", addr);
     std::fs::remove_dir_all(&dir).unwrap();
 }

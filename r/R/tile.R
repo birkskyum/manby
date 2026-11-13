@@ -33,6 +33,11 @@
 #' @param layer The name of the layer, for a single input. Without one, the
 #'   layer is named after the file, or for a table after the tileset.
 #' @param force Overwrite an existing tileset.
+#' @param h3_sql Aggregates for the hexagons of `--h3`, as a named vector of
+#'   DuckDB SQL, such as `c(p90 = "quantile_cont(price, 0.9)")`. DuckDB
+#'   computes each over the points of each H3 cell, with its spatial and H3
+#'   extensions, and the hexagons get them as attributes of those names. The
+#'   points of a Parquet file are taken to be in WGS 84.
 #' @return `output`, invisibly.
 #' @examples
 #' \dontrun{
@@ -47,11 +52,14 @@
 #'
 #' tile(list(roads = roads, places = "places.parquet"), "map.pmtiles", "-zg")
 #'
+#' tile(places, "places.pmtiles", maximum_zoom = 12, h3 = TRUE,
+#'   h3_sql = c(p90 = "quantile_cont(price, 0.9)", kinds = "count(DISTINCT kind)"))
+#'
 #' tile(list(points = "liechtenstein.osm.pbf", lines = "liechtenstein.osm.pbf"),
 #'   "liechtenstein.pmtiles", maximum_zoom = 14, drop_densest_as_needed = TRUE)
 #' }
 #' @export
-tile <- function(data, output, ..., layer = NULL, force = TRUE) {
+tile <- function(data, output, ..., layer = NULL, force = TRUE, h3_sql = NULL) {
   output <- path.expand(as.character(output))
   if (is_layers(data)) {
     if (is.null(names(data)) || !all(nzchar(names(data)))) {
@@ -78,6 +86,7 @@ tile <- function(data, output, ..., layer = NULL, force = TRUE) {
   if (!nzchar(stem)) {
     stem <- "layer"
   }
+  read <- list()
   for (i in seq_along(layers)) {
     d <- layers[[i]]
     name <- names(layers)[i]
@@ -100,11 +109,22 @@ tile <- function(data, output, ..., layer = NULL, force = TRUE) {
         write_table(d, file.path(dir, stem))
       }
     }
+    read[[i]] <- list(name = name, data = d, file = file)
     argv <- c(argv, if (nzchar(name)) {
       paste0("-L{\"file\":", json_string(file), ",\"layer\":", json_string(name), "}")
     } else {
       file
     })
+  }
+  if (length(h3_sql)) {
+    if (is.null(tmp)) {
+      tmp <- tempfile("manby-")
+      dir.create(tmp)
+    }
+    if (length(read) > 1 && !all(nzchar(names(layers)))) {
+      stop("h3_sql with several layers needs each named", call. = FALSE)
+    }
+    argv <- c(argv, paste0("--h3-join=", write_h3_join(read, h3_sql, file.path(tmp, "h3.parquet"))))
   }
   run(argv)
   invisible(output)
@@ -211,17 +231,36 @@ write_gdal <- function(path, name, base, sf = requireNamespace("sf", quietly = T
     d <- sf::st_read(path, layer = layer, quiet = TRUE)
     return(write_table(d, base))
   }
+  con <- duckdb_connect(paste("manby reads", basename(path), "with sf or DuckDB"))
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+  file <- paste0(base, ".parquet")
+  DBI::dbExecute(con, paste0(
+    "COPY (SELECT * EXCLUDE (geometry), ST_AsWKB(geometry) AS geometry FROM (",
+    gdal_select(con, path, name), ")) TO ", DBI::dbQuoteString(con, file), " (FORMAT parquet)"
+  ))
+  file
+}
+
+#' A DuckDB connection with the spatial extension, and others named.
+#' @noRd
+duckdb_connect <- function(why, extensions = character()) {
   if (!requireNamespace("duckdb", quietly = TRUE)) {
-    stop(
-      "manby reads ", basename(path), " with sf or DuckDB, and neither is installed. ",
-      "Install one with install.packages(\"sf\") or install.packages(\"duckdb\").",
-      call. = FALSE
-    )
+    stop(why, ", and DuckDB is not installed. Install it with install.packages(\"duckdb\").", call. = FALSE)
   }
   con <- DBI::dbConnect(duckdb::duckdb())
-  on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
   DBI::dbExecute(con, "INSTALL spatial")
   DBI::dbExecute(con, "LOAD spatial")
+  for (e in extensions) {
+    DBI::dbExecute(con, paste("INSTALL", e, "FROM community"))
+    DBI::dbExecute(con, paste("LOAD", e))
+  }
+  con
+}
+
+#' A query of the layer `name` of a file that GDAL reads, or its first layer,
+#' with its fields and its geometry in WGS 84 as `geometry`.
+#' @noRd
+gdal_select <- function(con, path, name) {
   q <- function(x) DBI::dbQuoteString(con, x)
   meta <- DBI::dbGetQuery(con, paste0(
     "SELECT l.name, l.geometry_fields[1].name AS geom, ",
@@ -244,21 +283,110 @@ write_gdal <- function(path, name, base, sf = requireNamespace("sf", quietly = T
   } else {
     paste0("ST_Transform(", column, ", ", q(crs), ", 'EPSG:4326', always_xy := true)")
   }
-  file <- paste0(base, ".parquet")
-  DBI::dbExecute(con, paste0(
+  paste0(
     # the layer's fields, without the feature ids that DuckDB 2 adds
-    "COPY (SELECT ",
+    "SELECT ",
     if (!nrow(meta)) {
       paste0("* EXCLUDE (", column, "), ")
     } else if (nzchar(meta$fields[row])) {
       paste0(meta$fields[row], ", ")
     },
-    "ST_AsWKB(", geometry, ") AS geometry ",
-    "FROM ST_Read(", q(path),
+    geometry, " AS geometry FROM ST_Read(", q(path),
     if (nrow(meta)) paste0(", layer = ", q(meta$name[row])),
-    ")) TO ", q(file), " (FORMAT parquet)"
+    ")"
+  )
+}
+
+#' A query of a Parquet file with its geometry, GeoParquet or well-known
+#' binary in a column named geometry, geom or wkb_geometry, as `geometry`.
+#' @noRd
+parquet_select <- function(con, path) {
+  from <- paste0("read_parquet(", DBI::dbQuoteString(con, path), ")")
+  desc <- DBI::dbGetQuery(con, paste("DESCRIBE SELECT * FROM", from))
+  i <- which(startsWith(toupper(desc$column_type), "GEOMETRY"))
+  wkb <- length(i) == 0
+  if (wkb) {
+    i <- which(tolower(desc$column_name) %in% c("geometry", "geom", "wkb_geometry") & desc$column_type == "BLOB")
+  }
+  if (!length(i)) {
+    stop(basename(path), " has no geometry column for h3_sql", call. = FALSE)
+  }
+  column <- DBI::dbQuoteIdentifier(con, desc$column_name[i[1]])
+  paste0(
+    "SELECT * EXCLUDE (", column, "), ",
+    if (wkb) paste0("ST_GeomFromWKB(", column, ")") else column,
+    " AS geometry FROM ", from
+  )
+}
+
+#' `h3_sql`: writes the aggregates of the points of each layer in their H3
+#' cells of every resolution, by DuckDB, for `--h3-join`, and gives the
+#' file's name. A layer is its name, the data given and the file manby reads.
+#' @noRd
+write_h3_join <- function(layers, h3_sql, file) {
+  if (is.null(names(h3_sql)) || !all(nzchar(names(h3_sql)))) {
+    stop("h3_sql needs a name for each aggregate, such as c(p90 = \"quantile_cont(price, 0.9)\")", call. = FALSE)
+  }
+  con <- duckdb_connect("h3_sql is computed by DuckDB", "h3")
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+  aggregates <- paste0(h3_sql, " AS ", DBI::dbQuoteIdentifier(con, names(h3_sql)), collapse = ", ")
+  queries <- vapply(seq_along(layers), function(i) {
+    l <- layers[[i]]
+    paste0(
+      "SELECT h3_h3_to_string(h3_latlng_to_cell(ST_Y(__point), ST_X(__point), r::INTEGER)) AS h3, ",
+      if (length(layers) > 1) paste0(DBI::dbQuoteString(con, l$name), " AS layer, "),
+      aggregates,
+      " FROM (SELECT * EXCLUDE (geometry), unnest(ST_Dump(geometry)).geom AS __point FROM (",
+      points_select(con, l$data, l$file, l$name, i),
+      ") WHERE ST_Dimension(geometry) = 0), range(0, 16) AS __resolutions(r) GROUP BY ALL"
+    )
+  }, "")
+  DBI::dbExecute(con, paste0(
+    "COPY (", paste(queries, collapse = " UNION ALL BY NAME "), ") TO ",
+    DBI::dbQuoteString(con, file), " (FORMAT parquet)"
   ))
   file
+}
+
+#' A query of a layer's features with their geometry in WGS 84 as `geometry`.
+#' @noRd
+points_select <- function(con, d, file, name, i) {
+  if (!inherits(d, "sf") && !(is.data.frame(d) && any(vapply(d, inherits, NA, "sfc"))) &&
+    !inherits(d, "tbl_lazy") && !is_path(d) && requireNamespace("sf", quietly = TRUE)) {
+    # a table with its geometry in well-known binary, as sf
+    df <- as.data.frame(d)
+    wkb <- df$geometry
+    df$geometry <- NULL
+    d <- sf::st_sf(df, geometry = sf::st_as_sfc(structure(lapply(wkb, as.raw), class = "WKB"), crs = 4326))
+  }
+  if (inherits(d, "sf") || (is.data.frame(d) && any(vapply(d, inherits, NA, "sfc")))) {
+    x <- sf::st_as_sf(d)
+    if (!is.na(sf::st_crs(x)) && !isTRUE(sf::st_crs(x)$epsg == 4326)) {
+      x <- sf::st_transform(x, 4326)
+    }
+    x <- x[sf::st_geometry_type(x) %in% c("POINT", "MULTIPOINT"), ]
+    x <- suppressWarnings(sf::st_cast(x, "POINT"))
+    xy <- sf::st_coordinates(x)
+    df <- sf::st_drop_geometry(x)
+    for (n in names(df)) {
+      df[[n]] <- column(df[[n]], n)
+    }
+    df <- as.data.frame(Filter(Negate(is.null), df))
+    df$`__lon` <- xy[, 1]
+    df$`__lat` <- xy[, 2]
+    table <- paste0("__h3_points_", i)
+    duckdb::duckdb_register(con, table, df)
+    return(paste0("SELECT * EXCLUDE (__lon, __lat), ST_Point(__lon, __lat) AS geometry FROM ", table))
+  }
+  # a file given, or the Parquet file that DuckDB wrote of its table
+  source <- if (is_path(d)) path.expand(as.character(d)) else file
+  if (grepl("\\.(geo)?parquet$", source, ignore.case = TRUE)) {
+    return(parquet_select(con, source))
+  }
+  if (grepl("\\.(csv|arrows?|feather|ipc)(\\.gz)?$", source, ignore.case = TRUE)) {
+    stop("h3_sql reads Parquet and the files that GDAL reads, not ", basename(source), call. = FALSE)
+  }
+  gdal_select(con, source, name)
 }
 
 json_string <- function(x) {

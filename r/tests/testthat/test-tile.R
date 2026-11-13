@@ -109,6 +109,32 @@ test_that("a file that GDAL reads makes the same tiles, through sf and DuckDB", 
   expect_true(length(make(file, "duckdb-projected", layer = "points")$data) > 0)
 })
 
+test_that("h3_sql gives the hexagons DuckDB's aggregates", {
+  skip_if(webr, "webR")
+  skip_if_not_installed("duckdb")
+  skip_on_cran()
+  fields <- function(path) {
+    con <- file(path, "rb")
+    on.exit(close(con))
+    h <- readBin(con, "integer", n = 32, size = 4)
+    seek(con, h[7] + h[8] * 2^32)
+    json <- rawToChar(memDecompress(readBin(con, "raw", n = h[9] + h[10] * 2^32), type = "gzip"))
+    layers <- jsonlite::fromJSON(json, simplifyDataFrame = FALSE)$vector_layers
+    names(layers[[which(endsWith(vapply(layers, `[[`, "", "id"), "_h3"))]]$fields)
+  }
+  sql <- c(mean_score = "avg(score)", kinds = "count(DISTINCT kind)")
+  out <- file.path(dir, "h3sql.pmtiles")
+  tile(points, out, maximum_zoom = 6, h3_no_points = TRUE, h3_sql = sql, quiet = TRUE)
+  expect_true(all(c("mean_score", "kinds", "point_count") %in% fields(out)))
+
+  sqlite <- file.path(dir, "h3sql.sqlite")
+  sf::st_write(points, sqlite, quiet = TRUE)
+  out <- file.path(dir, "h3sql-gdal.pmtiles")
+  tile(sqlite, out, layer = "points", maximum_zoom = 6, h3_no_points = TRUE, h3_sql = sql, quiet = TRUE)
+  expect_true(all(c("mean_score", "kinds") %in% fields(out)))
+  expect_error(tile(points, out, h3 = TRUE, h3_sql = "avg(score)"), "needs a name")
+})
+
 test_that("a list makes layers", {
   out <- file.path(dir, "layers.pmtiles")
   tile(list(a = points, b = fgb), out, maximum_zoom = 4, quiet = TRUE, threads = 2)

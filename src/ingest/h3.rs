@@ -331,6 +331,129 @@ impl Bins {
     }
 }
 
+/// `--h3-join`: attributes for cells, by cell and layer, or for any layer's
+/// cell under the empty layer name.
+pub type Joined = HashMap<(String, u64), Vec<(String, SerialVal)>>;
+
+/// Reads a Parquet file of attributes for cells: an `h3` column of cells, as
+/// text or numbers, an optional `layer` column, and the attributes. Numbers,
+/// true and false, and text become attributes; nulls are left out.
+pub fn read_join(path: &str) -> Result<Joined, String> {
+    use arrow_array::Array;
+    use arrow_array::cast::AsArray;
+    use arrow_array::types::*;
+    use arrow_schema::DataType;
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .and_then(|b| b.build())
+        .map_err(|e| e.to_string())?;
+    let mut joined = Joined::new();
+    for batch in reader {
+        let batch = batch.map_err(|e| e.to_string())?;
+        let schema = batch.schema();
+        let column = |name: &str| schema.index_of(name).ok().map(|i| batch.column(i).clone());
+        let cells = column("h3").ok_or("no h3 column of cells")?;
+        let layers = column("layer");
+        for row in 0..batch.num_rows() {
+            if cells.is_null(row) {
+                continue;
+            }
+            let cell: u64 = match cells.data_type() {
+                DataType::Utf8 => cells
+                    .as_string::<i32>()
+                    .value(row)
+                    .parse::<CellIndex>()
+                    .map(u64::from),
+                DataType::LargeUtf8 => cells
+                    .as_string::<i64>()
+                    .value(row)
+                    .parse::<CellIndex>()
+                    .map(u64::from),
+                DataType::Utf8View => cells
+                    .as_string_view()
+                    .value(row)
+                    .parse::<CellIndex>()
+                    .map(u64::from),
+                DataType::UInt64 => Ok(cells.as_primitive::<UInt64Type>().value(row)),
+                DataType::Int64 => Ok(cells.as_primitive::<Int64Type>().value(row) as u64),
+                t => return Err(format!("the h3 column is {}, not text or a number", t)),
+            }
+            .map_err(|e| format!("cell {}: {}", row, e))?;
+            let layer = match &layers {
+                Some(l) if !l.is_null(row) => match l.data_type() {
+                    DataType::Utf8 => l.as_string::<i32>().value(row).to_string(),
+                    DataType::LargeUtf8 => l.as_string::<i64>().value(row).to_string(),
+                    DataType::Utf8View => l.as_string_view().value(row).to_string(),
+                    t => return Err(format!("the layer column is {}, not text", t)),
+                },
+                _ => String::new(),
+            };
+            let mut values = Vec::new();
+            for (i, field) in schema.fields().iter().enumerate() {
+                let name = field.name();
+                if name == "h3" || name == "layer" {
+                    continue;
+                }
+                let a = batch.column(i);
+                if a.is_null(row) {
+                    continue;
+                }
+                let number = |v: f64| SerialVal::new(MVT_DOUBLE, &dtoa_milo(v));
+                let integer = |v: String| SerialVal::new(MVT_DOUBLE, &v);
+                let v = match a.data_type() {
+                    DataType::Int8 => integer(a.as_primitive::<Int8Type>().value(row).to_string()),
+                    DataType::Int16 => {
+                        integer(a.as_primitive::<Int16Type>().value(row).to_string())
+                    }
+                    DataType::Int32 => {
+                        integer(a.as_primitive::<Int32Type>().value(row).to_string())
+                    }
+                    DataType::Int64 => {
+                        integer(a.as_primitive::<Int64Type>().value(row).to_string())
+                    }
+                    DataType::UInt8 => {
+                        integer(a.as_primitive::<UInt8Type>().value(row).to_string())
+                    }
+                    DataType::UInt16 => {
+                        integer(a.as_primitive::<UInt16Type>().value(row).to_string())
+                    }
+                    DataType::UInt32 => {
+                        integer(a.as_primitive::<UInt32Type>().value(row).to_string())
+                    }
+                    DataType::UInt64 => {
+                        integer(a.as_primitive::<UInt64Type>().value(row).to_string())
+                    }
+                    DataType::Float32 => number(a.as_primitive::<Float32Type>().value(row) as f64),
+                    DataType::Float64 => number(a.as_primitive::<Float64Type>().value(row)),
+                    DataType::Decimal128(_, scale) => {
+                        let v = a.as_primitive::<Decimal128Type>().value(row);
+                        if *scale == 0 {
+                            integer(v.to_string())
+                        } else {
+                            number(v as f64 / 10f64.powi(*scale as i32))
+                        }
+                    }
+                    DataType::Boolean => boolean(a.as_boolean().value(row)),
+                    DataType::Utf8 => string(a.as_string::<i32>().value(row)),
+                    DataType::LargeUtf8 => string(a.as_string::<i64>().value(row)),
+                    DataType::Utf8View => string(a.as_string_view().value(row)),
+                    t => {
+                        return Err(format!(
+                            "the column {} is {}, not a number, true or false, or text",
+                            name, t
+                        ));
+                    }
+                };
+                values.push((name.to_string(), v));
+            }
+            joined.insert((layer, cell), values);
+        }
+    }
+    Ok(joined)
+}
+
 /// A hexagon, ready to serialize.
 pub struct Hexagon {
     pub layer: String,
@@ -403,8 +526,9 @@ fn boolean(v: bool) -> SerialVal {
     SerialVal::new(MVT_BOOL, if v { "true" } else { "false" })
 }
 
-/// The hexagons of the bins of every chunk, added up in the order given.
-pub fn hexagons(setup: &Setup, chunks: Vec<Bins>) -> Vec<Hexagon> {
+/// The hexagons of the bins of every chunk, added up in the order given,
+/// with the attributes that `--h3-join` gives their cells.
+pub fn hexagons(setup: &Setup, chunks: Vec<Bins>, joined: Option<&Joined>) -> Vec<Hexagon> {
     let mut layers: BTreeMap<String, HashMap<u64, Bin>> = BTreeMap::new();
     for chunk in chunks {
         for (layer, cells) in chunk.layers {
@@ -507,6 +631,23 @@ pub fn hexagons(setup: &Setup, chunks: Vec<Bins>) -> Vec<Hexagon> {
                         double(most as f64 / bin.count as f64),
                         boolean(modal.len() > 1),
                     ]);
+                }
+                // --h3-join: the cell's attributes for this layer, or any,
+                // over those of the same name
+                if let Some(joined) = joined {
+                    let cell = u64::from(c);
+                    let extra = joined
+                        .get(&(layer.clone(), cell))
+                        .or_else(|| joined.get(&(String::new(), cell)));
+                    for (k, v) in extra.into_iter().flatten() {
+                        match keys.iter().position(|x| x == k) {
+                            Some(i) => values[i] = v.clone(),
+                            None => {
+                                keys.push(Cow::Owned(k.clone()));
+                                values.push(v.clone());
+                            }
+                        }
+                    }
                 }
                 out.push(Hexagon {
                     layer: format!("{}_h3", layer),
@@ -633,7 +774,7 @@ mod tests {
             }
             bins.add(&s, "places", std::iter::once(p), &keys, &values);
         }
-        let hexes = hexagons(&s, vec![a, b]);
+        let hexes = hexagons(&s, vec![a, b], None);
         // one hexagon at each of resolutions 1 and 2, for zooms 0-1 and 2-3
         assert_eq!(hexes.len(), 2);
         let h = &hexes[0].feature;
@@ -657,6 +798,75 @@ mod tests {
         assert_eq!(get("modal_tie").as_deref(), Some("false"));
         assert_eq!((h.tippecanoe_minzoom, h.tippecanoe_maxzoom), (0, 1));
         assert!(h.geometry.len() >= 7);
+    }
+
+    #[test]
+    fn joined_attributes() {
+        use arrow_array::{
+            ArrayRef, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
+        };
+        use std::sync::Arc;
+
+        let s = setup("-z2 --h3-no-points");
+        let project = PROJECTIONS[0].project;
+        let mut bins = Bins::default();
+        bins.add(
+            &s,
+            "places",
+            std::iter::once(project(11.4, 48.2, 32)),
+            &[],
+            &[],
+        );
+        let r1 = Resolution::try_from(1u8).unwrap();
+        let cell = LatLng::new(48.2, 11.4).unwrap().to_cell(r1);
+
+        // one row for any layer's cell, and one for this layer's, which wins
+        let path =
+            std::env::temp_dir().join(format!("manby-h3-join-{}.parquet", std::process::id()));
+        let columns: Vec<(&str, ArrayRef)> = vec![
+            (
+                "h3",
+                Arc::new(StringArray::from(vec![cell.to_string(), cell.to_string()])),
+            ),
+            (
+                "layer",
+                Arc::new(StringArray::from(vec![None, Some("places")])),
+            ),
+            ("p90", Arc::new(Float64Array::from(vec![1.5, 2.5]))),
+            ("n", Arc::new(Int64Array::from(vec![Some(7), None]))),
+            ("any", Arc::new(BooleanArray::from(vec![true, false]))),
+            ("point_count", Arc::new(Int64Array::from(vec![10, 20]))),
+        ];
+        let batch = RecordBatch::try_from_iter(columns).unwrap();
+        let mut w = parquet::arrow::ArrowWriter::try_new(
+            std::fs::File::create(&path).unwrap(),
+            batch.schema(),
+            None,
+        )
+        .unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+
+        let joined = read_join(path.to_str().unwrap()).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(joined.len(), 2);
+        let hexes = hexagons(&s, vec![bins], Some(&joined));
+        let h = hexes
+            .iter()
+            .find(|h| h.feature.full_values[0].s == cell.to_string())
+            .unwrap();
+        let get = |k: &str| {
+            h.feature
+                .full_keys
+                .iter()
+                .position(|x| x == k)
+                .map(|i| h.feature.full_values[i].s.clone())
+        };
+        assert_eq!(get("p90").as_deref(), Some("2.5"));
+        assert_eq!(get("n"), None);
+        assert_eq!(get("any").as_deref(), Some("false"));
+        // over the hexagon's own
+        assert_eq!(get("point_count").as_deref(), Some("20"));
     }
 
     #[test]

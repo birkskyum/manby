@@ -31,6 +31,8 @@ An sf data frame in a CRS other than WGS 84 or Web Mercator is reprojected to WG
 
 A file in a format that manby does not read, such as KML, GPX or OpenStreetMap, is read with sf, or with DuckDB if sf is not installed. See [Other formats](../other-formats/#from-r-and-python).
 
+`h3_sql` gives the hexagons of `--h3` aggregates written in DuckDB's SQL. See [Aggregates in SQL](../h3/#aggregates-in-sql).
+
 ### DuckDB
 
 A DuckDB table from dplyr goes in as it is. DuckDB writes it to a temporary Parquet file, so it need not fit in memory.

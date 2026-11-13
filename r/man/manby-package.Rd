@@ -5,7 +5,7 @@
 \alias{manby-package}
 \title{manby: Vector Tilesets Like 'tippecanoe', Several Times Faster}
 \description{
-Builds vector tilesets in 'PMTiles' and 'MBTiles' from sf data frames, 'DuckDB' tables, 'Arrow' tables and files, with the tiles that 'tippecanoe' makes from the same features. It runs the 'manby' program, which it downloads from the package's release on first use.
+Builds vector tilesets in 'PMTiles' and 'MBTiles' from sf data frames, 'DuckDB' tables, 'Arrow' tables and files, with the tiles that 'tippecanoe' makes from the same features. It runs the 'manby' program, which it downloads from the package's release on first use, or in 'webR', where R can't run programs, manby built into the package.
 }
 \seealso{
 Useful links:

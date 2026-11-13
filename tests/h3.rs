@@ -95,3 +95,54 @@ fn hexagons_below_the_base_zoom() {
     assert_eq!(sum, points as f64);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn only_hexagons_with_their_modes() {
+    let input = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/arrow/wineries.fgb");
+    let dir = std::env::temp_dir().join(format!("manby-h3-only-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = dir.join("w.mbtiles");
+    run(&[
+        "tippecanoe",
+        "-q",
+        "-f",
+        "-z8",
+        "--h3-no-points",
+        "--h3-fade=1",
+        "--h3-categories=USER_CITY",
+        "--h3-median=USER_ZIP",
+        "-l",
+        "w",
+        "-o",
+        out.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    let report = manby::stats::report(out.to_str().unwrap(), true, 0).unwrap();
+    assert_eq!(report.zooms.len(), 9);
+    for z in &report.zooms {
+        let names: Vec<&str> = z.layers.keys().map(String::as_str).collect();
+        assert_eq!(names, ["w_h3"], "z{}", z.z);
+    }
+
+    // the points' layer is not in the metadata either
+    let db = rusqlite::Connection::open(&out).unwrap();
+    let json: String = db
+        .query_row("SELECT value FROM metadata WHERE name = 'json'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    drop(db);
+    assert!(json.contains(r#""id":"w_h3""#), "{}", json);
+    assert!(!json.contains(r#""id":"w""#), "{}", json);
+    for f in [
+        r#""USER_ZIP":"Number""#,
+        r#""modal_category":"String""#,
+        r#""modal_count":"Number""#,
+        r#""modal_share":"Number""#,
+        r#""modal_tie":"Boolean""#,
+        r#""point_count":"Number""#,
+    ] {
+        assert!(json.contains(f), "{} in {}", f, json);
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}

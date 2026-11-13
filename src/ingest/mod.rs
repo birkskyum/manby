@@ -1011,11 +1011,16 @@ fn add_hexagons(
             .iter()
             .map(|w| format!("{} at z{}-{}", w.0, w.1, w.2))
             .collect();
+        let points = if setup.no_points {
+            "no points".to_string()
+        } else {
+            format!("the points from z{}", setup.base)
+        };
         eprintln!(
-            "{} hexagons at H3 resolutions {}, and the points from z{}",
+            "{} hexagons at H3 resolutions {}, and {}",
             chunk.features.len(),
             windows.join(", "),
-            setup.base
+            points
         );
     }
     parts.seq_base.push(seq);

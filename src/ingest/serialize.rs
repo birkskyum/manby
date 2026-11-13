@@ -53,14 +53,7 @@ impl<'o> Config<'o> {
             o,
             project: o.project(),
             projection_alias: o.projection_alias(),
-            h3: o.h3.then(|| {
-                std::sync::Arc::new(super::h3::Setup::new(
-                    o.minzoom,
-                    o.h3_base(),
-                    &o.attribute_accum,
-                    o.h3_categories.clone(),
-                ))
-            }),
+            h3: o.h3.then(|| std::sync::Arc::new(super::h3::Setup::new(o))),
             supercluster: o.supercluster,
             encode_index: if a(A_HILBERT) {
                 encode_hilbert
@@ -289,6 +282,22 @@ pub fn serialize_feature(
     } else {
         None
     };
+    // --h3: where the points are, before they are scaled to the geometry's
+    // precision, and within the clipping boxes
+    let h3_points: Vec<(i64, i64)> = if cfg.h3.is_some() && sf.t as i32 == VT_POINT {
+        sf.geometry
+            .iter()
+            .filter(|g| g.op == VT_MOVETO)
+            .map(|g| (g.x, g.y))
+            .filter(|&(x, y)| {
+                o.clip_bboxes
+                    .iter()
+                    .all(|c| x >= c.minx && y >= c.miny && x <= c.maxx && y <= c.maxy)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let mut scaled_geometry: DrawVec = std::mem::take(&mut sf.geometry);
     scale_geometry(cfg, &mut sf_bbox, &mut scaled_geometry);
     let t = sf.t as i32;
@@ -486,8 +495,9 @@ pub fn serialize_feature(
         }
     }
 
+    let dropped = t == VT_POINT && cfg.h3.as_ref().is_some_and(|h3| h3.no_points);
     let layer = chunk.layer(layername);
-    if !cfg.filters {
+    if !cfg.filters && !dropped {
         let l = &mut chunk.layers[layer as usize];
         if t == VT_POINT {
             l.points += 1;
@@ -650,6 +660,25 @@ pub fn serialize_feature(
         }
     }
 
+    // --h3: a point is counted into its hexagons, and shows from the base
+    // zoom, or with --h3-no-points not at all
+    let mut tippecanoe_minzoom = sf.tippecanoe_minzoom;
+    if let Some(h3) = &cfg.h3
+        && t == VT_POINT
+    {
+        chunk.h3.get_or_insert_with(Default::default).add(
+            h3,
+            layername,
+            h3_points.into_iter(),
+            &sf.full_keys,
+            &sf.full_values,
+        );
+        if h3.no_points {
+            return false;
+        }
+        tippecanoe_minzoom = tippecanoe_minzoom.max(h3.base);
+    }
+
     if let Some(key) = category {
         sf.full_keys.push(Cow::Owned(key));
         sf.full_values.push(SerialVal {
@@ -698,25 +727,6 @@ pub fn serialize_feature(
 
     if generate_id {
         chunk.generate_ids.push(chunk.features.len() as u32);
-    }
-
-    // --h3: a point is counted into its hexagons, and shows from the base zoom
-    let mut tippecanoe_minzoom = sf.tippecanoe_minzoom;
-    if let Some(h3) = &cfg.h3
-        && t == VT_POINT
-    {
-        let points = scaled_geometry
-            .iter()
-            .filter(|g| g.op == VT_MOVETO)
-            .map(|g| (cfg.SHIFT_LEFT(g.x), cfg.SHIFT_LEFT(g.y)));
-        chunk.h3.get_or_insert_with(Default::default).add(
-            h3,
-            layername,
-            points,
-            &sf.full_keys,
-            &sf.full_values,
-        );
-        tippecanoe_minzoom = tippecanoe_minzoom.max(h3.base);
     }
 
     // --supercluster: a point is kept to cluster once every input is read

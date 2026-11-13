@@ -13,11 +13,14 @@ serve(tilesets, port = 8080, host = "127.0.0.1", open = interactive())
 
 \item{host}{The address to listen on.}
 
-\item{open}{Show the map, in the viewer pane or a browser.}
+\item{open}{Show the map, in the viewer pane or a browser.
+With manby built into the package, as from CRAN, it serves on threads of
+R's own process, until \verb{$stop()} or the server is garbage collected.}
 }
 \value{
 A \code{manby_server}, with \code{url}, the map's address, \code{tilejson}, the
-TileJSON address of each tileset by name, and \code{stop()}, which ends it.
+TileJSON address of each tileset by name, \code{stop()}, which ends it, and
+\code{alive()}, whether it serves.
 }
 \description{
 Serves PMTiles archives, MBTiles databases or directories of tiles with

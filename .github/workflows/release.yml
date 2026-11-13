@@ -49,7 +49,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - run: rustup toolchain install 1.98.1 --profile minimal && rustup default 1.98.1
+      - run: rustup toolchain install 1.100.0 --profile minimal && rustup default 1.100.0
       - uses: release-plz/action@v0.5
         id: release-plz
         with:
@@ -90,7 +90,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - run: rustup toolchain install 1.98.1 --profile minimal && rustup default 1.98.1
+      - run: rustup toolchain install 1.100.0 --profile minimal && rustup default 1.100.0
       - uses: release-plz/action@v0.5
         id: release-plz
         with:
@@ -154,7 +154,7 @@ jobs:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux || 'auto' }}
           docker-options: -e LIBZ_SYS_STATIC=1 ${{ matrix.docker }}
-          rust-toolchain: 1.98.1
+          rust-toolchain: 1.100.0
           maturin-version: v1.16.0
           args: --release --locked --out dist
       - name: Binary

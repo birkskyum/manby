@@ -139,11 +139,18 @@ impl Rest {
     /// Takes room for `n` bytes, if there is room.
     fn take(&self, n: usize) -> bool {
         let n = n as u64;
-        self.used
-            .fetch_update(Relaxed, Relaxed, |u| {
-                (u + n <= self.allowance).then_some(u + n)
-            })
-            .is_ok()
+        // fetch_update, which Rust 1.100 renamed try_update, a name that
+        // manby's oldest Rust doesn't have
+        let mut u = self.used.load(Relaxed);
+        loop {
+            if u + n > self.allowance {
+                return false;
+            }
+            match self.used.compare_exchange_weak(u, u + n, Relaxed, Relaxed) {
+                Ok(_) => return true,
+                Err(now) => u = now,
+            }
+        }
     }
 
     fn give(&self, n: usize) {

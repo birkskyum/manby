@@ -1,11 +1,11 @@
 /*******************************************************************************
-* Author    :  Angus Johnson                                                   *
-* Date      :  17 September 2024                                               *
-* Website   :  http://www.angusj.com                                           *
-* Copyright :  Angus Johnson 2010-2024                                         *
-* Purpose   :  This is the main polygon clipping module                        *
-* License   :  http://www.boost.org/LICENSE_1_0.txt                            *
-*******************************************************************************/
+ * Author    :  Angus Johnson                                                   *
+ * Date      :  17 September 2024                                               *
+ * Website   :  http://www.angusj.com                                           *
+ * Copyright :  Angus Johnson 2010-2024                                         *
+ * Purpose   :  This is the main polygon clipping module                        *
+ * License   :  http://www.boost.org/LICENSE_1_0.txt                            *
+ *******************************************************************************/
 
 //! Port of `clipper.engine.h` and `clipper.engine.cpp`: `ClipperBase` and `Clipper64`,
 //! returning closed and open paths (no PolyTree output).

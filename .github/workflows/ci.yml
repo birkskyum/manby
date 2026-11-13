@@ -21,21 +21,21 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTUP_TOOLCHAIN: 1.98.1
+  RUSTUP_TOOLCHAIN: 1.100.0
 
 jobs:
   fmt:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt
+      - run: rustup toolchain install 1.100.0 --profile minimal --component rustfmt
       - run: cargo fmt --all --check
 
   clippy:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - run: rustup toolchain install 1.98.1 --profile minimal --component clippy
+      - run: rustup toolchain install 1.100.0 --profile minimal --component clippy
       - uses: Swatinem/rust-cache@v2
       - name: Lint manby's code, tests and examples, which also builds them
         run: cargo clippy --locked --features mlt,remote -p manby --all-targets --no-deps -- -D warnings
@@ -63,7 +63,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - run: rustup toolchain install 1.98.1 --profile minimal
+      - run: rustup toolchain install 1.100.0 --profile minimal
       - uses: Swatinem/rust-cache@v2
       - run: make test
       - run: make test-golden-mlt
@@ -78,7 +78,7 @@ jobs:
     steps:
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v7
-      - run: rustup toolchain install 1.98.1 --profile minimal --component clippy
+      - run: rustup toolchain install 1.100.0 --profile minimal --component clippy
       - uses: Swatinem/rust-cache@v2
       - name: Lint manby's Windows code
         run: cargo clippy --locked --features mlt,remote -p manby --all-targets --no-deps -- -D warnings
@@ -98,7 +98,7 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v7
-      - run: rustup toolchain install 1.98.1 --profile minimal
+      - run: rustup toolchain install 1.100.0 --profile minimal
       - uses: Swatinem/rust-cache@v2
       - uses: astral-sh/setup-uv@v10.3.3
       - run: uvx --from 'maturin>=1.9,<2' maturin build --out dist
@@ -118,7 +118,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - run: rustup toolchain install 1.98.1 --profile minimal
+      - run: rustup toolchain install 1.100.0 --profile minimal
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked
       - uses: r-lib/actions/setup-r@v2

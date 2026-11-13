@@ -12,7 +12,7 @@ version = "0.2.6"
 edition = "2024"
 description = "Builds vector tilesets from geographic features, like tippecanoe, several times faster"
 license = "BSD-2-Clause"
-rust-version = "1.94"
+rust-version = "1.90"
 repository = "https://github.com/birkskyum/manby"
 homepage = "https://birkskyum.github.io/manby/"
 keywords = ["tippecanoe", "vector-tiles", "pmtiles", "mbtiles", "geojson"]
@@ -40,7 +40,8 @@ rustc-hash = "2.1"
 # coordinates in other CRSs, with crs-defs' definitions (src/crs/)
 proj4rs = "0.3"
 # --h3: points binned into H3 hexagons below a base zoom
-h3o = "0.11"
+# 0.9.5 and later need Rust 1.94, for const float functions, and make the same cells
+h3o = "=0.9.4"
 # manby serve
 tiny_http = "0.12"
 # GeoParquet in object storage or on the web

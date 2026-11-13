@@ -24,7 +24,7 @@ mise use -g github:birkskyum/manby
 
 The [releases](https://github.com/birkskyum/manby/releases) have the program alone, for macOS on Apple silicon and Intel, for Linux on x86-64 and arm64, built for glibc 2.28 or later, or for musl, which runs on any Linux, and for Windows on x86-64 and arm64.
 
-cargo builds it, with Rust 1.94 or later, but without [MapLibre Tiles](../guides/mlt/).
+cargo builds it, with Rust 1.90 or later, but without [MapLibre Tiles](../guides/mlt/).
 
 ```sh
 cargo install manby

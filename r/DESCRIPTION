@@ -29,7 +29,7 @@ Suggests:
     testthat (>= 3.0.0),
     withr
 OS_type: unix
-SystemRequirements: Cargo (Rust's package manager), rustc >= 1.94, for
+SystemRequirements: Cargo (Rust's package manager), rustc >= 1.90, for
     'webR' only
 Config/testthat/edition: 3
 Encoding: UTF-8

@@ -7,3 +7,5 @@ CI checks the formatting, lints manby's code with clippy, and runs the unit test
 manby's Rust API is what `src/lib.rs` does not hide: `run`, `join`, their options and the commands. A pull request that breaks it has `!` after its type, such as `feat!:`, and makes a minor release. The hidden modules can change freely.
 
 Releases need no one. Each merge updates the release PR, and merging that publishes manby to crates.io, PyPI, the GitHub releases and Homebrew.
+
+CRAN is the exception, as its maintainer submits each version. Once a release is out, `python3 r/tools/cran.py` makes the source package with manby and its crates vendored, `R CMD check --as-cran` checks it, and it goes in at [CRAN's submission page](https://cran.r-project.org/submit.html), with `r/cran-comments.md`.

@@ -1,5 +1,5 @@
-/* The package's native code, built only for webR, where manby runs in R's
-   own process: src/rust is manby's command line, called from here. */
+/* The package's native code, built where manby runs in R's own process, in
+   webR and from CRAN: src/rust is manby's command line, called from here. */
 
 #include <R.h>
 #include <Rinternals.h>
@@ -7,6 +7,8 @@
 
 int manby_r_run(int argc, const char **argv);
 int manby_r_stats(int argc, const char **argv, char **out);
+int manby_r_serve(int argc, const char **argv, char **out, void **server);
+void manby_r_serve_stop(void *server);
 void manby_r_free(char *s);
 
 static const char **arguments(SEXP args)
@@ -38,9 +40,45 @@ SEXP manby_stats_(SEXP args)
 	return result;
 }
 
+/* stops a server, once */
+static void stop_server(SEXP handle)
+{
+	void *server = R_ExternalPtrAddr(handle);
+	if (server) {
+		manby_r_serve_stop(server);
+		R_ClearExternalPtr(handle);
+	}
+}
+
+/* manby serve on threads of its own: the exit status, the addresses, and
+   the server, which stops when it is stopped or garbage collected */
+SEXP manby_serve_(SEXP args)
+{
+	char *out = NULL;
+	void *server = NULL;
+	int status = manby_r_serve(LENGTH(args), arguments(args), &out, &server);
+	SEXP result = PROTECT(allocVector(VECSXP, 3));
+	SET_VECTOR_ELT(result, 0, ScalarInteger(status));
+	SET_VECTOR_ELT(result, 1, out ? mkString(out) : allocVector(STRSXP, 0));
+	manby_r_free(out);
+	SEXP handle = PROTECT(R_MakeExternalPtr(server, R_NilValue, R_NilValue));
+	R_RegisterCFinalizerEx(handle, stop_server, TRUE);
+	SET_VECTOR_ELT(result, 2, handle);
+	UNPROTECT(2);
+	return result;
+}
+
+SEXP manby_serve_stop_(SEXP handle)
+{
+	stop_server(handle);
+	return R_NilValue;
+}
+
 static const R_CallMethodDef calls[] = {
 	{"manby_run_", (DL_FUNC) &manby_run_, 1},
 	{"manby_stats_", (DL_FUNC) &manby_stats_, 1},
+	{"manby_serve_", (DL_FUNC) &manby_serve_, 1},
+	{"manby_serve_stop_", (DL_FUNC) &manby_serve_stop_, 1},
 	{NULL, NULL, 0}
 };
 

@@ -1,12 +1,18 @@
 Package: manby
 Title: Vector Tilesets Like 'tippecanoe', Several Times Faster
 Version: 0.2.6
-Authors@R: person("Birk", "Skyum", email = "birk.skyum@pm.me", role = c("aut", "cre"))
+Authors@R: c(
+    person("Birk", "Skyum", email = "birk.skyum@pm.me", role = c("aut", "cre", "cph")),
+    person("Mapbox Inc.", role = "cph", comment = "tippecanoe, which manby ports"),
+    person("Protomaps LLC", role = "cph", comment = "tippecanoe"),
+    person("The authors of the Rust crates that manby builds in", role = c("ctb", "cph"),
+      comment = "listed in inst/AUTHORS of the source package from CRAN"))
 Description: Builds vector tilesets in 'PMTiles' and 'MBTiles' from sf data
     frames, 'DuckDB' tables, 'Arrow' tables and files, with the tiles that
-    'tippecanoe' makes from the same features. It runs the 'manby' program,
-    which it downloads from the package's release on first use, or in
-    'webR', where R can't run programs, manby built into the package.
+    'tippecanoe' makes from the same features. 'manby', a 'Rust' port of
+    'tippecanoe', is built into the package from CRAN and in 'webR', and
+    elsewhere the package runs the 'manby' program, which it downloads from
+    the package's release on first use.
 License: BSD_2_clause + file LICENSE
 URL: https://birkskyum.github.io/manby/, https://github.com/birkskyum/manby
 BugReports: https://github.com/birkskyum/manby/issues
@@ -28,9 +34,8 @@ Suggests:
     sf,
     testthat (>= 3.0.0),
     withr
-OS_type: unix
-SystemRequirements: Cargo (Rust's package manager), rustc >= 1.90, for
-    'webR' only
+SystemRequirements: Cargo (Rust's package manager), rustc >= 1.90, to
+    build manby into the package
 Config/testthat/edition: 3
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)

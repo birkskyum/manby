@@ -1,9 +1,11 @@
 # The same features from sf, a data frame, nanoarrow, Arrow and DuckDB make
 # the tiles that manby makes from GDAL's FlatGeobuf of them, as tippecanoe.
-# In webR, manby is built into the package, and the programs are left out.
+# In webR and from CRAN, manby is built into the package; in webR the
+# programs are left out. At most two threads, as CRAN asks.
 
 webr <- manby:::in_webr()
-skip_if(!webr && inherits(try(manby_binary(), silent = TRUE), "try-error"), "manby is not available")
+built_in <- manby:::built_in()
+skip_if(!built_in && inherits(try(manby_binary(), silent = TRUE), "try-error"), "manby is not available")
 skip_if_not_installed("sf")
 
 # A PMTiles archive's tile data and layers.
@@ -43,7 +45,7 @@ sf::st_write(points, fgb, layer_options = "SPATIAL_INDEX=NO", quiet = TRUE)
 make <- function(data, name, ...) {
   out <- file.path(dir, name, "points.pmtiles")
   dir.create(dirname(out))
-  expect_equal(tile(data, out, maximum_zoom = "g", drop_densest_as_needed = TRUE, quiet = TRUE, ...), out)
+  expect_equal(tile(data, out, maximum_zoom = "g", drop_densest_as_needed = TRUE, quiet = TRUE, threads = 2, ...), out)
   tiles(out)
 }
 
@@ -109,7 +111,7 @@ test_that("a file that GDAL reads makes the same tiles, through sf and DuckDB", 
 
 test_that("a list makes layers", {
   out <- file.path(dir, "layers.pmtiles")
-  tile(list(a = points, b = fgb), out, maximum_zoom = 4, quiet = TRUE)
+  tile(list(a = points, b = fgb), out, maximum_zoom = 4, quiet = TRUE, threads = 2)
   expect_equal(tiles(out)$layers, c("a", "b"))
   expect_error(tile(list(points), out), "needs a name")
 })
@@ -139,7 +141,7 @@ test_that("serve serves a tileset and its map", {
   expect_equal(jsonlite::fromJSON(server$tilejson[["points"]])$vector_layers$id, "points")
   expect_true(any(grepl("maplibre-gl", readLines(server$url, warn = FALSE))))
   server$stop()
-  expect_false(server$process$is_alive())
+  expect_false(server$alive())
   expect_error(serve(file.path(dir, "nothing.pmtiles"), port = 0, open = FALSE), class = "manby_error")
 })
 
@@ -159,13 +161,13 @@ test_that("serve and the program are not in webR", {
 })
 
 test_that("manby runs", {
-  # in webR, manby writes to the console itself
-  skip_if(webr, "manby's messages don't go through R in webR")
+  # built in, manby writes to the console itself
+  skip_if(built_in, "manby's messages don't go through R where it is built in")
   expect_match(paste(capture.output(manby("--version"), type = "message"), collapse = ""), "^manby ")
 })
 
-test_that("manby runs in webR", {
-  skip_if_not(webr)
+test_that("manby runs built in", {
+  skip_if_not(built_in)
   expect_no_error(manby("--version"))
   expect_error(manby("--nothing-like-this"), class = "manby_error")
 })

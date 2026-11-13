@@ -1,10 +1,12 @@
 #!/bin/sh
-# In webR, where R can't run programs, manby is built into the package from
-# src/rust. Elsewhere the package runs the manby program and builds nothing.
+# manby is built into the package where R can't run programs, in webR, and
+# from CRAN, whose source package has manby and the crates it needs in
+# src/rust/vendor.tar.xz. Elsewhere the package runs the manby program and
+# builds nothing.
 #
-# The Rust code is manby at the package's commit when R-universe builds it,
-# the checkout that MANBY_SOURCE names, or else manby's crate of the
-# package's version.
+# In webR the Rust code is manby at the package's commit when R-universe
+# builds it, the checkout that MANBY_SOURCE names, or else manby's crate of
+# the package's version.
 set -e
 platform=$("${R_HOME}/bin/Rscript" -e 'cat(R.version$platform)')
 case "$platform" in
@@ -12,17 +14,39 @@ wasm32-*)
 	version=$(sed -n 's/^Version: *//p' DESCRIPTION)
 	sha=$(sed -n 's/^RemoteSha: *//p' DESCRIPTION)
 	if [ -n "$MANBY_SOURCE" ]; then
-		manby="manby = { path = \"$MANBY_SOURCE\" }"
+		manby="path = \"$MANBY_SOURCE\""
 	elif [ -n "$sha" ]; then
-		manby="manby = { git = \"https://github.com/birkskyum/manby\", rev = \"$sha\" }"
+		manby="git = \"https://github.com/birkskyum/manby\", rev = \"$sha\""
 	else
-		manby="manby = \"=$version\""
+		manby="version = \"=$version\""
 	fi
 	echo "Building manby for webR: $manby"
 	sed "s|@MANBY@|$manby|" src/rust/Cargo.toml.in >src/rust/Cargo.toml
 	cp tools/Makevars.wasm src/Makevars
 	;;
 *)
-	cp tools/Makevars.none src/Makevars
+	if [ -f src/rust/vendor.tar.xz ]; then
+		echo "Building manby from the vendored crates"
+		"${R_HOME}/bin/Rscript" -e 'utils::untar("src/rust/vendor.tar.xz", exdir = "src/rust")'
+		sed 's|@MANBY@|path = "manby"|' src/rust/Cargo.toml.in >src/rust/Cargo.toml
+		case $(uname) in
+		Darwin)
+			libs="-framework CoreFoundation -liconv -lz"
+			# R's own deployment target, unless one is given
+			case $(uname -m) in
+			arm64) target=11.0 ;;
+			*) target=10.13 ;;
+			esac
+			target=${MACOSX_DEPLOYMENT_TARGET:-$target}
+			;;
+		*)
+			libs="-lpthread -ldl -lm -lz"
+			target=""
+			;;
+		esac
+		sed -e "s|@LIBS@|$libs|" -e "s|@MACOSX_DEPLOYMENT_TARGET@|$target|" tools/Makevars.cran >src/Makevars
+	else
+		cp tools/Makevars.none src/Makevars
+	fi
 	;;
 esac

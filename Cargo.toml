@@ -54,19 +54,25 @@ bytes = "1"
 webpki-root-certs = { version = "1", optional = true }
 arrow-select = "60.1"
 
-# jemalloc doesn't build for Windows, where mimalloc takes its place, or
-# for WebAssembly, which keeps Rust's own allocator
+# The program's allocator, with the allocator feature: jemalloc doesn't build
+# for Windows, where mimalloc takes its place, or for WebAssembly, which keeps
+# Rust's own allocator
 [target.'cfg(not(any(windows, target_family = "wasm")))'.dependencies]
-tikv-jemallocator = "0.7"
+tikv-jemallocator = { version = "0.7", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-mimalloc = { version = "0.1", default-features = false }
+mimalloc = { version = "0.1", default-features = false, optional = true }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Memory", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
 
 [dev-dependencies]
 libz-sys = "1.1"
 
 [features]
+default = ["allocator"]
+# jemalloc, or mimalloc on Windows, as the manby program's allocator. A
+# program that has manby as a library, such as the R package with manby
+# built in, can leave it out.
+allocator = ["dep:tikv-jemallocator", "dep:mimalloc"]
 # MapLibre Tile output (`--tile-format=mlt`). mlt-core needs Rust 1.98:
 # cargo +1.98.1 build --release --features mlt
 mlt = ["dep:mlt-core"]

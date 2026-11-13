@@ -1,0 +1,21 @@
+# From CRAN: manby, built offline from the crates that configure unpacked from
+# rust/vendor.tar.xz, with at most two jobs, and linked into the package's
+# library. The crates and the build are removed once it is linked.
+LIBDIR = rust/target/release
+STATLIB = $(LIBDIR)/libmanby_r.a
+PKG_LIBS = -L$(LIBDIR) -lmanby_r @LIBS@
+CARGO = PATH="$(PATH):$(HOME)/.cargo/bin" MACOSX_DEPLOYMENT_TARGET="@MACOSX_DEPLOYMENT_TARGET@" cargo
+
+all: $(SHLIB) clean-rust
+
+$(SHLIB): $(STATLIB)
+
+$(STATLIB):
+	@echo "Using `$(CARGO) --version`"
+	@echo "Using `PATH="$(PATH):$(HOME)/.cargo/bin" rustc --version`"
+	cd rust && CARGO_HOME="$$(pwd)/.cargo-home" $(CARGO) build --release --lib --offline --locked -j 2 --target-dir target
+
+clean-rust: $(SHLIB)
+	rm -rf rust/target rust/vendor rust/manby rust/.cargo-home
+
+.PHONY: $(STATLIB) clean-rust

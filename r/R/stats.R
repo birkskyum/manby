@@ -22,9 +22,9 @@ tile_stats <- function(tileset, layers = FALSE, largest = 10) {
     "stats", "--json", paste0("--largest=", format(largest, scientific = FALSE)),
     if (isTRUE(layers)) "--layers", path.expand(tileset)
   )
-  if (in_webr()) {
+  if (built_in()) {
     # manby's messages go to the console there
-    made <- webr_stats(args[-1])
+    made <- builtin_stats(args[-1])
     done <- list(status = made[[1]], stdout = made[[2]], stderr = character())
   } else {
     done <- processx::run(manby_binary(), args, error_on_status = FALSE)

@@ -144,18 +144,50 @@ impl Server {
 
     /// Serves until the process ends, on a few threads.
     pub fn run(self) {
+        let workers = self.workers(1);
+        work(&self.http, &self.tilesets);
+        for w in workers {
+            let _ = w.join();
+        }
+    }
+
+    /// Serves on threads of its own until [`Running::stop`], for a program
+    /// that goes on, such as R with manby built in.
+    pub fn spawn(self) -> Running {
+        Running {
+            workers: self.workers(0),
+            http: self.http,
+        }
+    }
+
+    /// Starts the threads that serve, but for `kept` of them.
+    fn workers(&self, kept: usize) -> Vec<std::thread::JoinHandle<()>> {
         let threads = std::thread::available_parallelism()
             .map(|n| n.get().clamp(2, 8))
             .unwrap_or(4);
-        let workers: Vec<_> = (1..threads)
+        (kept..threads)
             .map(|_| {
                 let http = self.http.clone();
                 let tilesets = self.tilesets.clone();
                 std::thread::spawn(move || work(&http, &tilesets))
             })
-            .collect();
-        work(&self.http, &self.tilesets);
-        for w in workers {
+            .collect()
+    }
+}
+
+/// A server on threads of its own, from [`Server::spawn`].
+pub struct Running {
+    http: Arc<tiny_http::Server>,
+    workers: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl Running {
+    /// Stops serving, once the requests being answered are answered.
+    pub fn stop(self) {
+        for _ in &self.workers {
+            self.http.unblock();
+        }
+        for w in self.workers {
             let _ = w.join();
         }
     }

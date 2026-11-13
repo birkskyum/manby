@@ -47,7 +47,7 @@ test-geobuf: golden-setup
 	$(MAKE) -C $(GOLDEN) -f $(CURDIR)/golden/golden.mk -k -j1 geobuf-test
 
 # MLT: manby and the comparison built with the mlt feature, in their own target directory
-MLT_CARGO = CARGO_TARGET_DIR=target/mlt $(CARGO) +1.98.1
+MLT_CARGO = CARGO_TARGET_DIR=target/mlt $(CARGO) +1.100.0
 
 test-golden-mlt: golden-setup
 	$(MLT_CARGO) build --release --features mlt --bin manby --example mlt_verify

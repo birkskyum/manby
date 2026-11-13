@@ -1,11 +1,11 @@
 /*******************************************************************************
-* Author    :  Angus Johnson                                                   *
-* Date      :  12 May 2024                                                     *
-* Website   :  http://www.angusj.com                                           *
-* Copyright :  Angus Johnson 2010-2024                                         *
-* Purpose   :  Core Clipper Library structures and functions                   *
-* License   :  http://www.boost.org/LICENSE_1_0.txt                            *
-*******************************************************************************/
+ * Author    :  Angus Johnson                                                   *
+ * Date      :  12 May 2024                                                     *
+ * Website   :  http://www.angusj.com                                           *
+ * Copyright :  Angus Johnson 2010-2024                                         *
+ * Purpose   :  Core Clipper Library structures and functions                   *
+ * License   :  http://www.boost.org/LICENSE_1_0.txt                            *
+ *******************************************************************************/
 
 //! The parts of `clipper.core.h` that the `Clipper64` engine uses, for `int64_t` points only.
 

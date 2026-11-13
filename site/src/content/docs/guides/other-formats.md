@@ -1,6 +1,6 @@
 ---
 title: Other formats
-description: Tiling shapefiles and GeoPackage files directly, and OpenStreetMap data converted to FlatGeobuf with GDAL's ogr2ogr.
+description: Tiling shapefiles and GeoPackage files directly, other formats from R and Python through GDAL, and OpenStreetMap data converted to FlatGeobuf with GDAL's ogr2ogr.
 ---
 
 manby reads what tippecanoe reads, GeoJSON, FlatGeobuf, CSV and Geobuf, and also [GeoParquet and Arrow](../python/), shapefiles and GeoPackage. Convert other formats to FlatGeobuf first, which manby reads in parallel. The examples use GDAL's `ogr2ogr`, and other converters that write FlatGeobuf, such as DuckDB's spatial extension or terrio, work the same way.
@@ -34,6 +34,22 @@ manby -zg --drop-densest-as-needed -o natural-earth.pmtiles \
 ```
 
 The tiles are the ones manby makes from the FlatGeobuf file that GDAL writes of the table, with the columns as GDAL types them. The integer primary key is the feature's number, not an attribute, and the coordinates are reprojected from the table's CRS, unless `-s` names another. Reading the 85,186 census tracts from a GeoPackage takes 2.1 s at `-zg --coalesce-densest-as-needed`, against 2.0 s from FlatGeobuf, with no conversion before it.
+
+## From R and Python
+
+`tile()` in R and Python reads a file in a format that GDAL reads and manby does not, such as KML, GPX, GML, OpenStreetMap, SQLite, a File Geodatabase or a spreadsheet, with sf or GeoPandas, or with DuckDB's spatial extension if those are not installed, and reprojects it to WGS 84. The layer's name picks the source's layer of that name, if it has one, and otherwise the first.
+
+```r
+tile(list(points = "liechtenstein.osm.pbf", lines = "liechtenstein.osm.pbf"),
+  "liechtenstein.pmtiles", maximum_zoom = 14, drop_densest_as_needed = TRUE)
+```
+
+```python
+manby.tile({"points": "liechtenstein.osm.pbf", "lines": "liechtenstein.osm.pbf"},
+    "liechtenstein.pmtiles", maximum_zoom=14, drop_densest_as_needed=True)
+```
+
+sf and GeoPandas read the layer into memory. DuckDB writes it to a temporary Parquet file, so it need not fit in memory.
 
 ## OpenStreetMap
 

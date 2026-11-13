@@ -3,7 +3,9 @@ several times faster.
 
 ``tile`` makes a tileset from files, or from tables in memory: a DuckDB
 query, a GeoDataFrame, or a Polars or PyArrow table. A table streams to the
-manby program in Arrow batches, so a query result need not fit in memory.
+manby program in Arrow batches, so a query result need not fit in memory. A
+file in a format that GDAL reads and manby does not, such as KML, GPX or
+OpenStreetMap, is read with GeoPandas, or with DuckDB's spatial extension.
 
     import duckdb, manby
 
@@ -29,6 +31,7 @@ import atexit
 import errno
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -102,6 +105,83 @@ def _flags(options: Mapping[str, Any]) -> list:
         else:
             out.append("%s=%s" % (flag, value))
     return out
+
+
+_GDAL = re.compile(
+    r"\.(kml|kmz|gml|gpx|osm|osm\.pbf|osm\.bz2|gdb|tab|mif|dxf|dgn|sqlite|"
+    r"xlsx|xls|ods|topojson|vrt|gmt|jml|nc|e00|shp\.zip|gpkg\.zip)$"
+)
+
+
+def _is_gdal(data: Any) -> bool:
+    """Whether ``data`` is a file in a format that GDAL reads and manby does not."""
+    if not isinstance(data, (str, os.PathLike)):
+        return False
+    return _GDAL.search(os.fspath(data).rstrip("/\\").lower()) is not None
+
+
+def _gdal_stem(path: str) -> str:
+    """A file's name without its extension, as manby names its layer."""
+    name = os.path.basename(path.rstrip("/\\"))
+    return re.sub(r"\.(osm\.[a-z0-9]+|[a-z]+\.zip|[^.]*)$", "", name, flags=re.I) or "layer"
+
+
+def _quote(x: str) -> str:
+    return "'%s'" % x.replace("'", "''")
+
+
+def _read_gdal(path: str, layer: str | None, out: str, use_geopandas: bool = True) -> Any:
+    """The layer ``layer`` of a file that GDAL reads, or its first layer: a
+    GeoDataFrame, or with DuckDB the name of a Parquet file written as ``out``."""
+    geopandas = None
+    if use_geopandas:
+        try:
+            import geopandas
+        except ImportError:
+            pass
+    if geopandas is not None:
+        names = list(geopandas.list_layers(path)["name"])
+        return geopandas.read_file(path, layer=layer if layer in names else names[0])
+    try:
+        import duckdb
+    except ImportError:
+        raise ImportError(
+            "manby reads %s with GeoPandas or DuckDB: pip install geopandas"
+            % os.path.basename(path)
+        ) from None
+    con = duckdb.connect()
+    try:
+        con.execute("INSTALL spatial")
+        con.execute("LOAD spatial")
+        meta = con.execute(
+            "SELECT l.name, l.geometry_fields[1].name, l.geometry_fields[1].crs.auth_name, "
+            "l.geometry_fields[1].crs.auth_code, [f.name FOR f IN l.fields] "
+            "FROM (SELECT unnest(layers) AS l FROM ST_Read_Meta(?))",
+            [path],
+        ).fetchall()
+        row = next((m for m in meta if m[0] == layer), meta[0] if meta else None)
+        # ST_Read names the geometry after the source's column, or geom
+        column = '"%s"' % (row[1] if row and row[1] else "geom").replace('"', '""')
+        crs = "%s:%s" % (row[2], row[3]) if row and row[2] and row[3] else "EPSG:4326"
+        if crs in ("EPSG:4326", "OGC:CRS84"):
+            geometry = column
+        else:
+            geometry = "ST_Transform(%s, %s, 'EPSG:4326', always_xy := true)" % (column, _quote(crs))
+        file = out + ".parquet"
+        source = _quote(path) + (", layer = " + _quote(row[0]) if row else "")
+        # the layer's fields, without the feature ids that DuckDB 2 adds
+        fields = (
+            "".join('"%s", ' % f.replace('"', '""') for f in row[4])
+            if row
+            else "* EXCLUDE (%s), " % column
+        )
+        con.execute(
+            "COPY (SELECT %sST_AsWKB(%s) AS geometry FROM ST_Read(%s)) TO %s (FORMAT parquet)"
+            % (fields, geometry, source, _quote(file))
+        )
+        return file
+    finally:
+        con.close()
 
 
 def _is_geodataframe(data: Any) -> bool:
@@ -206,6 +286,15 @@ def tile(
     tmp = None
     try:
         for i, (name, d) in enumerate(layers.items()):
+            if _is_gdal(d):
+                if tmp is None:
+                    tmp = tempfile.mkdtemp(prefix="manby-")
+                source = os.fspath(d)
+                if name is None:
+                    # named after the file, as manby names a file's layer
+                    name = _gdal_stem(source)
+                os.mkdir(os.path.join(tmp, "gdal-%d" % i))
+                d = _read_gdal(source, name, os.path.join(tmp, "gdal-%d" % i, _gdal_stem(source)))
             stream = _arrow(d)
             if stream is None:
                 if name is None:

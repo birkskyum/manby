@@ -84,6 +84,21 @@ def main():
         assert t == reference, "%s makes different tiles" % name
         print("%s: the same tiles" % name)
 
+    # a file that GDAL reads, through GeoPandas and through DuckDB
+    sqlite = os.path.join(d, "points.sqlite")
+    gdf.to_file(sqlite, driver="SQLite")
+    assert manby._is_gdal(sqlite) and not manby._is_gdal(path)
+    out = os.path.join(d, "sqlite", "points.pmtiles")
+    os.makedirs(os.path.dirname(out))
+    manby.tile(sqlite, out, maximum_zoom="g", drop_densest_as_needed=True, quiet=True)
+    assert tiles(out) == (reference, ["points"]), "GDAL's file makes different tiles"
+    os.makedirs(os.path.join(d, "duckdb-gdal"))
+    parquet = manby._read_gdal(sqlite, None, os.path.join(d, "duckdb-gdal", "points"), use_geopandas=False)
+    out = os.path.join(d, "duckdb-gdal", "points.pmtiles")
+    manby.tile(parquet, out, maximum_zoom="g", drop_densest_as_needed=True, quiet=True)
+    assert tiles(out) == (reference, ["points"]), "DuckDB's reading makes different tiles"
+    print("a file that GDAL reads: the same tiles")
+
     out = os.path.join(d, "layers.pmtiles")
     manby.tile({"a": gdf, "b": path}, out, maximum_zoom=4, quiet=True)
     assert tiles(out)[1] == ["a", "b"]

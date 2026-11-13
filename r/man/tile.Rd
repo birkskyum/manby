@@ -29,7 +29,8 @@ from the same features.
 }
 \details{
 \code{data} is a file that manby reads, such as GeoJSON, FlatGeobuf, CSV,
-GeoParquet, GeoPackage or Shapefile, or a table:
+GeoParquet, GeoPackage or Shapefile, a file in another format that GDAL
+reads, or a table:
 \itemize{
 \item An sf data frame. One in a CRS other than WGS 84 or Web Mercator is
 reprojected to WGS 84 first.
@@ -42,6 +43,12 @@ column or in a column named \code{geometry} in well-known binary.
 
 A named list makes a layer of each of these. Other tables are written to a
 temporary Arrow file for manby to read.
+
+A file in a format that GDAL reads and manby does not, such as KML, GPX,
+GML, OpenStreetMap (\code{.osm.pbf}), SQLite, a File Geodatabase (\code{.gdb}) or a
+spreadsheet, is read with sf, or with DuckDB's spatial extension if sf is
+not installed, and reprojected to WGS 84. The layer's name picks the
+source's layer of that name, if it has one, and otherwise the first.
 }
 \examples{
 \dontrun{
@@ -55,5 +62,8 @@ roads <- dplyr::tbl(con, dplyr::sql(
 tile(roads, "roads.pmtiles", maximum_zoom = 14, drop_densest_as_needed = TRUE)
 
 tile(list(roads = roads, places = "places.parquet"), "map.pmtiles", "-zg")
+
+tile(list(points = "liechtenstein.osm.pbf", lines = "liechtenstein.osm.pbf"),
+  "liechtenstein.pmtiles", maximum_zoom = 14, drop_densest_as_needed = TRUE)
 }
 }

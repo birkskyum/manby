@@ -83,6 +83,30 @@ test_that("an sf data frame in another CRS is reprojected", {
   expect_true(length(t$data) > 0)
 })
 
+test_that("a file that GDAL reads makes the same tiles, through sf and DuckDB", {
+  # GDAL's SQLite driver fails in webR's sf
+  skip_if(webr, "webR")
+  sqlite <- file.path(dir, "points.sqlite")
+  sf::st_write(points, sqlite, quiet = TRUE)
+  expect_true(is_gdal(sqlite))
+  expect_false(is_gdal(fgb))
+  t <- make(sqlite, "sqlite")
+  expect_equal(t$layers, "points")
+  expect_identical(t$data, reference$data)
+
+  skip_if_not_installed("duckdb")
+  skip_on_cran()
+  projected <- file.path(dir, "projected.sqlite")
+  sf::st_write(sf::st_transform(points, 3035), projected, quiet = TRUE)
+  out <- file.path(dir, "duckdb-gdal")
+  dir.create(out)
+  file <- write_gdal(sqlite, "", file.path(out, "points"), sf = FALSE)
+  expect_identical(make(file, "duckdb-sqlite", layer = "points")$data, reference$data)
+  # reprojected there and back, so near but not the same
+  file <- write_gdal(projected, "", file.path(out, "projected"), sf = FALSE)
+  expect_true(length(make(file, "duckdb-projected", layer = "points")$data) > 0)
+})
+
 test_that("a list makes layers", {
   out <- file.path(dir, "layers.pmtiles")
   tile(list(a = points, b = fgb), out, maximum_zoom = 4, quiet = TRUE)

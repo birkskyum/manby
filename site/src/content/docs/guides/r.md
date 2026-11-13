@@ -29,6 +29,8 @@ The options are tippecanoe's long options, with `_` for `-`, `TRUE` for a flag a
 
 An sf data frame in a CRS other than WGS 84 or Web Mercator is reprojected to WGS 84 first. Factors become text and quantities with units become numbers, as GDAL writes them.
 
+A file in a format that manby does not read, such as KML, GPX or OpenStreetMap, is read with sf, or with DuckDB if sf is not installed. See [Other formats](../other-formats/#from-r-and-python).
+
 ### DuckDB
 
 A DuckDB table from dplyr goes in as it is. DuckDB writes it to a temporary Parquet file, so it need not fit in memory.

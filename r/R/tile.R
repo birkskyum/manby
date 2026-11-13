@@ -4,7 +4,8 @@
 #' from the same features.
 #'
 #' `data` is a file that manby reads, such as GeoJSON, FlatGeobuf, CSV,
-#' GeoParquet, GeoPackage or Shapefile, or a table:
+#' GeoParquet, GeoPackage or Shapefile, a file in another format that GDAL
+#' reads, or a table:
 #'
 #' - An sf data frame. One in a CRS other than WGS 84 or Web Mercator is
 #'   reprojected to WGS 84 first.
@@ -16,6 +17,12 @@
 #'
 #' A named list makes a layer of each of these. Other tables are written to a
 #' temporary Arrow file for manby to read.
+#'
+#' A file in a format that GDAL reads and manby does not, such as KML, GPX,
+#' GML, OpenStreetMap (`.osm.pbf`), SQLite, a File Geodatabase (`.gdb`) or a
+#' spreadsheet, is read with sf, or with DuckDB's spatial extension if sf is
+#' not installed, and reprojected to WGS 84. The layer's name picks the
+#' source's layer of that name, if it has one, and otherwise the first.
 #'
 #' @param data The features: a file name, a table, or a named list of layers.
 #' @param output The tileset to write, such as `"roads.pmtiles"`.
@@ -39,6 +46,9 @@
 #' tile(roads, "roads.pmtiles", maximum_zoom = 14, drop_densest_as_needed = TRUE)
 #'
 #' tile(list(roads = roads, places = "places.parquet"), "map.pmtiles", "-zg")
+#'
+#' tile(list(points = "liechtenstein.osm.pbf", lines = "liechtenstein.osm.pbf"),
+#'   "liechtenstein.pmtiles", maximum_zoom = 14, drop_densest_as_needed = TRUE)
 #' }
 #' @export
 tile <- function(data, output, ..., layer = NULL, force = TRUE) {
@@ -70,7 +80,8 @@ tile <- function(data, output, ..., layer = NULL, force = TRUE) {
   }
   for (i in seq_along(layers)) {
     d <- layers[[i]]
-    if (is_path(d)) {
+    name <- names(layers)[i]
+    if (is_path(d) && !is_gdal(d)) {
       file <- path.expand(as.character(d))
     } else {
       if (is.null(tmp)) {
@@ -79,9 +90,16 @@ tile <- function(data, output, ..., layer = NULL, force = TRUE) {
       }
       dir <- file.path(tmp, i)
       dir.create(dir)
-      file <- write_table(d, file.path(dir, stem))
+      file <- if (is_path(d)) {
+        # named after the file, as manby names a file's layer
+        path <- path.expand(as.character(d))
+        source <- basename(sub("[/\\\\]+$", "", path))
+        source <- sub("\\.(osm\\.[a-z0-9]+|[a-z]+\\.zip|[^.]*)$", "", source, ignore.case = TRUE)
+        write_gdal(path, name, file.path(dir, if (nzchar(source)) source else stem))
+      } else {
+        write_table(d, file.path(dir, stem))
+      }
     }
-    name <- names(layers)[i]
     argv <- c(argv, if (nzchar(name)) {
       paste0("-L{\"file\":", json_string(file), ",\"layer\":", json_string(name), "}")
     } else {
@@ -171,6 +189,76 @@ is_layers <- function(x) {
 
 is_path <- function(x) {
   (is.character(x) && length(x) == 1) || inherits(x, "fs_path")
+}
+
+#' Whether a file is in a format that GDAL reads and manby does not.
+#' @noRd
+is_gdal <- function(x) {
+  x <- tolower(sub("[/\\\\]+$", "", as.character(x)))
+  grepl(paste0(
+    "\\.(kml|kmz|gml|gpx|osm|osm\\.pbf|osm\\.bz2|gdb|tab|mif|dxf|dgn|sqlite|",
+    "xlsx|xls|ods|topojson|vrt|gmt|jml|nc|e00|shp\\.zip|gpkg\\.zip)$"
+  ), x)
+}
+
+#' Writes the layer `name` of a file that GDAL reads, or its first layer, for
+#' manby to read, as `base` with an extension, and gives the file's name.
+#' @noRd
+write_gdal <- function(path, name, base, sf = requireNamespace("sf", quietly = TRUE)) {
+  if (sf) {
+    layers <- sf::st_layers(path)$name
+    layer <- if (nzchar(name) && name %in% layers) name else layers[1]
+    d <- sf::st_read(path, layer = layer, quiet = TRUE)
+    return(write_table(d, base))
+  }
+  if (!requireNamespace("duckdb", quietly = TRUE)) {
+    stop(
+      "manby reads ", basename(path), " with sf or DuckDB, and neither is installed. ",
+      "Install one with install.packages(\"sf\") or install.packages(\"duckdb\").",
+      call. = FALSE
+    )
+  }
+  con <- DBI::dbConnect(duckdb::duckdb())
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+  DBI::dbExecute(con, "INSTALL spatial")
+  DBI::dbExecute(con, "LOAD spatial")
+  q <- function(x) DBI::dbQuoteString(con, x)
+  meta <- DBI::dbGetQuery(con, paste0(
+    "SELECT l.name, l.geometry_fields[1].name AS geom, ",
+    "l.geometry_fields[1].crs.auth_name AS auth, ",
+    "l.geometry_fields[1].crs.auth_code AS code, ",
+    "array_to_string([concat('\"', replace(f.name, '\"', '\"\"'), '\"') FOR f IN l.fields], ', ') AS fields ",
+    "FROM (SELECT unnest(layers) AS l FROM ST_Read_Meta(", q(path), "))"
+  ))
+  row <- if (nzchar(name) && name %in% meta$name) match(name, meta$name) else 1
+  crs <- if (nrow(meta) && !is.na(meta$auth[row]) && !is.na(meta$code[row])) {
+    paste0(meta$auth[row], ":", meta$code[row])
+  } else {
+    "EPSG:4326"
+  }
+  # ST_Read names the geometry after the source's column, or geom
+  column <- if (nrow(meta) && !is.na(meta$geom[row]) && nzchar(meta$geom[row])) meta$geom[row] else "geom"
+  column <- DBI::dbQuoteIdentifier(con, column)
+  geometry <- if (crs %in% c("EPSG:4326", "OGC:CRS84")) {
+    column
+  } else {
+    paste0("ST_Transform(", column, ", ", q(crs), ", 'EPSG:4326', always_xy := true)")
+  }
+  file <- paste0(base, ".parquet")
+  DBI::dbExecute(con, paste0(
+    # the layer's fields, without the feature ids that DuckDB 2 adds
+    "COPY (SELECT ",
+    if (!nrow(meta)) {
+      paste0("* EXCLUDE (", column, "), ")
+    } else if (nzchar(meta$fields[row])) {
+      paste0(meta$fields[row], ", ")
+    },
+    "ST_AsWKB(", geometry, ") AS geometry ",
+    "FROM ST_Read(", q(path),
+    if (nrow(meta)) paste0(", layer = ", q(meta$name[row])),
+    ")) TO ", q(file), " (FORMAT parquet)"
+  ))
+  file
 }
 
 json_string <- function(x) {

@@ -108,7 +108,7 @@ manby.tile(
 
 ### Data frames
 
-A GeoDataFrame in another CRS is reprojected to WGS 84 first.
+A GeoDataFrame in another CRS is reprojected to WGS 84 first. A file in a format that manby does not read, such as KML, GPX or OpenStreetMap, is read with GeoPandas, or with DuckDB if GeoPandas is not installed. See [Other formats](../other-formats/#from-r-and-python).
 
 ```python
 import geopandas, manby

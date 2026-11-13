@@ -82,8 +82,6 @@ pub struct Meta {
     /// The `vector_layers` array, as JSON.
     pub vector_layers: String,
     pub mlt: bool,
-    /// `--h3`'s resolutions and zooms, as JSON.
-    pub h3: Option<String>,
 }
 
 pub struct Tileset {
@@ -100,6 +98,8 @@ pub struct Opened {
     pub meta: Meta,
     /// What a shard made with `--shard` records for `manby merge`.
     pub(crate) shard: Option<String>,
+    /// `--h3`'s resolutions and zooms, as JSON, for the TileJSON.
+    pub(crate) h3: Option<String>,
     reader: Reader,
 }
 
@@ -203,13 +203,13 @@ impl Opened {
                     c,
                 )?;
                 let meta = pmtiles_meta(&header, &json);
-                let shard = JsonPull::begin_string(&json)
-                    .read_tree()
-                    .and_then(|t| string(t.root().hash_get(crate::shard::KEY)));
+                let tree = JsonPull::begin_string(&json).read_tree();
+                let get = |k: &str| tree.as_ref().and_then(|t| string(t.root().hash_get(k)));
                 Ok(Opened {
                     stamp,
                     meta,
-                    shard,
+                    shard: get(crate::shard::KEY),
+                    h3: get(crate::H3_KEY).and_then(|h| object(&h)),
                     reader: Reader::Pmtiles {
                         file,
                         header,
@@ -240,6 +240,7 @@ impl Opened {
                     stamp,
                     meta: pairs_meta(&pairs),
                     shard: pairs.remove(crate::shard::KEY),
+                    h3: pairs.get(crate::H3_KEY).and_then(|h| object(h)),
                     reader: Reader::Mbtiles(Mutex::new(db)),
                 })
             }
@@ -261,6 +262,7 @@ impl Opened {
                     stamp,
                     meta: pairs_meta(&pairs),
                     shard: pairs.remove(crate::shard::KEY),
+                    h3: pairs.get(crate::H3_KEY).and_then(|h| object(h)),
                     reader: Reader::Dir(path.to_path_buf()),
                 })
             }
@@ -572,7 +574,6 @@ fn pmtiles_meta(h: &HeaderV3, json: &[u8]) -> Meta {
         ]),
         vector_layers: vector_layers(json),
         mlt: h.tile_type == TILETYPE_MLT,
-        h3: string(get(crate::H3_KEY)).and_then(|h| object(&h)),
     }
 }
 
@@ -608,6 +609,5 @@ fn pairs_meta(pairs: &HashMap<String, String>) -> Meta {
             .map(|j| vector_layers(j.as_bytes()))
             .unwrap_or_else(|| "[]".to_string()),
         mlt: pairs.get("format").is_some_and(|f| f == "mlt"),
-        h3: pairs.get(crate::H3_KEY).and_then(|h| object(h)),
     }
 }

@@ -148,8 +148,8 @@ manby <- function(...) {
 }
 
 run <- function(args) {
-  if (in_webr()) {
-    status <- webr_run(args)
+  if (built_in()) {
+    status <- builtin_run(args)
     if (status != 0) {
       stop(manby_error(status, args))
     }

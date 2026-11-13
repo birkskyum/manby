@@ -188,3 +188,36 @@ fn serves_tilesets() {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
+
+#[test]
+fn stops() {
+    let dir = std::env::temp_dir().join(format!("manby-serve-stop-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let input = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/arrow/wineries.fgb");
+    let out = dir.join("w.pmtiles");
+    make(&input, &out, &["-o", out.to_str().unwrap()]);
+    let o = ServeOptions {
+        port: 0,
+        host: "127.0.0.1".to_string(),
+        open: false,
+        tilesets: vec![out.to_string_lossy().into_owned()],
+    };
+    let server = Server::bind(&o).unwrap();
+    let base = server.url.clone();
+    let running = server.spawn();
+    assert_eq!(request(&base, "GET", "/w.json", "").status, 200);
+    assert_eq!(request(&base, "GET", "/w/0/0/0.mvt", "").status, 200);
+    running.stop();
+    // the port closes, on Windows once tiny_http's thread that accepts
+    // connections has taken one more
+    let addr = base.trim_start_matches("http://").trim_end_matches('/');
+    let closed = (0..50).any(|_| {
+        let refused = std::net::TcpStream::connect(addr).is_err();
+        if !refused {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        refused
+    });
+    assert!(closed, "{} still open", addr);
+    std::fs::remove_dir_all(&dir).unwrap();
+}

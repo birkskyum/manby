@@ -4,3 +4,8 @@
 /src/rust/target
 /src/*.o
 /src/*.so
+/src/rust/vendor.tar.xz
+/src/rust/vendor
+/src/rust/manby
+/src/rust/.cargo-home
+/inst/AUTHORS

@@ -5,7 +5,7 @@
 \alias{manby-package}
 \title{manby: Vector Tilesets Like 'tippecanoe', Several Times Faster}
 \description{
-Builds vector tilesets in 'PMTiles' and 'MBTiles' from sf data frames, 'DuckDB' tables, 'Arrow' tables and files, with the tiles that 'tippecanoe' makes from the same features. It runs the 'manby' program, which it downloads from the package's release on first use, or in 'webR', where R can't run programs, manby built into the package.
+Builds vector tilesets in 'PMTiles' and 'MBTiles' from sf data frames, 'DuckDB' tables, 'Arrow' tables and files, with the tiles that 'tippecanoe' makes from the same features. 'manby', a 'Rust' port of 'tippecanoe', is built into the package from CRAN and in 'webR', and elsewhere the package runs the 'manby' program, which it downloads from the package's release on first use.
 }
 \seealso{
 Useful links:
@@ -17,7 +17,14 @@ Useful links:
 
 }
 \author{
-\strong{Maintainer}: Birk Skyum \email{birk.skyum@pm.me}
+\strong{Maintainer}: Birk Skyum \email{birk.skyum@pm.me} [copyright holder]
+
+Other contributors:
+\itemize{
+  \item Mapbox Inc. (tippecanoe, which manby ports) [copyright holder]
+  \item Protomaps LLC (tippecanoe) [copyright holder]
+  \item The authors of the Rust crates that manby builds in (listed in inst/AUTHORS of the source package from CRAN) [contributor, copyright holder]
+}
 
 }
 \keyword{internal}

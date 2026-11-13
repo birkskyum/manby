@@ -1,0 +1,11 @@
+#!/bin/sh
+# From CRAN, manby is built into the package from the crates in
+# src/rust/vendor.tar.xz. Elsewhere the package runs the manby program and
+# builds nothing, as src/Makevars.win says.
+set -e
+if [ -f src/rust/vendor.tar.xz ]; then
+	echo "Building manby from the vendored crates"
+	"${R_HOME}/bin${R_ARCH_BIN}/Rscript.exe" -e 'utils::untar("src/rust/vendor.tar.xz", exdir = "src/rust")'
+	sed 's|@MANBY@|path = "manby"|' src/rust/Cargo.toml.in >src/rust/Cargo.toml
+	cp tools/Makevars.win.cran src/Makevars.win
+fi

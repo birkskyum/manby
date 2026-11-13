@@ -9,24 +9,24 @@
 
 use std::ffi::OsString;
 
-#[cfg(not(any(windows, target_family = "wasm")))]
+#[cfg(all(feature = "allocator", not(any(windows, target_family = "wasm"))))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-#[cfg(windows)]
+#[cfg(all(feature = "allocator", windows))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// jemalloc's settings: a few arenas, so that memory one thread frees is
 /// reused by the others, and freed pages go back to the system at once, so
 /// that the peak memory is the peak of what is in use.
-#[cfg(not(any(windows, target_family = "wasm")))]
+#[cfg(all(feature = "allocator", not(any(windows, target_family = "wasm"))))]
 #[repr(transparent)]
 pub struct MallocConf(*const u8);
 // SAFETY: the pointer is to a static string that is never written.
-#[cfg(not(any(windows, target_family = "wasm")))]
+#[cfg(all(feature = "allocator", not(any(windows, target_family = "wasm"))))]
 unsafe impl Sync for MallocConf {}
-#[cfg(not(any(windows, target_family = "wasm")))]
+#[cfg(all(feature = "allocator", not(any(windows, target_family = "wasm"))))]
 #[unsafe(export_name = "_rjem_malloc_conf")]
 pub static MALLOC_CONF: MallocConf =
     MallocConf(c"narenas:4,dirty_decay_ms:0,muzzy_decay_ms:0,retain:true".as_ptr() as *const u8);

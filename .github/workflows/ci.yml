@@ -135,6 +135,41 @@ jobs:
         env:
           MANBY_BINARY: ${{ github.workspace }}/target/debug/manby${{ runner.os == 'Windows' && '.exe' || '' }}
 
+  # The source package for CRAN, with manby and its crates vendored, checked
+  # as CRAN checks it on the platforms CRAN builds for, with the oldest rustc
+  # that CRAN's machines have.
+  cran:
+    name: cran (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-26, windows-2025]
+    runs-on: ${{ matrix.os }}
+    env:
+      RUSTUP_TOOLCHAIN: 1.91.1
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install 1.91.1 --profile minimal --target x86_64-pc-windows-gnu
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          working-directory: r
+          extra-packages: any::rcmdcheck
+          needs: check
+      - run: python3 r/tools/cran.py || python r/tools/cran.py
+      - name: R CMD check --as-cran
+        run: Rscript -e 'rcmdcheck::rcmdcheck(Sys.glob("manby_*.tar.gz"), args = c("--as-cran", "--no-manual"), error_on = "warning", check_dir = "check")'
+        env:
+          _R_CHECK_CRAN_INCOMING_REMOTE_: false
+          _R_CHECK_FORCE_SUGGESTS_: false
+      - if: failure()
+        run: cat check/manby.Rcheck/00install.out || true
+
   # The R package as R-universe builds it for webR, with manby from this
   # commit, and its tests run in webR in Node.js.
   webr:

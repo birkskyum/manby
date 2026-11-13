@@ -1,6 +1,6 @@
-# manby for the R package in webR, where it runs in R's own process.
-# configure writes Cargo.toml from this, with manby from the package's commit,
-# a local checkout or crates.io.
+# manby built into the R package, in webR and from CRAN, where it runs in R's
+# own process. configure writes Cargo.toml from this, with manby from the
+# package's commit, a local checkout, crates.io or the vendored crates.
 [package]
 name = "manby-r"
 version = "0.0.0"
@@ -11,11 +11,12 @@ publish = false
 crate-type = ["staticlib"]
 path = "src/lib.rs"
 
+# manby, without the program's allocator
 [dependencies]
-@MANBY@
+manby = { @MANBY@, default-features = false }
 
-[profile.release]
-panic = "abort"
+# A panic unwinds, to be caught by src/lib.rs, but in webR, whose Makevars
+# makes it abort.
 
 # not part of the repository's workspace
 [workspace]

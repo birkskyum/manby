@@ -2,3 +2,5 @@
 ^src/rust/target$
 ^src/rust/Cargo\.toml$
 ^src/Makevars$
+^tools/cran\.py$
+^cran-comments\.md$

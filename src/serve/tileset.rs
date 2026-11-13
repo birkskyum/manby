@@ -82,6 +82,8 @@ pub struct Meta {
     /// The `vector_layers` array, as JSON.
     pub vector_layers: String,
     pub mlt: bool,
+    /// `--h3`'s resolutions and zooms, as JSON.
+    pub h3: Option<String>,
 }
 
 pub struct Tileset {
@@ -524,6 +526,14 @@ fn string(j: Option<JsonRef<'_>>) -> Option<String> {
         .map(|j| j.string().to_string())
 }
 
+/// Text that is a JSON object, as it is.
+fn object(text: &str) -> Option<String> {
+    JsonPull::begin_string(text.as_bytes())
+        .read_tree()
+        .filter(|t| t.root().type_() == JsonType::Hash)
+        .map(|t| t.root().stringify())
+}
+
 fn vector_layers(json: &[u8]) -> String {
     JsonPull::begin_string(json)
         .read_tree()
@@ -562,6 +572,7 @@ fn pmtiles_meta(h: &HeaderV3, json: &[u8]) -> Meta {
         ]),
         vector_layers: vector_layers(json),
         mlt: h.tile_type == TILETYPE_MLT,
+        h3: string(get(crate::H3_KEY)).and_then(|h| object(&h)),
     }
 }
 
@@ -597,5 +608,6 @@ fn pairs_meta(pairs: &HashMap<String, String>) -> Meta {
             .map(|j| vector_layers(j.as_bytes()))
             .unwrap_or_else(|| "[]".to_string()),
         mlt: pairs.get("format").is_some_and(|f| f == "mlt"),
+        h3: pairs.get(crate::H3_KEY).and_then(|h| object(h)),
     }
 }

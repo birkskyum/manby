@@ -11,6 +11,8 @@ manby serve --open roads.pmtiles places.mbtiles
 
 The map, at `http://127.0.0.1:8080/`, shows each layer of a tileset on a basemap, and the attributes of the features clicked. A tileset made again while it is served shows when the map reloads, so `manby -f` and the map make a quick loop. The map loads MapLibre GL JS and the basemap from the internet.
 
+The hexagons of [`--h3`](../h3/#viewing) are colored by a field picked in the panel, `point_count` at first, with a scale for each resolution from the hexagons shown. With `--h3-fade`, the resolutions and the points fade from one to the next.
+
 - **`--port`** is 8080 unless given, or 0 for any free port.
 - **`--host`** is 127.0.0.1, so only this computer can reach the server. `--host=0.0.0.0` serves the local network too.
 - **`--open`** opens the map in a browser.

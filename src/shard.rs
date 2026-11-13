@@ -416,6 +416,7 @@ impl Record {
             tile_format: opt_string("tile_format")
                 .and_then(|f| crate::mlt::TileFormat::parse(&f))
                 .ok_or_else(|| bad("tile_format"))?,
+            h3: opt_string("h3"),
         };
         let array = |k: &str| {
             r.hash_get(k)
@@ -764,7 +765,7 @@ pub fn merge(o: &MergeOptions) -> Result<MergeSummary> {
         .clone()
         .unwrap_or_else(|| o.output.path().unwrap_or_default().to_string());
     let metadata = meta.metadata(&name, &stats);
-    sink.finish(&metadata)?;
+    sink.finish_with(&metadata, &meta.extra())?;
 
     if stats.incomplete && !o.quiet {
         eprintln!(
@@ -960,6 +961,10 @@ fn meta_json(m: &crate::MetaInputs) -> String {
         m.tile_compression,
         m.tile_format.metadata_format()
     );
+    if let Some(h3) = &m.h3 {
+        s.push_str(",\"h3\":");
+        string(&mut s, h3);
+    }
 
     s
 }

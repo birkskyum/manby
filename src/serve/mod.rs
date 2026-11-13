@@ -501,6 +501,9 @@ pub fn tilejson(t: &Tileset, o: &tileset::Opened, base: &str) -> String {
     if m.mlt {
         s += ",\"encoding\":\"mlt\"";
     }
+    if let Some(h3) = &m.h3 {
+        s += &format!(",\"manby_h3\":{}", h3);
+    }
     s += &format!(",\"vector_layers\":{}}}", m.vector_layers);
     s
 }

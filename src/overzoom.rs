@@ -595,20 +595,13 @@ pub fn overzoom(tiles: &[SourceTile], o: &OverzoomOptions, filter: Option<&Filte
 
     for tile in tiles {
         for layer in &tile.tile.layers {
-            let mut outlayer: Option<usize> = None;
-
             let mut det = detail_or_unspecified;
             if det <= 0 {
                 det = ((layer.extent as f64).ln() / 2f64.ln()).round() as i32;
             }
 
-            for i in 0..outtile.layers.len() {
-                if outtile.layers[i].name == layer.name {
-                    outlayer = Some(i);
-                }
-            }
-
-            let outlayer = match outlayer {
+            // the last layer of the name
+            let outlayer = match outtile.layers.iter().rposition(|l| l.name == layer.name) {
                 Some(o) => o,
                 None => {
                     let newlayer = MvtLayer {

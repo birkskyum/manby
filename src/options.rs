@@ -154,6 +154,16 @@ pub struct Options {
     pub h3_base_zoom: Option<i32>,
     /// `--h3-categories`
     pub h3_categories: Option<String>,
+    /// `--h3-resolutions`: the H3 resolution of each zoom given, over the
+    /// built-in ones.
+    pub h3_resolutions: std::collections::BTreeMap<i32, u8>,
+    /// `--h3-fade`: zooms each resolution shows beyond its own, on each side,
+    /// and the points before the base zoom.
+    pub h3_fade: i32,
+    /// `--h3-no-points`: only the hexagons, at every zoom.
+    pub h3_no_points: bool,
+    /// `--h3-median`: the attributes whose median each hexagon has.
+    pub h3_median: Vec<String>,
     /// `--supercluster`: each layer's points clustered as MapLibre clusters
     /// a GeoJSON source, with Supercluster's properties.
     pub supercluster: bool,
@@ -349,6 +359,10 @@ impl Default for Options {
             supercluster_min_points: 2,
             h3_base_zoom: None,
             h3_categories: None,
+            h3_resolutions: std::collections::BTreeMap::new(),
+            h3_fade: 0,
+            h3_no_points: false,
+            h3_median: Vec::new(),
             cluster_categories: None,
             maxzoom: 14,
             minzoom: 0,
@@ -503,10 +517,54 @@ impl Options {
         Ok(())
     }
 
+    /// `--h3`'s base zoom: given, or two zooms below the maximum, or with
+    /// `--h3-no-points` one beyond it.
     pub fn h3_base(&self) -> i32 {
+        if self.h3_no_points {
+            return self.maxzoom.max(self.minzoom) + 1;
+        }
         self.h3_base_zoom
             .unwrap_or(self.maxzoom - 2)
             .clamp(self.minzoom, self.maxzoom.max(self.minzoom))
+    }
+
+    /// What `--h3` needs of the other options.
+    fn check_h3(&self) -> crate::Result<()> {
+        let argv0 = &self.program;
+        let refuse = |text: String| Err(Error::new(EXIT_ARGS, format!("{}: {}", argv0, text)));
+        if self.h3_no_points && self.h3_base_zoom.is_some() {
+            return refuse("--h3-no-points has no base zoom, as the points don't show".into());
+        }
+        if self.guess_maxzoom && self.h3_no_points {
+            return refuse("--h3-no-points with -zg needs -z, the last zoom of hexagons".into());
+        }
+        if self.guess_maxzoom && self.h3_base_zoom.is_none() {
+            return refuse(
+                "--h3 with -zg needs --h3-base-zoom, the zoom from which the points show".into(),
+            );
+        }
+        let base = self.h3_base();
+        if let Some((z, _)) = self
+            .h3_resolutions
+            .iter()
+            .find(|&(&z, _)| z < self.minzoom || z >= base)
+        {
+            return refuse(format!(
+                "--h3-resolutions gives zoom {}, but the hexagons show at zooms {} to {}",
+                z,
+                self.minzoom,
+                base - 1
+            ));
+        }
+        for name in &self.h3_median {
+            if self.attribute_accum.contains_key(name) {
+                return refuse(format!(
+                    "--h3-median={} and --accumulate-attribute both give {} of the hexagons",
+                    name, name
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub fn memory_budget(&self) -> u64 {
@@ -571,14 +629,8 @@ impl Options {
             self.check_supercluster()?;
         }
 
-        if self.h3 && self.guess_maxzoom && self.h3_base_zoom.is_none() {
-            return Err(Error::new(
-                EXIT_ARGS,
-                format!(
-                    "{}: --h3 with -zg needs --h3-base-zoom, the zoom from which the points show",
-                    argv0
-                ),
-            ));
+        if self.h3 {
+            self.check_h3()?;
         }
 
         // Wait until here to project the bounding box, so that the behavior is
@@ -1386,6 +1438,10 @@ fn long_options_orig() -> Vec<LongOption> {
         opt("supercluster-radius", REQ, b'~'),
         opt("supercluster-min-points", REQ, b'~'),
         opt("h3-categories", REQ, b'~'),
+        opt("h3-resolutions", REQ, b'~'),
+        opt("h3-fade", REQ, b'~'),
+        opt("h3-no-points", NO, b'~'),
+        opt("h3-median", REQ, b'~'),
         opt("cluster-categories", REQ, b'~'),
         opt("use-attribute-for-minzoom", REQ, b'~'),
         opt("use-attribute-for-maxzoom", REQ, b'~'),
@@ -1733,6 +1789,44 @@ pub fn parse_args(argv: &[String]) -> crate::Result<Options> {
                     "h3-categories" => {
                         o.h3 = true;
                         o.h3_categories = Some(arg.to_string())
+                    }
+                    "h3-resolutions" => {
+                        o.h3 = true;
+                        for pair in arg.split(',') {
+                            let parsed = pair.split_once(':').and_then(|(z, r)| {
+                                Some((z.parse::<i32>().ok()?, r.parse::<u8>().ok()?))
+                            });
+                            match parsed {
+                                Some((z, r)) if (0..=MAX_ZOOM).contains(&z) && r <= 15 => {
+                                    o.h3_resolutions.insert(z, r);
+                                }
+                                _ => {
+                                    return err_args(format!(
+                                        "{}: --h3-resolutions takes zoom:resolution pairs, with resolutions of 0 to 15, not {}",
+                                        argv0, pair
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    "h3-fade" => {
+                        o.h3 = true;
+                        o.h3_fade = require_int(&optarg, "H3 fade", &argv0)?;
+                        if o.h3_fade < 0 {
+                            return err_args(format!(
+                                "{}: --h3-fade must be 0 or more zooms, not {}",
+                                argv0, arg
+                            ));
+                        }
+                    }
+                    "h3-no-points" => {
+                        o.h3 = true;
+                        o.h3_no_points = true
+                    }
+                    "h3-median" => {
+                        o.h3 = true;
+                        o.h3_median
+                            .extend(arg.split(',').filter(|a| !a.is_empty()).map(String::from))
                     }
                     "cluster-categories" => {
                         o.cluster_categories = Some(match arg.split_once(':') {

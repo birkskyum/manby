@@ -1,14 +1,17 @@
 //! `--h3`: below a base zoom, each layer's points are binned into H3
-//! hexagons, a resolution for each zoom as freestiler picks them, and the
-//! hexagons, with how many points each holds and what `--accumulate-attribute`
-//! makes of their attributes, go in a layer of their own, `<layer>_h3`. The
-//! points show from the base zoom.
+//! hexagons, a resolution for each zoom as freestiler picks them unless
+//! `--h3-resolutions` gives them, and the hexagons, with how many points each
+//! holds and what `--accumulate-attribute` and `--h3-median` make of their
+//! attributes, go in a layer of their own, `<layer>_h3`. The points show from
+//! the base zoom, or with `--h3-no-points` not at all.
 //!
-//! The points are counted as they are read, into the cells of the finest
-//! resolution, each chunk on its own. Once every input is read, the chunks'
-//! cells are added up in the order of the chunks, the coarser resolutions
-//! from the finer, and the hexagons go in as one more chunk, so tippecanoe's
-//! tiling and dropping work on them as on any polygons.
+//! The points are counted as they are read, into their cells of each
+//! resolution, each chunk on its own. A point's cell is found at each
+//! resolution, as freestiler finds it, since a coarse cell does not hold all
+//! of the finer cells that it is the parent of. Once every input is read,
+//! the chunks' cells are added up in the order of the chunks, and the
+//! hexagons go in as one more chunk, so tippecanoe's tiling and dropping
+//! work on them as on any polygons.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
@@ -17,14 +20,16 @@ use h3o::{CellIndex, LatLng, Resolution};
 use tippecanoe::attribute::AttributeOp;
 use tippecanoe::geometry::{Draw, DrawVec, VT_CLOSEPATH, VT_LINETO, VT_MOVETO};
 use tippecanoe::milo::dtoa_milo;
-use tippecanoe::mvt::{MVT_DOUBLE, MVT_STRING};
+use tippecanoe::mvt::{MVT_BOOL, MVT_DOUBLE, MVT_NULL, MVT_STRING};
 use tippecanoe::projection::PROJECTIONS;
 use tippecanoe::serial::SerialVal;
 
 use super::serialize::InFeature;
+use crate::options::Options;
 
 /// The H3 resolution for a zoom, as freestiler maps them: hexagons a little
-/// smaller than a tile's 256 pixels make them.
+/// smaller than a tile's 256 pixels make them, and beyond zoom 14 seven
+/// tenths of the zoom, rounded half to even as R rounds.
 pub fn resolution(zoom: i32) -> u8 {
     match zoom {
         ..=1 => 1,
@@ -37,7 +42,7 @@ pub fn resolution(zoom: i32) -> u8 {
         11 => 8,
         12 | 13 => 9,
         14 => 10,
-        z => (z - 4).min(15) as u8,
+        z => (z as f64 * 0.7).round_ties_even().min(15.0) as u8,
     }
 }
 
@@ -49,41 +54,69 @@ const CATEGORIES: usize = 64;
 pub struct Setup {
     /// The zoom from which the points show.
     pub base: i32,
+    /// `--h3-no-points`: the points don't show.
+    pub no_points: bool,
     /// Each resolution's zooms: resolution, first zoom, last zoom.
     pub windows: Vec<(u8, i32, i32)>,
-    /// The finest resolution, into which the points are counted.
-    finest: Resolution,
+    /// The resolutions into which the points are counted.
+    resolutions: Vec<Resolution>,
     /// The attributes to accumulate, and how.
     accumulate: Vec<(String, AttributeOp)>,
+    /// `--h3-median`: the attributes whose median each hexagon has.
+    median: Vec<String>,
     /// `--h3-categories`: the attribute whose values are counted.
     category: Option<String>,
 }
 
 impl Setup {
-    pub fn new(
-        minzoom: i32,
-        base: i32,
-        accumulate: &HashMap<String, AttributeOp>,
-        category: Option<String>,
-    ) -> Setup {
+    pub fn new(o: &Options) -> Setup {
+        let base = o.h3_base();
+        let maxzoom = o.maxzoom.max(o.minzoom);
         let mut windows: Vec<(u8, i32, i32)> = Vec::new();
-        for z in minzoom..base {
-            let r = resolution(z);
+        for z in o.minzoom..base {
+            let r = o
+                .h3_resolutions
+                .get(&z)
+                .copied()
+                .unwrap_or_else(|| resolution(z));
             match windows.last_mut() {
                 Some(w) if w.0 == r => w.2 = z,
                 _ => windows.push((r, z, z)),
             }
         }
-        let finest = windows.iter().map(|w| w.0).max().unwrap_or(0);
-        let mut accumulate: Vec<(String, AttributeOp)> =
-            accumulate.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        // --h3-fade: each resolution shows beyond its own zooms, to fade
+        // into the next
+        for w in windows.iter_mut() {
+            w.1 = (w.1 - o.h3_fade).max(o.minzoom);
+            w.2 = (w.2 + o.h3_fade).min(maxzoom);
+        }
+        let mut resolutions: Vec<Resolution> = windows
+            .iter()
+            .map(|w| Resolution::try_from(w.0).expect("a resolution of 0 to 15"))
+            .collect();
+        resolutions.sort();
+        resolutions.dedup();
+        let mut accumulate: Vec<(String, AttributeOp)> = o
+            .attribute_accum
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
         accumulate.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut median = o.h3_median.clone();
+        median.sort();
+        median.dedup();
         Setup {
-            base,
+            base: if o.h3_no_points {
+                base
+            } else {
+                (base - o.h3_fade).max(o.minzoom)
+            },
+            no_points: o.h3_no_points,
             windows,
-            finest: Resolution::try_from(finest).expect("a resolution of 0 to 15"),
+            resolutions,
             accumulate,
-            category,
+            median,
+            category: o.h3_categories.clone(),
         }
     }
 }
@@ -155,7 +188,11 @@ impl Sum {
 struct Bin {
     count: u64,
     sums: Vec<Sum>,
+    /// `--h3-median`: each attribute's values.
+    values: Vec<Vec<f64>>,
+    /// `--h3-categories`: the points of each value, and of none.
     categories: BTreeMap<String, u64>,
+    uncategorized: u64,
 }
 
 impl Bin {
@@ -167,13 +204,36 @@ impl Bin {
         for (a, b) in self.sums.iter_mut().zip(&o.sums) {
             a.merge(b);
         }
+        if self.values.len() < o.values.len() {
+            self.values.resize(o.values.len(), Vec::new());
+        }
+        for (a, b) in self.values.iter_mut().zip(&o.values) {
+            a.extend_from_slice(b);
+        }
         for (k, v) in &o.categories {
             *self.categories.entry(k.clone()).or_default() += v;
         }
+        self.uncategorized += o.uncategorized;
     }
 }
 
-/// The points one chunk counted, by layer and finest cell.
+/// The median of some values, the mean of the middle two of an even number
+/// of them, as DuckDB's `MEDIAN` makes it.
+fn median(values: &mut [f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_unstable_by(f64::total_cmp);
+    let n = values.len();
+    Some(if n % 2 == 1 {
+        values[n / 2]
+    } else {
+        let (a, b) = (values[n / 2 - 1], values[n / 2]);
+        a + (b - a) / 2.0
+    })
+}
+
+/// The points one chunk counted, by layer and cell.
 #[derive(Debug, Default)]
 pub struct Bins {
     layers: BTreeMap<String, HashMap<u64, Bin>>,
@@ -200,29 +260,46 @@ impl Bins {
         keys: &[Cow<'_, str>],
         values: &[SerialVal],
     ) {
+        // what the feature adds to each of its points' cells
+        let mut point = Bin {
+            count: 1,
+            sums: vec![Sum::default(); setup.accumulate.len()],
+            values: vec![Vec::new(); setup.median.len()],
+            ..Bin::default()
+        };
+        let mut categorized = false;
+        for (k, v) in keys.iter().zip(values) {
+            if let Ok(i) = setup.accumulate.binary_search_by(|a| a.0.as_str().cmp(k))
+                && let Some(n) = number(v)
+            {
+                point.sums[i].add(n);
+            }
+            if let Ok(i) = setup.median.binary_search_by(|a| a.as_str().cmp(k))
+                && let Some(n) = number(v)
+            {
+                point.values[i].push(n);
+            }
+            if setup.category.as_deref() == Some(k.as_ref()) && v.type_ != MVT_NULL {
+                let value = v.s.split('\0').next().unwrap_or("").to_string();
+                point.categories.insert(value, 1);
+                categorized = true;
+            }
+        }
+        if setup.category.is_some() && !categorized {
+            point.uncategorized = 1;
+        }
+
         let cells = self.layers.entry(layer.to_string()).or_default();
         for (x, y) in points {
             let (lon, lat) = tippecanoe::projection::tile2lonlat(x, y, 32);
             let Ok(ll) = LatLng::new(lat, lon) else {
                 continue;
             };
-            let bin = cells
-                .entry(u64::from(ll.to_cell(setup.finest)))
-                .or_default();
-            bin.count += 1;
-            if bin.sums.len() < setup.accumulate.len() {
-                bin.sums.resize(setup.accumulate.len(), Sum::default());
-            }
-            for (k, v) in keys.iter().zip(values) {
-                if let Ok(i) = setup.accumulate.binary_search_by(|a| a.0.as_str().cmp(k))
-                    && let Some(n) = number(v)
-                {
-                    bin.sums[i].add(n);
-                }
-                if setup.category.as_deref() == Some(k.as_ref()) {
-                    let value = v.s.split('\0').next().unwrap_or("").to_string();
-                    *bin.categories.entry(value).or_default() += 1;
-                }
+            for &r in &setup.resolutions {
+                cells
+                    .entry(u64::from(ll.to_cell(r)))
+                    .or_default()
+                    .merge(&point);
             }
         }
     }
@@ -296,6 +373,10 @@ fn double(v: f64) -> SerialVal {
     SerialVal::new(MVT_DOUBLE, &dtoa_milo(v))
 }
 
+fn boolean(v: bool) -> SerialVal {
+    SerialVal::new(MVT_BOOL, if v { "true" } else { "false" })
+}
+
 /// The hexagons of the bins of every chunk, added up in the order given.
 pub fn hexagons(setup: &Setup, chunks: Vec<Bins>) -> Vec<Hexagon> {
     let mut layers: BTreeMap<String, HashMap<u64, Bin>> = BTreeMap::new();
@@ -319,6 +400,8 @@ pub fn hexagons(setup: &Setup, chunks: Vec<Bins>) -> Vec<Hexagon> {
                 *totals.entry(k.as_str()).or_default() += v;
             }
         }
+        // a value of "_other" is counted with the others
+        totals.remove("_other");
         let mut ranked: Vec<(&str, u64)> = totals.into_iter().collect();
         ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
         let named: Vec<String> = ranked
@@ -331,22 +414,17 @@ pub fn hexagons(setup: &Setup, chunks: Vec<Bins>) -> Vec<Hexagon> {
             .map(|r| r.0.to_string())
             .collect();
 
-        let mut finest: Vec<(u64, Bin)> = cells.into_iter().collect();
-        finest.sort_unstable_by_key(|c| c.0);
+        let mut cells: Vec<(CellIndex, Bin)> = cells
+            .into_iter()
+            .filter_map(|(cell, bin)| Some((CellIndex::try_from(cell).ok()?, bin)))
+            .collect();
+        cells.sort_unstable_by_key(|c| c.0);
         for &(res, minzoom, maxzoom) in &setup.windows {
-            let resolution = Resolution::try_from(res).expect("a resolution of 0 to 15");
-            let mut coarse: BTreeMap<u64, Bin> = BTreeMap::new();
-            for (cell, bin) in &finest {
-                let Ok(c) = CellIndex::try_from(*cell) else {
+            for (c, bin) in cells.iter_mut() {
+                if u8::from(c.resolution()) != res {
                     continue;
-                };
-                let Some(parent) = c.parent(resolution) else {
-                    continue;
-                };
-                coarse.entry(u64::from(parent)).or_default().merge(bin);
-            }
-            for (cell, bin) in coarse {
-                let c = CellIndex::try_from(cell).expect("a cell");
+                }
+                let c = *c;
                 let mut keys: Vec<Cow<'static, str>> = vec![
                     Cow::Borrowed("h3"),
                     Cow::Borrowed("h3_resolution"),
@@ -363,8 +441,14 @@ pub fn hexagons(setup: &Setup, chunks: Vec<Bins>) -> Vec<Hexagon> {
                         values.push(double(v));
                     }
                 }
+                for (name, v) in setup.median.iter().zip(bin.values.iter_mut()) {
+                    if let Some(m) = median(v) {
+                        keys.push(Cow::Owned(name.clone()));
+                        values.push(double(m));
+                    }
+                }
                 if let Some(category) = &setup.category {
-                    let mut other = 0;
+                    let mut other = bin.uncategorized;
                     let mut counts: BTreeMap<&str, u64> = BTreeMap::new();
                     for (k, v) in &bin.categories {
                         if named.iter().any(|n| n == k) {
@@ -373,14 +457,30 @@ pub fn hexagons(setup: &Setup, chunks: Vec<Bins>) -> Vec<Hexagon> {
                             other += v;
                         }
                     }
-                    for (k, v) in counts {
-                        keys.push(Cow::Owned(format!("{}:{}", category, k)));
-                        values.push(double(v as f64));
-                    }
                     if other > 0 {
-                        keys.push(Cow::Owned(format!("{}:_other", category)));
-                        values.push(double(other as f64));
+                        counts.insert("_other", other);
                     }
+                    for (k, v) in &counts {
+                        keys.push(Cow::Owned(format!("{}:{}", category, k)));
+                        values.push(double(*v as f64));
+                    }
+                    // the most common value, unless two or more are
+                    let most = counts.values().copied().max().unwrap_or(0);
+                    let modal: Vec<&str> = counts
+                        .iter()
+                        .filter(|c| *c.1 == most)
+                        .map(|c| *c.0)
+                        .collect();
+                    if let [value] = modal[..] {
+                        keys.push(Cow::Borrowed("modal_category"));
+                        values.push(string(value));
+                    }
+                    keys.extend(["modal_count", "modal_share", "modal_tie"].map(Cow::Borrowed));
+                    values.extend([
+                        double(most as f64),
+                        double(most as f64 / bin.count as f64),
+                        boolean(modal.len() > 1),
+                    ]);
                 }
                 out.push(Hexagon {
                     layer: format!("{}_h3", layer),
@@ -405,9 +505,18 @@ pub fn hexagons(setup: &Setup, chunks: Vec<Bins>) -> Vec<Hexagon> {
 mod tests {
     use super::*;
 
+    fn setup(args: &str) -> Setup {
+        let argv: Vec<String> = std::iter::once("manby")
+            .chain(args.split(' '))
+            .chain(["-o", "x.pmtiles"])
+            .map(String::from)
+            .collect();
+        Setup::new(&crate::options::parse_args(&argv).unwrap())
+    }
+
     #[test]
     fn windows() {
-        let s = Setup::new(0, 12, &HashMap::new(), None);
+        let s = setup("-z14 --h3-base-zoom=12");
         assert_eq!(
             s.windows,
             vec![
@@ -421,37 +530,82 @@ mod tests {
                 (8, 11, 11)
             ]
         );
-        assert_eq!(s.finest, Resolution::Eight);
-        assert!(Setup::new(5, 5, &HashMap::new(), None).windows.is_empty());
+        assert_eq!(s.resolutions.last(), Some(&Resolution::Eight));
+        assert_eq!(s.base, 12);
+        assert!(setup("-Z5 -z5 --h3").windows.is_empty());
+
+        // given resolutions, and a zoom of overlap each way
+        let s = setup("-Z2 -z8 --h3-resolutions=3:3,4:3 --h3-fade=1");
+        assert_eq!(s.windows, vec![(2, 2, 3), (3, 2, 5), (4, 4, 6)]);
+        assert_eq!(s.base, 5);
+        assert!(!s.no_points);
+
+        // only hexagons, to the maximum zoom
+        let s = setup("-z6 --h3-no-points --h3-fade=2");
+        assert_eq!(s.windows.last(), Some(&(5, 4, 6)));
+        assert_eq!(s.base, 7);
+        assert!(s.no_points);
+    }
+
+    #[test]
+    fn resolutions_beyond_zoom_14() {
+        let r: Vec<u8> = (14..=24).map(resolution).collect();
+        assert_eq!(r, [10, 10, 11, 12, 13, 13, 14, 15, 15, 15, 15]);
+    }
+
+    #[test]
+    fn refused() {
+        for args in [
+            "-z8 --h3-resolutions=6:16",
+            "-z8 --h3-resolutions=7:5",
+            "-z8 --h3-resolutions=x",
+            "-z8 --h3-fade=-1",
+            "-z8 --h3-no-points --h3-base-zoom=4",
+            "-zg --h3-no-points",
+            "-z8 --h3-median=pop -Epop:sum",
+        ] {
+            let argv: Vec<String> = std::iter::once("manby")
+                .chain(args.split(' '))
+                .chain(["-o", "x.pmtiles"])
+                .map(String::from)
+                .collect();
+            let resolved =
+                crate::options::parse_args(&argv).and_then(|mut o| o.resolve().map(|_| ()));
+            assert!(resolved.is_err(), "{}", args);
+        }
+    }
+
+    #[test]
+    fn medians() {
+        assert_eq!(median(&mut []), None);
+        assert_eq!(median(&mut [3.0, 1.0, 2.0]), Some(2.0));
+        assert_eq!(median(&mut [4.0, 1.0, 2.0, 10.0]), Some(3.0));
     }
 
     #[test]
     fn counts_and_sums() {
-        let mut accumulate = HashMap::new();
-        accumulate.insert("pop".to_string(), AttributeOp::Sum);
-        accumulate.insert("score".to_string(), AttributeOp::Mean);
-        let s = Setup::new(0, 4, &accumulate, Some("kind".to_string()));
+        let s = setup(
+            "-z6 --h3-base-zoom=4 -Epop:sum -Escore2:mean --h3-median=score --h3-categories=kind",
+        );
         let project = PROJECTIONS[0].project;
         let mut a = Bins::default();
         let mut b = Bins::default();
-        for i in 0..3 {
+        for i in 0..4 {
             let bins = if i == 0 { &mut a } else { &mut b };
             let p = project(11.4 + i as f64 * 0.001, 48.2, 32);
-            bins.add(
-                &s,
-                "places",
-                std::iter::once(p),
-                &[
-                    Cow::Borrowed("pop"),
-                    Cow::Borrowed("score"),
-                    Cow::Borrowed("kind"),
-                ],
-                &[
-                    double(10.0),
-                    double(i as f64),
-                    string(if i == 2 { "cafe" } else { "park" }),
-                ],
-            );
+            let mut keys = vec![
+                Cow::Borrowed("pop"),
+                Cow::Borrowed("score"),
+                Cow::Borrowed("score2"),
+            ];
+            let score = [0.0, 1.0, 2.0, 10.0][i];
+            let mut values = vec![double(10.0), double(score), double(score)];
+            // the last point has no kind
+            if i < 3 {
+                keys.push(Cow::Borrowed("kind"));
+                values.push(string(if i == 2 { "cafe" } else { "park" }));
+            }
+            bins.add(&s, "places", std::iter::once(p), &keys, &values);
         }
         let hexes = hexagons(&s, vec![a, b]);
         // one hexagon at each of resolutions 1 and 2, for zooms 0-1 and 2-3
@@ -464,11 +618,17 @@ mod tests {
                 .position(|x| x == k)
                 .map(|i| h.full_values[i].s.clone())
         };
-        assert_eq!(get("point_count").as_deref(), Some("3"));
-        assert_eq!(get("pop").as_deref(), Some("30"));
-        assert_eq!(get("score").as_deref(), Some("1"));
+        assert_eq!(get("point_count").as_deref(), Some("4"));
+        assert_eq!(get("pop").as_deref(), Some("40"));
+        assert_eq!(get("score2").as_deref(), Some("3.25"));
+        assert_eq!(get("score").as_deref(), Some("1.5"));
         assert_eq!(get("kind:park").as_deref(), Some("2"));
         assert_eq!(get("kind:cafe").as_deref(), Some("1"));
+        assert_eq!(get("kind:_other").as_deref(), Some("1"));
+        assert_eq!(get("modal_category").as_deref(), Some("park"));
+        assert_eq!(get("modal_count").as_deref(), Some("2"));
+        assert_eq!(get("modal_share").as_deref(), Some("0.5"));
+        assert_eq!(get("modal_tie").as_deref(), Some("false"));
         assert_eq!((h.tippecanoe_minzoom, h.tippecanoe_maxzoom), (0, 1));
         assert!(h.geometry.len() >= 7);
     }

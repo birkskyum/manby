@@ -124,13 +124,13 @@ test_that("h3_sql gives the hexagons DuckDB's aggregates", {
   }
   sql <- c(mean_score = "avg(score)", kinds = "count(DISTINCT kind)")
   out <- file.path(dir, "h3sql.pmtiles")
-  tile(points, out, maximum_zoom = 6, h3_no_points = TRUE, h3_sql = sql, quiet = TRUE)
+  tile(points, out, maximum_zoom = 6, h3_no_points = TRUE, h3_sql = sql, quiet = TRUE, threads = 2)
   expect_true(all(c("mean_score", "kinds", "point_count") %in% fields(out)))
 
   sqlite <- file.path(dir, "h3sql.sqlite")
   sf::st_write(points, sqlite, quiet = TRUE)
   out <- file.path(dir, "h3sql-gdal.pmtiles")
-  tile(sqlite, out, layer = "points", maximum_zoom = 6, h3_no_points = TRUE, h3_sql = sql, quiet = TRUE)
+  tile(sqlite, out, layer = "points", maximum_zoom = 6, h3_no_points = TRUE, h3_sql = sql, quiet = TRUE, threads = 2)
   expect_true(all(c("mean_score", "kinds") %in% fields(out)))
   expect_error(tile(points, out, h3 = TRUE, h3_sql = "avg(score)"), "needs a name")
 })

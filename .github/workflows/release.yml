@@ -146,7 +146,7 @@ jobs:
           ref: ${{ needs.release.outputs.tag || github.sha }}
       # Python unpacks the wheel and makes the zip on Windows
       - if: runner.os == 'Windows'
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.13'
       - uses: PyO3/maturin-action@v1
@@ -227,7 +227,7 @@ jobs:
         with:
           name: bin-${{ matrix.target }}
       - if: runner.os == 'Windows'
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.13'
       - name: Tile

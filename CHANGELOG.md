@@ -1,5 +1,23 @@
 The changes in each version of manby, from the titles of the pull requests that made them.
 
+## [0.2.7](https://github.com/birkskyum/manby/compare/v0.2.6...v0.2.7) - 2026-11-13
+
+### Added
+
+- Build manby into the R package from CRAN ([#76](https://github.com/birkskyum/manby/pull/76))
+- SQL aggregates for H3 hexagons ([#75](https://github.com/birkskyum/manby/pull/75))
+- A view of H3 hexagons in manby serve's map ([#68](https://github.com/birkskyum/manby/pull/68))
+- H3 medians, modes, fades, resolutions and hexagons only ([#65](https://github.com/birkskyum/manby/pull/65))
+
+### Fixed
+
+- Keep manby serve's Meta as 0.2.6 has it ([#74](https://github.com/birkskyum/manby/pull/74))
+- Build with Rust 1.90, with h3o 0.9.4 ([#69](https://github.com/birkskyum/manby/pull/69))
+
+### Dependencies
+
+- Bump the cargo group with 2 updates ([#70](https://github.com/birkskyum/manby/pull/70))
+
 ## [0.2.6](https://github.com/birkskyum/manby/compare/v0.2.5...v0.2.6) - 2026-11-12
 
 ### Added

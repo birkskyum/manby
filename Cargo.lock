@@ -1534,7 +1534,7 @@ dependencies = [
 
 [[package]]
 name = "manby"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -2628,7 +2628,7 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tippecanoe-rs"
-version = "2.82.3"
+version = "2.82.4"
 dependencies = [
  "flatbuffers",
  "flate2",
@@ -2642,7 +2642,7 @@ dependencies = [
 
 [[package]]
 name = "tippecanoe-rs-clipper2"
-version = "1.4.0"
+version = "1.4.1"
 
 [[package]]
 name = "tippecanoe-rs-wagyu"

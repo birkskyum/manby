@@ -3,6 +3,7 @@
 # jobs, and linked into the package's library. Rust's build scripts ask for
 # libgcc_eh, which Rtools doesn't have, so an empty one stands in, as in
 # rextendr's template. The crates and the build are removed once it is linked.
+OBJECTS = init.o
 TARGET = x86_64-pc-windows-gnu
 LIBDIR = rust/target/$(TARGET)/release
 STATLIB = $(LIBDIR)/libmanby_r.a

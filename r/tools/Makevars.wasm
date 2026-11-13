@@ -1,6 +1,7 @@
 # webR: manby, built from src/rust, linked into the package's library. rwasm's
 # cargo, which cross-compiles, knows --target only with "=" and can't read
 # --manifest-path with it.
+OBJECTS = init.o
 TARGET = wasm32-unknown-emscripten
 LIBDIR = rust/target/$(TARGET)/release
 STATLIB = $(LIBDIR)/libmanby_r.a

@@ -45,11 +45,11 @@ not_in_webr <- function(what) {
 }
 
 .onLoad <- function(libname, pkgname) {
-  # the package's library, which only a package with manby built in has
-  state$built_in <- file.exists(file.path(
-    libname, pkgname, "libs", .Platform$r_arch, paste0(pkgname, .Platform$dynlib.ext)
-  ))
-  if (state$built_in) {
+  # the package's library, whose routines run manby where it is built in; on
+  # Windows without it, the library registers nothing
+  lib <- file.path(libname, pkgname, "libs", .Platform$r_arch, paste0(pkgname, .Platform$dynlib.ext))
+  if (file.exists(lib)) {
     library.dynam("manby", pkgname, libname)
+    state$built_in <- is.loaded("manby_run_", PACKAGE = pkgname)
   }
 }

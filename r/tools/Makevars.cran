@@ -1,6 +1,7 @@
 # From CRAN: manby, built offline from the crates that configure unpacked from
 # rust/vendor.tar.xz, with at most two jobs, and linked into the package's
 # library. The crates and the build are removed once it is linked.
+OBJECTS = init.o
 LIBDIR = rust/target/release
 STATLIB = $(LIBDIR)/libmanby_r.a
 PKG_LIBS = -L$(LIBDIR) -lmanby_r @LIBS@

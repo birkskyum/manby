@@ -1,5 +1,3 @@
-# Outside webR the package runs the manby program, so nothing is built.
-OBJECTS =
-
-all:
-	@:
+# Windows without the vendored crates: the package runs the manby program, and
+# its library, which R on Windows wants, registers nothing.
+OBJECTS = stub.o

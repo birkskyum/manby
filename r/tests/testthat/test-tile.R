@@ -84,6 +84,8 @@ test_that("an sf data frame in another CRS is reprojected", {
 })
 
 test_that("a file that GDAL reads makes the same tiles, through sf and DuckDB", {
+  # GDAL's SQLite driver fails in webR's sf
+  skip_if(webr, "webR")
   sqlite <- file.path(dir, "points.sqlite")
   sf::st_write(points, sqlite, quiet = TRUE)
   expect_true(is_gdal(sqlite))

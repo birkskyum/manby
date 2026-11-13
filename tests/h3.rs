@@ -131,6 +131,7 @@ fn only_hexagons_with_their_modes() {
             r.get(0)
         })
         .unwrap();
+    drop(db);
     assert!(json.contains(r#""id":"w_h3""#), "{}", json);
     assert!(!json.contains(r#""id":"w""#), "{}", json);
     for f in [

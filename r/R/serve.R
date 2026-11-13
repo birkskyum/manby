@@ -34,7 +34,7 @@ serve <- function(tilesets, port = 8080, host = "127.0.0.1", open = interactive(
     "serve", "--port", format(port, scientific = FALSE), "--host", host,
     path.expand(as.character(tilesets))
   )
-  server <- if (built_in()) serve_built_in(args) else serve_program(args)
+  server <- if (built_in()) serve_built_in(args) else serve_program(args, length(tilesets))
   if (isTRUE(open)) {
     getOption("viewer", utils::browseURL)(server$url)
   }
@@ -81,14 +81,15 @@ serve_built_in <- function(args) {
   )
 }
 
-#' Serves with the manby program, until stopped or the end of the R session.
+#' Serves `n` tilesets with the manby program, until stopped or the end of
+#' the R session.
 #' @noRd
-serve_program <- function(args) {
+serve_program <- function(args, n) {
   err <- tempfile("manby-serve-", fileext = ".txt")
   p <- processx::process$new(manby_binary(), args, stdout = "|", stderr = err, cleanup = TRUE)
   # the map's address, then each tileset's TileJSON
   lines <- character()
-  while (length(lines) <= length(tilesets) && p$is_alive()) {
+  while (length(lines) <= n && p$is_alive()) {
     p$poll_io(1000)
     lines <- c(lines, p$read_output_lines())
   }

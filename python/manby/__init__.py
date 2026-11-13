@@ -142,43 +142,120 @@ def _read_gdal(path: str, layer: str | None, out: str, use_geopandas: bool = Tru
     if geopandas is not None:
         names = list(geopandas.list_layers(path)["name"])
         return geopandas.read_file(path, layer=layer if layer in names else names[0])
+    con = _duckdb("manby reads %s with GeoPandas or DuckDB: pip install geopandas" % os.path.basename(path))
+    try:
+        file = out + ".parquet"
+        con.execute(
+            "COPY (SELECT * EXCLUDE (geometry), ST_AsWKB(geometry) AS geometry FROM (%s)) TO %s (FORMAT parquet)"
+            % (_gdal_select(con, path, layer), _quote(file))
+        )
+        return file
+    finally:
+        con.close()
+
+
+def _duckdb(why: str, extensions: Sequence[str] = ()) -> Any:
+    """A DuckDB connection with the spatial extension, and others named."""
     try:
         import duckdb
     except ImportError:
-        raise ImportError(
-            "manby reads %s with GeoPandas or DuckDB: pip install geopandas"
-            % os.path.basename(path)
-        ) from None
+        raise ImportError(why) from None
     con = duckdb.connect()
+    con.execute("INSTALL spatial")
+    con.execute("LOAD spatial")
+    for e in extensions:
+        con.execute("INSTALL %s FROM community" % e)
+        con.execute("LOAD %s" % e)
+    return con
+
+
+def _ident(x: str) -> str:
+    return '"%s"' % x.replace('"', '""')
+
+
+def _gdal_select(con: Any, path: str, layer: str | None) -> str:
+    """A query of the layer ``layer`` of a file that GDAL reads, or its first
+    layer, with its fields and its geometry in WGS 84 as ``geometry``."""
+    meta = con.execute(
+        "SELECT l.name, l.geometry_fields[1].name, l.geometry_fields[1].crs.auth_name, "
+        "l.geometry_fields[1].crs.auth_code, [f.name FOR f IN l.fields] "
+        "FROM (SELECT unnest(layers) AS l FROM ST_Read_Meta(?))",
+        [path],
+    ).fetchall()
+    row = next((m for m in meta if m[0] == layer), meta[0] if meta else None)
+    # ST_Read names the geometry after the source's column, or geom
+    column = _ident(row[1] if row and row[1] else "geom")
+    crs = "%s:%s" % (row[2], row[3]) if row and row[2] and row[3] else "EPSG:4326"
+    if crs in ("EPSG:4326", "OGC:CRS84"):
+        geometry = column
+    else:
+        geometry = "ST_Transform(%s, %s, 'EPSG:4326', always_xy := true)" % (column, _quote(crs))
+    source = _quote(path) + (", layer = " + _quote(row[0]) if row else "")
+    # the layer's fields, without the feature ids that DuckDB 2 adds
+    fields = "".join(_ident(f) + ", " for f in row[4]) if row else "* EXCLUDE (%s), " % column
+    return "SELECT %s%s AS geometry FROM ST_Read(%s)" % (fields, geometry, source)
+
+
+def _geometry_select(con: Any, relation: str, what: str) -> str:
+    """A query of ``relation`` with its geometry, GeoParquet or well-known
+    binary in a column named geometry, geom or wkb_geometry, as ``geometry``."""
+    columns = con.execute("DESCRIBE SELECT * FROM %s" % relation).fetchall()
+    geo = [c[0] for c in columns if str(c[1]).upper().startswith("GEOMETRY")]
+    wkb = [
+        c[0]
+        for c in columns
+        if c[0].lower() in ("geometry", "geom", "wkb_geometry") and str(c[1]).upper() == "BLOB"
+    ]
+    if not geo and not wkb:
+        raise ValueError("%s has no geometry column for h3_sql" % what)
+    column = _ident((geo or wkb)[0])
+    geometry = column if geo else "ST_GeomFromWKB(%s)" % column
+    return "SELECT * EXCLUDE (%s), %s AS geometry FROM %s" % (column, geometry, relation)
+
+
+def _points_select(con: Any, data: Any, layer: str | None, i: int) -> str:
+    """A query of a layer's features with their geometry in WGS 84 as
+    ``geometry``, for ``h3_sql``."""
+    if isinstance(data, (str, bytes, os.PathLike)):
+        path = os.fsdecode(data)
+        if re.search(r"\.(geo)?parquet$", path, re.I):
+            return _geometry_select(con, "read_parquet(%s)" % _quote(path), os.path.basename(path))
+        if re.search(r"\.(csv|arrows?|feather|ipc)(\.gz)?$", path, re.I):
+            raise ValueError("h3_sql reads Parquet and the files that GDAL reads, not %s" % os.path.basename(path))
+        return _gdal_select(con, path, layer)
+    table = "__h3_points_%d" % i
+    if _is_geodataframe(data):
+        g = data
+        if g.crs is not None and g.crs.to_epsg() != 4326:
+            g = g.to_crs(4326)
+        g = g[g.geom_type.isin(["Point", "MultiPoint"])].explode(index_parts=False)
+        frame = g.drop(columns=g.geometry.name)
+        frame = frame.assign(__lon=g.geometry.x.values, __lat=g.geometry.y.values)
+        con.register(table, frame)
+        return "SELECT * EXCLUDE (__lon, __lat), ST_Point(__lon, __lat) AS geometry FROM %s" % table
+    import pyarrow as pa
+
+    con.register(table, pa.table(data))
+    return _geometry_select(con, table, type(data).__name__)
+
+
+def _write_h3_join(layers: list, h3_sql: Mapping[str, str], file: str) -> str:
+    """``h3_sql``: writes the aggregates of the points of each layer in their
+    H3 cells of every resolution, by DuckDB, for ``--h3-join``."""
+    con = _duckdb("h3_sql is computed by DuckDB: pip install duckdb", ["h3"])
     try:
-        con.execute("INSTALL spatial")
-        con.execute("LOAD spatial")
-        meta = con.execute(
-            "SELECT l.name, l.geometry_fields[1].name, l.geometry_fields[1].crs.auth_name, "
-            "l.geometry_fields[1].crs.auth_code, [f.name FOR f IN l.fields] "
-            "FROM (SELECT unnest(layers) AS l FROM ST_Read_Meta(?))",
-            [path],
-        ).fetchall()
-        row = next((m for m in meta if m[0] == layer), meta[0] if meta else None)
-        # ST_Read names the geometry after the source's column, or geom
-        column = '"%s"' % (row[1] if row and row[1] else "geom").replace('"', '""')
-        crs = "%s:%s" % (row[2], row[3]) if row and row[2] and row[3] else "EPSG:4326"
-        if crs in ("EPSG:4326", "OGC:CRS84"):
-            geometry = column
-        else:
-            geometry = "ST_Transform(%s, %s, 'EPSG:4326', always_xy := true)" % (column, _quote(crs))
-        file = out + ".parquet"
-        source = _quote(path) + (", layer = " + _quote(row[0]) if row else "")
-        # the layer's fields, without the feature ids that DuckDB 2 adds
-        fields = (
-            "".join('"%s", ' % f.replace('"', '""') for f in row[4])
-            if row
-            else "* EXCLUDE (%s), " % column
-        )
-        con.execute(
-            "COPY (SELECT %sST_AsWKB(%s) AS geometry FROM ST_Read(%s)) TO %s (FORMAT parquet)"
-            % (fields, geometry, source, _quote(file))
-        )
+        aggregates = ", ".join("%s AS %s" % (sql, _ident(name)) for name, sql in h3_sql.items())
+        queries = []
+        for i, (name, data) in enumerate(layers):
+            queries.append(
+                "SELECT h3_h3_to_string(h3_latlng_to_cell(ST_Y(__point), ST_X(__point), r::INTEGER)) AS h3, "
+                + ("%s AS layer, " % _quote(name) if len(layers) > 1 else "")
+                + aggregates
+                + " FROM (SELECT * EXCLUDE (geometry), unnest(ST_Dump(geometry)).geom AS __point FROM ("
+                + _points_select(con, data, name, i)
+                + ") WHERE ST_Dimension(geometry) = 0), range(0, 16) AS __resolutions(r) GROUP BY ALL"
+            )
+        con.execute("COPY (%s) TO %s (FORMAT parquet)" % (" UNION ALL BY NAME ".join(queries), _quote(file)))
         return file
     finally:
         con.close()
@@ -264,6 +341,7 @@ def tile(
     *args: str,
     layer: str | None = None,
     force: bool = True,
+    h3_sql: Mapping[str, str] | None = None,
     **options: Any,
 ) -> str:
     """Makes the tileset ``output`` from ``data``, and gives its path.
@@ -273,7 +351,10 @@ def tile(
     any of these. A table's geometry is the column that its GeoArrow or
     GeoParquet metadata names, or a column named ``geometry`` in well-known
     binary. ``layer`` names the layer of a single input. ``force`` overwrites
-    an existing tileset. The other options are tippecanoe's long options.
+    an existing tileset. ``h3_sql`` gives the hexagons of ``--h3``
+    aggregates in DuckDB SQL, such as ``{"p90": "quantile_cont(price, 0.9)"}``,
+    which DuckDB computes over the points of each H3 cell. The other options
+    are tippecanoe's long options.
     """
     layers = data if isinstance(data, Mapping) else {layer: data}
     argv = ["-o", os.fspath(output)]
@@ -284,6 +365,7 @@ def tile(
 
     feeds = []
     tmp = None
+    read = []
     try:
         for i, (name, d) in enumerate(layers.items()):
             if _is_gdal(d):
@@ -295,6 +377,7 @@ def tile(
                     name = _gdal_stem(source)
                 os.mkdir(os.path.join(tmp, "gdal-%d" % i))
                 d = _read_gdal(source, name, os.path.join(tmp, "gdal-%d" % i, _gdal_stem(source)))
+            read.append((name, d))
             stream = _arrow(d)
             if stream is None:
                 if name is None:
@@ -322,6 +405,13 @@ def tile(
             if name is not None:
                 source["layer"] = name
             argv.append("-L" + json.dumps(source))
+
+        if h3_sql:
+            if len(read) > 1 and any(name is None for name, _ in read):
+                raise ValueError("h3_sql with several layers needs each named")
+            if tmp is None:
+                tmp = tempfile.mkdtemp(prefix="manby-")
+            argv.append("--h3-join=" + _write_h3_join(read, h3_sql, os.path.join(tmp, "h3.parquet")))
 
         proc = subprocess.Popen([binary(), *argv])
         threads = [_Feed(path, stream, proc) for path, stream in feeds]

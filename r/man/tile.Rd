@@ -4,7 +4,7 @@
 \alias{tile}
 \title{Makes a tileset}
 \usage{
-tile(data, output, ..., layer = NULL, force = TRUE)
+tile(data, output, ..., layer = NULL, force = TRUE, h3_sql = NULL)
 }
 \arguments{
 \item{data}{The features: a file name, a table, or a named list of layers.}
@@ -19,6 +19,12 @@ arguments are passed as they are, such as \code{"-zg"}.}
 layer is named after the file, or for a table after the tileset.}
 
 \item{force}{Overwrite an existing tileset.}
+
+\item{h3_sql}{Aggregates for the hexagons of \code{--h3}, as a named vector of
+DuckDB SQL, such as \code{c(p90 = "quantile_cont(price, 0.9)")}. DuckDB
+computes each over the points of each H3 cell, with its spatial and H3
+extensions, and the hexagons get them as attributes of those names. The
+points of a Parquet file are taken to be in WGS 84.}
 }
 \value{
 \code{output}, invisibly.
@@ -62,6 +68,9 @@ roads <- dplyr::tbl(con, dplyr::sql(
 tile(roads, "roads.pmtiles", maximum_zoom = 14, drop_densest_as_needed = TRUE)
 
 tile(list(roads = roads, places = "places.parquet"), "map.pmtiles", "-zg")
+
+tile(places, "places.pmtiles", maximum_zoom = 12, h3 = TRUE,
+  h3_sql = c(p90 = "quantile_cont(price, 0.9)", kinds = "count(DISTINCT kind)"))
 
 tile(list(points = "liechtenstein.osm.pbf", lines = "liechtenstein.osm.pbf"),
   "liechtenstein.pmtiles", maximum_zoom = 14, drop_densest_as_needed = TRUE)

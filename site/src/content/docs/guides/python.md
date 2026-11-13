@@ -108,7 +108,7 @@ manby.tile(
 
 ### Data frames
 
-A GeoDataFrame in another CRS is reprojected to WGS 84 first. A file in a format that manby does not read, such as KML, GPX or OpenStreetMap, is read with GeoPandas, or with DuckDB if GeoPandas is not installed. See [Other formats](../other-formats/#from-r-and-python).
+A GeoDataFrame in another CRS is reprojected to WGS 84 first. A file in a format that manby does not read, such as KML, GPX or OpenStreetMap, is read with GeoPandas, or with DuckDB if GeoPandas is not installed. See [Other formats](../other-formats/#from-r-and-python). `h3_sql` gives the hexagons of `--h3` aggregates written in DuckDB's SQL, as in [Aggregates in SQL](../h3/#aggregates-in-sql).
 
 ```python
 import geopandas, manby

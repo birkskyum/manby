@@ -896,7 +896,7 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
             &layer_names,
             unit_count,
             overall_offset,
-        );
+        )?;
     }
 
     if cfg.supercluster {
@@ -986,15 +986,24 @@ fn add_hexagons(
     layer_names: &[String],
     unit: usize,
     seq: i64,
-) {
+) -> crate::Result<()> {
     let bins: Vec<h3::Bins> = parts
         .chunks
         .iter_mut()
         .filter_map(|a| a.chunk.h3.take().map(|b| *b))
         .collect();
-    let hexagons = h3::hexagons(setup, bins);
+    let joined = match &cfg.o.h3_join {
+        Some(path) => Some(h3::read_join(path).map_err(|e| {
+            Error::new(
+                tippecanoe::errors::EXIT_READ,
+                format!("{}: --h3-join: {}: {}", cfg.o.program, path, e),
+            )
+        })?),
+        None => None,
+    };
+    let hexagons = h3::hexagons(setup, bins, joined.as_ref());
     if hexagons.is_empty() {
-        return;
+        return Ok(());
     }
     let mut chunk = Chunk::new(layer_names);
     for mut h in hexagons {
@@ -1030,6 +1039,7 @@ fn add_hexagons(
         unit,
         line_offset: 0,
     });
+    Ok(())
 }
 
 /// Rows of an Arrow table or FlatGeobuf file read at a time, in whole

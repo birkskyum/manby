@@ -22,6 +22,7 @@ manby takes [tippecanoe's options](https://github.com/felt/tippecanoe#readme), a
 | `--h3-resolutions=Z:R,...` | The H3 resolution at each zoom given, over the built-in ones. Implies `--h3`. |
 | `--h3-fade=N` | Each resolution shows `N` zooms beyond its own on each side, and the points `N` zooms before the base zoom, to fade from one to the next. Implies `--h3`. |
 | `--h3-no-points` | Only the hexagons, at every zoom, without the points. Implies `--h3`. |
+| `--h3-join=FILE` | Attributes for the hexagons from a Parquet file, by the cell in its `h3` column, and the layer in its `layer` column if it has one. Implies `--h3`. |
 | `--supercluster` | Clusters each layer's points with Supercluster, as a MapLibre GeoJSON source does, with its properties and `cluster_expansion_zoom`. See [Clusters as MapLibre makes them](../../guides/supercluster/). |
 | `--supercluster-radius=PIXELS` | The radius of a cluster in pixels of a 512-pixel tile, 50 unless given. |
 | `--supercluster-min-points=N` | The fewest points that make a cluster, 2 unless given. |

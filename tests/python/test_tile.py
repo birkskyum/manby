@@ -8,6 +8,7 @@ import gzip
 import json
 import os
 import struct
+import subprocess
 import sys
 import tempfile
 import urllib.request
@@ -59,6 +60,10 @@ def main():
         }
     )
     con = duckdb.connect()
+    con.execute("INSTALL h3 FROM community")
+    con.execute("LOAD h3")
+    gdf_points = pa.table({"score": gdf["score"].tolist(), "kind": gdf["kind"].tolist(), "lon": list(gdf.geometry.x), "lat": list(gdf.geometry.y)})
+    con.register("gdf_points", gdf_points)
     forms = {
         "file": path,
         "geopandas": gdf,
@@ -98,6 +103,26 @@ def main():
     manby.tile(parquet, out, maximum_zoom="g", drop_densest_as_needed=True, quiet=True)
     assert tiles(out) == (reference, ["points"]), "DuckDB's reading makes different tiles"
     print("a file that GDAL reads: the same tiles")
+
+    # h3_sql: DuckDB's aggregates of each cell's points, on the hexagons
+    sql = {"mean_score": "avg(score)", "kinds": "count(DISTINCT kind)"}
+    for name, data in [("h3sql-gdf", gdf), ("h3sql-parquet", path), ("h3sql-arrow", wkb)]:
+        out = os.path.join(d, name + ".mbtiles")
+        manby.tile(data, out, layer="points", maximum_zoom=3, h3_no_points=True, h3_sql=sql, quiet=True)
+        decoded = json.loads(subprocess.run([manby.binary(), "decode", out, "0", "0", "0"], capture_output=True, check=True).stdout)
+        hexagons = decoded["features"][0]["features"]
+        assert len(hexagons) > 0, name
+        for h in hexagons:
+            p = h["properties"]
+            n, mean, kinds = con.execute(
+                "SELECT count(*), avg(score), count(DISTINCT kind) FROM gdf_points "
+                "WHERE h3_h3_to_string(h3_latlng_to_cell(lat, lon, 1)) = ?",
+                [p["h3"]],
+            ).fetchone()
+            # the mean in the order DuckDB adds up the points, to the last digit
+            same = (p["point_count"], p["kinds"]) == (n, kinds) and abs(p["mean_score"] - mean) <= 1e-12 * abs(mean)
+            assert same, (name, p, n, mean, kinds)
+    print("h3_sql: DuckDB's aggregates on the hexagons")
 
     out = os.path.join(d, "layers.pmtiles")
     manby.tile({"a": gdf, "b": path}, out, maximum_zoom=4, quiet=True)

@@ -164,6 +164,8 @@ pub struct Options {
     pub h3_no_points: bool,
     /// `--h3-median`: the attributes whose median each hexagon has.
     pub h3_median: Vec<String>,
+    /// `--h3-join`: a Parquet file of attributes for cells, by cell.
+    pub h3_join: Option<String>,
     /// `--supercluster`: each layer's points clustered as MapLibre clusters
     /// a GeoJSON source, with Supercluster's properties.
     pub supercluster: bool,
@@ -363,6 +365,7 @@ impl Default for Options {
             h3_fade: 0,
             h3_no_points: false,
             h3_median: Vec::new(),
+            h3_join: None,
             cluster_categories: None,
             maxzoom: 14,
             minzoom: 0,
@@ -1442,6 +1445,7 @@ fn long_options_orig() -> Vec<LongOption> {
         opt("h3-fade", REQ, b'~'),
         opt("h3-no-points", NO, b'~'),
         opt("h3-median", REQ, b'~'),
+        opt("h3-join", REQ, b'~'),
         opt("cluster-categories", REQ, b'~'),
         opt("use-attribute-for-minzoom", REQ, b'~'),
         opt("use-attribute-for-maxzoom", REQ, b'~'),
@@ -1822,6 +1826,10 @@ pub fn parse_args(argv: &[String]) -> crate::Result<Options> {
                     "h3-no-points" => {
                         o.h3 = true;
                         o.h3_no_points = true
+                    }
+                    "h3-join" => {
+                        o.h3 = true;
+                        o.h3_join = Some(arg.to_string())
                     }
                     "h3-median" => {
                         o.h3 = true;

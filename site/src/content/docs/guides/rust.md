@@ -9,7 +9,7 @@ The `manby` crate is the library that the `manby` command is a thin layer over. 
 cargo add manby
 ```
 
-It needs Rust 1.94 or later. Two cargo features add what the releases have built in.
+It needs Rust 1.90 or later. Two cargo features add what the releases have built in.
 
 - **`remote`** reads GeoParquet from `s3://`, `gs://`, `az://` and `https://` URLs.
 - **`mlt`** writes [MapLibre Tiles](../mlt/), and needs Rust 1.98.

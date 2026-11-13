@@ -9,6 +9,9 @@ updates:
     groups:
       cargo:
         update-types: [minor, patch]
+    ignore:
+      # h3o 0.9.5 and later need Rust 1.94, above manby's rust-version
+      - dependency-name: h3o
     commit-message:
       prefix: chore
       include: scope

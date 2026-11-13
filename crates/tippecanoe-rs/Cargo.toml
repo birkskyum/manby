@@ -1,6 +1,6 @@
 [package]
 name = "tippecanoe-rs"
-version = "2.82.3"
+version = "2.82.4"
 description = "A faithful Rust port of tippecanoe, which builds vector tilesets from GeoJSON, FlatGeobuf, or CSV features"
 edition = "2024"
 license = "BSD-2-Clause"
@@ -40,7 +40,7 @@ path = "src/bin/tippecanoe-json-tool.rs"
 
 [dependencies]
 wagyu = { package = "tippecanoe-rs-wagyu", version = "0.5.0", path = "crates/wagyu" }
-clipper2 = { package = "tippecanoe-rs-clipper2", version = "1.4.0", path = "crates/clipper2" }
+clipper2 = { package = "tippecanoe-rs-clipper2", version = "1.4.1", path = "crates/clipper2" }
 flate2 = { version = "1.1", default-features = false, features = ["zlib"] }
 libc = "0.2"
 memmap2 = "0.9"

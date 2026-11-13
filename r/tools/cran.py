@@ -2,8 +2,8 @@
 """Makes the R package's source package for CRAN, which builds manby into the
 package offline.
 
-manby, as cargo packages it, and the crates it needs go in
-src/rust/vendor.tar.xz, with the Cargo.lock that names them, and their
+manby and the crates of its workspace, as cargo packages them, and the
+crates it needs from crates.io go in src/rust/vendor.tar.xz, with the Cargo.lock that names them, and their
 authors and licenses in inst/AUTHORS; then R CMD build makes the package in
 the current directory. A crate that none of CRAN's platforms builds is left
 as its manifest alone, and the crates' tests, benchmarks and examples are
@@ -11,8 +11,9 @@ left out, which cargo doesn't check once their checksums list no files.
 
     python3 r/tools/cran.py
 
-Needs cargo, R, and manby's crates.io dependencies at the versions of the
-checkout, such as tippecanoe-rs, already published.
+Needs cargo and R. The workspace's crates, such as tippecanoe-rs, are those
+of the checkout, so the package can be made before they are published, as
+on the release PR.
 """
 
 import json
@@ -94,6 +95,28 @@ def no_files(crate):
     json.dump({"files": {}, "package": checksum.get("package")}, open(path, "w"))
 
 
+def local_paths(path, here, local):
+    """Points a packaged manifest's dependencies on the workspace's crates at
+    their copies, by path from `here`."""
+    lines = open(path).read().splitlines()
+    out, i = [], 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        m = re.match(r"^\[(?:target\..+\.)?(?:build-)?dependencies\.([^\]]+)\]$", line)
+        if m:
+            section = []
+            j = i + 1
+            while j < len(lines) and not lines[j].startswith("["):
+                section.append(lines[j])
+                j += 1
+            package = next((re.match(r'package = "([^"]+)"', l).group(1) for l in section if l.startswith("package = ")), m.group(1))
+            if package in local:
+                out.append('path = "%s"' % os.path.relpath(local[package], here).replace(os.sep, "/"))
+        i += 1
+    open(path, "w").write("\n".join(out) + "\n")
+
+
 def authors(rust, packages):
     """The crates' authors and licenses, for inst/AUTHORS."""
     meta = json.loads(run("cargo", "metadata", "--locked", "--offline", "--format-version", "1", cwd=rust, capture=True))
@@ -116,24 +139,35 @@ def main():
     try:
         rust = os.path.join(work, "rust")
         os.makedirs(os.path.join(rust, "src"))
-        # manby as cargo packages it, which takes tippecanoe-rs from crates.io
-        run("cargo", "package", "-p", "manby", "--no-verify", "--allow-dirty", "--target-dir", os.path.join(work, "target"), cwd=REPO)
-        crate = [f for f in os.listdir(os.path.join(work, "target", "package")) if f.endswith(".crate")][0]
-        with tarfile.open(os.path.join(work, "target", "package", crate)) as t:
-            t.extractall(rust, filter="data")
-        os.rename(os.path.join(rust, crate[: -len(".crate")]), os.path.join(rust, "manby"))
+        # manby and the crates of its workspace, as cargo packages them, manby
+        # in rust/manby and the others in rust/manby/crates
+        package = os.path.join(work, "target", "package")
+        run("cargo", "package", "--workspace", "--no-verify", "--allow-dirty", "--target-dir", os.path.join(work, "target"), cwd=REPO)
+        local = {}
+        for crate in sorted(f for f in os.listdir(package) if f.endswith(".crate")):
+            name = re.match(r"(.+)-\d+\.\d+\.\d+.*\.crate$", crate).group(1)
+            with tarfile.open(os.path.join(package, crate)) as t:
+                t.extractall(package, filter="data")
+            local[name] = os.path.join(rust, "manby") if name == "manby" else os.path.join(rust, "manby", "crates", name)
+        shutil.move(os.path.join(package, [f for f in os.listdir(package) if f.startswith("manby-") and not f.endswith(".crate") and f[len("manby-"):][0].isdigit()][0]), local["manby"])
+        os.makedirs(os.path.join(rust, "manby", "crates"), exist_ok=True)
+        for name, dest in local.items():
+            if name != "manby":
+                shutil.move(os.path.join(package, [f for f in os.listdir(package) if re.match(re.escape(name) + r"-\d", f) and not f.endswith(".crate")][0]), dest)
         if not re.search(r'^version = "%s"' % re.escape(version), open(os.path.join(rust, "manby", "Cargo.toml")).read(), re.M):
             sys.exit("manby's version is not the package's, %s" % version)
-        trim(os.path.join(rust, "manby"))
-        # its profiles, which cargo ignores but for warning about them
-        path = os.path.join(rust, "manby", "Cargo.toml")
-        kept, profile = [], False
-        for line in open(path).read().splitlines():
-            if line.startswith("["):
-                profile = line.startswith("[profile")
-            if not profile:
-                kept.append(line)
-        open(path, "w").write("\n".join(kept) + "\n")
+        for name, dest in local.items():
+            trim(dest)
+            path = os.path.join(dest, "Cargo.toml")
+            # their profiles, which cargo ignores but for warning about them
+            kept, profile = [], False
+            for line in open(path).read().splitlines():
+                if line.startswith("["):
+                    profile = line.startswith("[profile")
+                if not profile:
+                    kept.append(line)
+            open(path, "w").write("\n".join(kept) + "\n")
+            local_paths(path, dest, local)
         shutil.copy(os.path.join(R, "src", "rust", "src", "lib.rs"), os.path.join(rust, "src"))
         manifest = open(os.path.join(R, "src", "rust", "Cargo.toml.in")).read().replace("@MANBY@", 'path = "manby"')
         open(os.path.join(rust, "Cargo.toml"), "w").write(manifest)
@@ -166,7 +200,7 @@ def main():
                 t.add(os.path.join(rust, name), arcname=name)
         shutil.copy(os.path.join(rust, "Cargo.lock"), os.path.join(R, "src", "rust", "Cargo.lock"))
         os.makedirs(os.path.join(R, "inst"), exist_ok=True)
-        open(os.path.join(R, "inst", "AUTHORS"), "w").write(authors(rust, packages | {("manby", version)}))
+        open(os.path.join(R, "inst", "AUTHORS"), "w").write(authors(rust, packages))
         print("vendor.tar.xz: %.1f MB" % (os.path.getsize(xz) / 1e6), file=sys.stderr)
     finally:
         shutil.rmtree(work)

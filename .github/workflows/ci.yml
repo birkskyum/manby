@@ -165,9 +165,10 @@ jobs:
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:
           working-directory: r
-          extra-packages: any::rcmdcheck
+          extra-packages: any::rcmdcheck any::testthat any::withr any::sf any::dplyr
           needs: check
-          # r-devel has no binaries, and arrow and duckdb take an hour to build
+          # r-devel has no binaries, and arrow and duckdb take an hour to build,
+          # so there the tests that need them skip
           dependencies: ${{ matrix.r == 'devel' && '"hard"' || '"all"' }}
       - if: runner.os == 'Linux'
         uses: r-lib/actions/setup-tinytex@v2

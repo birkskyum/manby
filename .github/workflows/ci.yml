@@ -135,12 +135,26 @@ jobs:
         env:
           MANBY_BINARY: ${{ github.workspace }}/target/debug/manby${{ runner.os == 'Windows' && '.exe' || '' }}
 
-  # The source package for CRAN, with manby and its crates vendored, checked
-  # as CRAN checks it on the platforms CRAN builds for, with the oldest rustc
-  # that CRAN's machines have. Linux also builds the PDF manual, as CRAN does,
-  # and checks with R's development version, as CRAN checks new packages.
+  # The source package for CRAN, with manby and its crates vendored, made
+  # once, as the one submitted is.
+  cran-package:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: r-lib/actions/setup-r@v2
+      - run: python3 r/tools/cran.py
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cran-package
+          path: manby_*.tar.gz
+
+  # That package, checked as CRAN checks it on the platforms CRAN builds for,
+  # with the oldest rustc that CRAN's machines have. Linux also builds the
+  # PDF manual, as CRAN does, and checks with R's development version, as
+  # CRAN checks new packages.
   cran:
     name: cran (${{ matrix.os }}${{ matrix.r == 'devel' && ', r-devel' || '' }})
+    needs: cran-package
     strategy:
       fail-fast: false
       matrix:
@@ -174,7 +188,9 @@ jobs:
         uses: r-lib/actions/setup-tinytex@v2
       - if: runner.os == 'Linux'
         run: tlmgr install inconsolata
-      - run: python3 r/tools/cran.py || python r/tools/cran.py
+      - uses: actions/download-artifact@v8
+        with:
+          name: cran-package
       - name: R CMD check --as-cran
         run: Rscript -e 'rcmdcheck::rcmdcheck(Sys.glob("manby_*.tar.gz"), args = c("--as-cran", if (Sys.info()[["sysname"]] != "Linux") "--no-manual"), error_on = "warning", check_dir = "check")'
         env:

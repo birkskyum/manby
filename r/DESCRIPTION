@@ -7,12 +7,11 @@ Authors@R: c(
     person("Protomaps LLC", role = "cph", comment = "tippecanoe"),
     person("The authors of the Rust crates that manby builds in", role = c("ctb", "cph"),
       comment = "listed in inst/AUTHORS of the source package from CRAN"))
-Description: Builds vector tilesets in 'PMTiles' and 'MBTiles' from sf data
+Description: Builds vector tilesets in 'PMTiles' and 'MBTiles' from 'sf' data
     frames, 'DuckDB' tables, 'Arrow' tables and files, with the tiles that
-    'tippecanoe' makes from the same features. 'manby', a 'Rust' port of
-    'tippecanoe', is built into the package from CRAN and in 'webR', and
-    elsewhere the package runs the 'manby' program, which it downloads from
-    the package's release on first use.
+    'tippecanoe' <https://github.com/felt/tippecanoe> makes from the same
+    features. 'manby', a 'Rust' port of 'tippecanoe', is built into the
+    package from CRAN.
 License: BSD_2_clause + file LICENSE
 URL: https://birkskyum.github.io/manby/, https://github.com/birkskyum/manby
 BugReports: https://github.com/birkskyum/manby/issues

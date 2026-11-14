@@ -137,7 +137,7 @@ jobs:
 
   # The source package for CRAN, with manby and its crates vendored, checked
   # as CRAN checks it on the platforms CRAN builds for, with the oldest rustc
-  # that CRAN's machines have.
+  # that CRAN's machines have. Linux also builds the PDF manual, as CRAN does.
   cran:
     name: cran (${{ matrix.os }})
     strategy:
@@ -161,9 +161,13 @@ jobs:
           working-directory: r
           extra-packages: any::rcmdcheck
           needs: check
+      - if: runner.os == 'Linux'
+        uses: r-lib/actions/setup-tinytex@v2
+      - if: runner.os == 'Linux'
+        run: tlmgr install inconsolata
       - run: python3 r/tools/cran.py || python r/tools/cran.py
       - name: R CMD check --as-cran
-        run: Rscript -e 'rcmdcheck::rcmdcheck(Sys.glob("manby_*.tar.gz"), args = c("--as-cran", "--no-manual"), error_on = "warning", check_dir = "check")'
+        run: Rscript -e 'rcmdcheck::rcmdcheck(Sys.glob("manby_*.tar.gz"), args = c("--as-cran", if (Sys.info()[["sysname"]] != "Linux") "--no-manual"), error_on = "warning", check_dir = "check")'
         env:
           _R_CHECK_CRAN_INCOMING_REMOTE_: false
           _R_CHECK_FORCE_SUGGESTS_: false

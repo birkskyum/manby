@@ -50,8 +50,59 @@ def run(*args, cwd=None, capture=False):
     return done.stdout
 
 
+# where the build scripts may run as they build for those, as cargo builds a
+# build script and its dependencies for the machine it runs on
+HOSTS = TARGETS + ["x86_64-pc-windows-msvc"]
+
+
+def cfgs(target):
+    """The cfg values of a target, as rustc gives them."""
+    names, pairs = set(), set()
+    for line in run("rustc", "--print", "cfg", "--target", target, capture=True).splitlines():
+        m = re.match(r'(\w+)="([^"]*)"$', line)
+        if m:
+            pairs.add((m.group(1), m.group(2)))
+        else:
+            names.add(line.strip())
+    return target, names, pairs
+
+
+def holds(platform, spec):
+    """Whether a dependency's platform, a target or a cfg(...), is this one."""
+    if spec is None:
+        return True
+    target, names, pairs = platform
+    if not spec.startswith("cfg("):
+        return spec == target
+    tokens = re.findall(r'\w+|"[^"]*"|[(),=]', spec[len("cfg("):-1])
+    i = 0
+
+    def expr():
+        nonlocal i
+        name = tokens[i]
+        i += 1
+        if name in ("all", "any", "not") and i < len(tokens) and tokens[i] == "(":
+            i += 1
+            values = []
+            while tokens[i] != ")":
+                values.append(expr())
+                if tokens[i] == ",":
+                    i += 1
+            i += 1
+            return all(values) if name == "all" else any(values) if name == "any" else not values[0]
+        if i < len(tokens) and tokens[i] == "=":
+            value = tokens[i + 1].strip('"')
+            i += 2
+            return (name, value) in pairs
+        return name in names
+
+    return expr()
+
+
 def used(rust):
-    """The packages that some target of CRAN's builds, as name and version."""
+    """The packages that some target of CRAN's builds, as name and version.
+    cargo tree gives a build script's dependencies for the machine it runs
+    on, so those are added for each machine that may build for CRAN."""
     packages = set()
     for target in TARGETS:
         out = run(
@@ -62,7 +113,24 @@ def used(rust):
             m = re.match(r"(\S+) v(\S+)", line)
             if m:
                 packages.add((m.group(1), m.group(2)))
-    return packages
+    meta = json.loads(run("cargo", "metadata", "--locked", "--offline", "--format-version", "1", cwd=rust, capture=True))
+    nodes = {n["id"]: n for n in meta["resolve"]["nodes"]}
+    ids = {p["id"]: (p["name"], p["version"]) for p in meta["packages"]}
+    hosts = [cfgs(t) for t in HOSTS]
+    todo = [
+        dep["pkg"] for i, n in nodes.items() if ids[i] in packages
+        for dep in n["deps"] if any(k["kind"] == "build" for k in dep["dep_kinds"])
+    ]
+    seen = set()
+    while todo:
+        node = todo.pop()
+        if node in seen:
+            continue
+        seen.add(node)
+        for dep in nodes[node]["deps"]:
+            if any(k["kind"] != "dev" and any(holds(h, k["target"]) for h in hosts) for k in dep["dep_kinds"]):
+                todo.append(dep["pkg"])
+    return packages | {ids[i] for i in seen}
 
 
 def stub(crate):

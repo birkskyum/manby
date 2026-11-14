@@ -198,6 +198,13 @@ jobs:
           _R_CHECK_FORCE_SUGGESTS_: false
       - if: failure()
         run: cat check/manby.Rcheck/00install.out || true
+      # LaTeX's errors, which R CMD check doesn't show
+      - if: failure() && runner.os == 'Linux'
+        working-directory: check
+        run: |
+          [ -f manby-manual.tex ] || exit 0
+          TEXINPUTS=".:$(R RHOME)/share/texmf/tex/latex:" pdflatex -interaction=nonstopmode manby-manual.tex >/dev/null || true
+          grep -n -A8 '^!' manby-manual.log || tail -40 manby-manual.log
 
   # The R package as R-universe builds it for webR, with manby from this
   # commit, and its tests run in webR in Node.js.

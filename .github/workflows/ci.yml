@@ -151,7 +151,8 @@ jobs:
   # That package, checked as CRAN checks it on the platforms CRAN builds for,
   # with the oldest rustc that CRAN's machines have. Linux also builds the
   # PDF manual, as CRAN does, and checks with R's development version, as
-  # CRAN checks new packages.
+  # CRAN checks new packages. There R CMD check reports LaTeX errors in a
+  # manual that pdflatex makes without any, so it leaves the manual out.
   cran:
     name: cran (${{ matrix.os }}${{ matrix.r == 'devel' && ', r-devel' || '' }})
     needs: cran-package
@@ -192,7 +193,7 @@ jobs:
         with:
           name: cran-package
       - name: R CMD check --as-cran
-        run: Rscript -e 'rcmdcheck::rcmdcheck(Sys.glob("manby_*.tar.gz"), args = c("--as-cran", if (Sys.info()[["sysname"]] != "Linux") "--no-manual"), error_on = "warning", check_dir = "check")'
+        run: Rscript -e 'rcmdcheck::rcmdcheck(Sys.glob("manby_*.tar.gz"), args = c("--as-cran", if (Sys.info()[["sysname"]] != "Linux" || "${{ matrix.r }}" == "devel") "--no-manual"), error_on = "warning", check_dir = "check")'
         env:
           _R_CHECK_CRAN_INCOMING_REMOTE_: false
           _R_CHECK_FORCE_SUGGESTS_: false

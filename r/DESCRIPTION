@@ -1,6 +1,6 @@
 Package: manby
 Title: Vector Tilesets Like 'tippecanoe', Several Times Faster
-Version: 0.2.7
+Version: 0.2.8
 Authors@R: c(
     person("Birk", "Skyum", email = "birk.skyum@pm.me", role = c("aut", "cre", "cph")),
     person("Mapbox Inc.", role = "cph", comment = "tippecanoe, which manby ports"),

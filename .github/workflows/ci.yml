@@ -137,13 +137,18 @@ jobs:
 
   # The source package for CRAN, with manby and its crates vendored, checked
   # as CRAN checks it on the platforms CRAN builds for, with the oldest rustc
-  # that CRAN's machines have. Linux also builds the PDF manual, as CRAN does.
+  # that CRAN's machines have. Linux also builds the PDF manual, as CRAN does,
+  # and checks with R's development version, as CRAN checks new packages.
   cran:
-    name: cran (${{ matrix.os }})
+    name: cran (${{ matrix.os }}${{ matrix.r == 'devel' && ', r-devel' || '' }})
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, macos-26, windows-2025]
+        r: [release]
+        include:
+          - os: ubuntu-24.04
+            r: devel
     runs-on: ${{ matrix.os }}
     env:
       RUSTUP_TOOLCHAIN: 1.91.1
@@ -155,6 +160,7 @@ jobs:
       - run: rustup toolchain install 1.91.1 --profile minimal --target x86_64-pc-windows-gnu
       - uses: r-lib/actions/setup-r@v2
         with:
+          r-version: ${{ matrix.r }}
           use-public-rspm: true
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:

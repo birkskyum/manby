@@ -1,14 +1,17 @@
 # From CRAN on Windows: manby, built offline for Rtools' target from the
 # crates that configure.win unpacked from rust/vendor.tar.xz, with at most two
 # jobs, and linked into the package's library. Rust's build scripts ask for
-# libgcc_eh, which Rtools doesn't have, so an empty one stands in, as in
-# rextendr's template. The crates and the build are removed once it is linked.
+# libgcc_eh, which Rtools doesn't have, so an empty one stands in, and Rtools'
+# gcc links, rather than whichever x86_64-w64-mingw32-gcc is first on the
+# PATH, both as in rextendr's template. The crates and the build are removed
+# once it is linked.
 OBJECTS = init.o
 TARGET = x86_64-pc-windows-gnu
 LIBDIR = rust/target/$(TARGET)/release
 STATLIB = $(LIBDIR)/libmanby_r.a
 PKG_LIBS = -L$(LIBDIR) -lmanby_r -lws2_32 -ladvapi32 -luserenv -lbcrypt -lntdll -lole32 -loleaut32 -lz
 CARGO = PATH="$(PATH):$(USERPROFILE)/.cargo/bin" cargo
+CARGO_LINKER = x86_64-w64-mingw32.static.posix-gcc.exe
 
 all: $(SHLIB) clean-rust
 
@@ -19,7 +22,7 @@ $(STATLIB):
 	@echo "Using `PATH="$(PATH):$(USERPROFILE)/.cargo/bin" rustc --version`"
 	mkdir -p rust/.cargo-home/libgcc_mock
 	touch rust/.cargo-home/libgcc_mock/libgcc_eh.a
-	cd rust && CARGO_HOME="$$(pwd)/.cargo-home" LIBRARY_PATH="$(LIBRARY_PATH);$$(pwd)/.cargo-home/libgcc_mock" $(CARGO) build --target=$(TARGET) --release --lib --offline --locked -j 2 --target-dir target
+	cd rust && CARGO_HOME="$$(pwd)/.cargo-home" CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="$(CARGO_LINKER)" LIBRARY_PATH="$(LIBRARY_PATH);$$(pwd)/.cargo-home/libgcc_mock" $(CARGO) build --target=$(TARGET) --release --lib --offline --locked -j 2 --target-dir target
 
 clean-rust: $(SHLIB)
 	rm -rf rust/target rust/vendor rust/manby rust/.cargo-home

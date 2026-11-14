@@ -156,6 +156,21 @@ def trim(crate):
             shutil.rmtree(os.path.join(crate, name))
 
 
+def rlib_only(crate):
+    """Builds a crate as a Rust library alone. cargo makes every kind of
+    library a dependency names, and a cdylib is linked, on Windows by
+    whatever MinGW gcc comes first, for nothing."""
+    path = os.path.join(crate, "Cargo.toml")
+    manifest = open(path).read()
+    m = re.search(r"^crate-type = \[([^\]]*)\]", manifest, re.M)
+    if not m or "cdylib" not in m.group(1):
+        return False
+    kinds = [k for k in re.findall(r'"([^"]+)"', m.group(1)) if k not in ("cdylib", "staticlib")] or ["rlib"]
+    manifest = manifest[: m.start()] + "crate-type = [%s]" % ", ".join('"%s"' % k for k in kinds) + manifest[m.end():]
+    open(path, "w").write(manifest)
+    return True
+
+
 def no_files(crate):
     """Keeps the package's checksum, but no file's, so that cargo checks none."""
     path = os.path.join(crate, ".cargo-checksum.json")
@@ -256,6 +271,8 @@ def main():
                 stubbed += 1
             else:
                 trim(crate)
+                if rlib_only(crate):
+                    print("%s: a Rust library only" % name, file=sys.stderr)
             no_files(crate)
         print("%d crates, %d of them stubs" % (len(os.listdir(vendor)), stubbed), file=sys.stderr)
 

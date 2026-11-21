@@ -1,5 +1,10 @@
 The changes in each version of manby, from the titles of the pull requests that made them.
 
+## [0.2.9](https://github.com/birkskyum/manby/compare/v0.2.8...v0.2.9) - 2026-11-21
+
+### Fixed
+
+- Keep value-code offsets correct past 4 GiB ([#87](https://github.com/birkskyum/manby/pull/87))
 
 ## [0.2.8](https://github.com/birkskyum/manby/compare/v0.2.7...v0.2.8) - 2026-11-14
 

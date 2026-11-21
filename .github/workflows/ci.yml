@@ -102,9 +102,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: astral-sh/setup-uv@v10.3.3
       - run: uvx --from 'maturin>=1.9,<2' maturin build --out dist
+      # DuckDB 2.0.1 has no h3 extension published, which the test installs
       - run: |
           uv venv
-          uv pip install dist/*.whl duckdb geopandas polars pyarrow shapely
+          uv pip install dist/*.whl 'duckdb!=2.0.1' geopandas polars pyarrow shapely
           py=.venv/bin/python
           [ -e $py ] || py=.venv/Scripts/python.exe
           $py tests/python/test_tile.py

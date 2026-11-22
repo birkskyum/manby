@@ -53,7 +53,7 @@ if let Err(e) = manby::run(&options) {
 
 When a tile cannot be made small enough, `run` still succeeds, with `incomplete` set in its summary and a tileset that stops at `maxzoom`. tippecanoe exits with status 100 then.
 
-Progress and warnings go to standard error as tippecanoe writes them, unless `quiet` is set.
+Progress and warnings go to standard error as tippecanoe writes them, unless `quiet` is set. `quiet_progress` leaves out only the progress line, `json_progress` writes it as JSON lines, and `progress_interval` is the least number of seconds between updates.
 
 ## Joining
 

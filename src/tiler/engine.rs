@@ -14,6 +14,7 @@ use tippecanoe::tile::Strategy;
 
 use super::encode::{ValueCodes, key_slot};
 use super::make::{MakeParams, MakeResult, Thresholds, dropping_features, make_tile};
+use super::progress::Reporter;
 use super::read::{Parked, ReadParams, TileInput, read_tile, store_inputs};
 use super::util::Helpers;
 use super::{TileOptions, TileStats};
@@ -614,6 +615,8 @@ struct Level {
     done: bool,
     /// Whether any pass made a tile rather than skipping them all.
     wrote: bool,
+    /// The last tile made, for the progress line.
+    last_made: Option<(u32, u32)>,
 }
 
 impl Level {
@@ -661,6 +664,7 @@ impl Level {
             err: false,
             done: false,
             wrote: false,
+            last_made: None,
         }
     }
 
@@ -802,6 +806,7 @@ struct Driver<'d, 's> {
     error: Option<Error>,
     timing: bool,
     started: std::time::Instant,
+    progress: Reporter,
     /// `-at`: levels are made one after the other, since whether a tile is
     /// made depends on the outcome of its parent's level.
     variable_depth: bool,
@@ -852,6 +857,7 @@ pub fn drive<'s>(
         error: None,
         timing: o.timing,
         started: std::time::Instant::now(),
+        progress: Reporter::new(o.progress, o.progress_interval),
         variable_depth: o.a(A_VARIABLE_DEPTH_PYRAMID),
         running_big: 0,
         big_memory: o.big_memory as u64,
@@ -1313,8 +1319,44 @@ impl<'d, 's> Driver<'d, 's> {
                 slot.flags |= MUST_GO_ON;
             }
         }
+        let tile = (level.z, slot.input.x, slot.input.y);
+        level.last_made = Some((tile.1, tile.2));
         level.fold(idx, result, self.ctx.o.drop_by_attribute_descending);
         self.check_pass(k);
+        if self.progress.enabled() {
+            let (share, (z, x, y)) = self.share_done(tile);
+            self.progress.report(share, z, x, y);
+        }
+    }
+
+    /// How far the tiling has got, from 0 to 1, as tippecanoe counts it: the
+    /// zoom levels finished, out of those up to the maximum zoom, and the
+    /// share of the first unfinished one made, each pass over a level taking
+    /// a part of it. Levels further on that run ahead are not counted.
+    ///
+    /// With it, the tile to name: the last one made at the level counted, as
+    /// tippecanoe names a tile of the level it is on, or at the level before
+    /// while that one has made none.
+    fn share_done(&self, just_made: (i32, u32, u32)) -> (f64, (i32, u32, u32)) {
+        let first = self.levels.iter().position(|l| !l.done);
+        let counted = &self.levels[..first.map_or(self.levels.len(), |i| i + 1)];
+        let tile = counted
+            .iter()
+            .rev()
+            .find_map(|l| l.last_made.map(|(x, y)| (l.z, x, y)))
+            .unwrap_or(just_made);
+        let Some(l) = first.map(|i| &self.levels[i]) else {
+            return (1.0, tile);
+        };
+        let len = l.slots.len();
+        let made = if l.started && l.inputs_complete && len > 0 {
+            (len - l.missing.min(len)) as f64 / len as f64
+        } else {
+            0.0
+        };
+        let passes = (l.pass + 1) as f64;
+        let share = (l.z as f64 + (l.pass as f64 + made) / passes) / (self.maxzoom + 1) as f64;
+        (share, tile)
     }
 
     fn check_pass(&mut self, k: usize) {

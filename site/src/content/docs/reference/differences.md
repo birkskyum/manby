@@ -15,6 +15,10 @@ tippecanoe's arm64 builds, from Apple's clang on macOS and from GCC on Linux, fu
 
 manby makes the same tiles on macOS, Linux and Windows, the tiles of tippecanoe's x86-64 build. Built for x86-64, or on arm64 with `-ffp-contract=off`, tippecanoe makes manby's tiles on the tracts too.
 
+## Progress
+
+manby shows tippecanoe's progress line, `  42.3%  12/2048/1361`, or with `-u` its `{"progress":42.3}` lines, and `-q`, `-Q` and `-U` work as in tippecanoe. tippecanoe counts the features each zoom level has read, and manby counts the tiles made at the first zoom level not yet finished, so the percentages rise at a different pace. The tile named is the last one made at that zoom level. While reading, manby shows no count of the features read.
+
 ## What tippecanoe does not have
 
 [manby's own options](../options/) lists every option that tippecanoe and tile-join do not have.

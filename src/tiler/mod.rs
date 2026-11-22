@@ -13,6 +13,8 @@ pub(crate) use engine::merge_tilestats;
 mod filter;
 mod geom;
 mod make;
+mod progress;
+pub use progress::Progress;
 mod read;
 mod util;
 
@@ -146,6 +148,11 @@ pub struct TileOptions {
     pub as_needed_per_tile: bool,
     /// Store every tile as zlib compresses it, as tippecanoe does.
     pub zlib_tiles: bool,
+    /// The progress indicator on stderr: tippecanoe's percentage line, JSON
+    /// lines (`-u`), or nothing.
+    pub progress: Progress,
+    /// `-U`: the least number of seconds between progress reports.
+    pub progress_interval: f64,
     /// Report each zoom level's passes and compression to stderr.
     pub timing: bool,
     /// Report every attempt at every tile to stderr.
@@ -220,6 +227,8 @@ impl Default for TileOptions {
             fast: false,
             as_needed_per_tile: false,
             zlib_tiles: false,
+            progress: Progress::Off,
+            progress_interval: 0.0,
             timing: false,
             trace: false,
             tmpdir: std::path::PathBuf::from(tippecanoe::platform::default_tmpdir()),
@@ -305,6 +314,14 @@ impl TileOptions {
             fast: o.fast,
             as_needed_per_tile: o.as_needed_per_tile,
             zlib_tiles: o.zlib_tiles,
+            progress: if o.json_progress {
+                Progress::Json
+            } else if o.quiet || o.quiet_progress {
+                Progress::Off
+            } else {
+                Progress::Line
+            },
+            progress_interval: o.progress_interval,
             timing: false,
             trace: false,
             tmpdir: std::path::PathBuf::from(&o.tmpdir),

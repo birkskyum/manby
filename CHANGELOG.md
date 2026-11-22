@@ -1,5 +1,11 @@
 The changes in each version of manby, from the titles of the pull requests that made them.
 
+## [0.2.10](https://github.com/birkskyum/manby/compare/v0.2.9...v0.2.10) - 2026-11-22
+
+### Added
+
+- *(tiler)* Show tippecanoe's progress percentage while tiling ([#95](https://github.com/birkskyum/manby/pull/95))
+
 ## [0.2.9](https://github.com/birkskyum/manby/compare/v0.2.8...v0.2.9) - 2026-11-21
 
 ### Fixed

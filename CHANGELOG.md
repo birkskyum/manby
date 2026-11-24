@@ -1,5 +1,11 @@
 The changes in each version of manby, from the titles of the pull requests that made them.
 
+## [0.2.11](https://github.com/birkskyum/manby/compare/v0.2.10...v0.2.11) - 2026-11-24
+
+### Added
+
+- *(ingest)* Reproject a FlatGeobuf file from the CRS its header names ([#97](https://github.com/birkskyum/manby/pull/97))
+
 ## [0.2.10](https://github.com/birkskyum/manby/compare/v0.2.9...v0.2.10) - 2026-11-22
 
 ### Added

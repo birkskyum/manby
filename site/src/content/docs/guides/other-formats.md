@@ -1,6 +1,6 @@
 ---
 title: Other formats
-description: Tiling shapefiles and GeoPackage files directly, other formats from R and Python through GDAL, and OpenStreetMap data converted to FlatGeobuf with GDAL's ogr2ogr.
+description: Tiling shapefiles and GeoPackage files directly, other formats from R and Python through GDAL, and OpenStreetMap, File Geodatabase and GML data converted to FlatGeobuf with GDAL's ogr2ogr, straight from their zip files.
 ---
 
 manby reads what tippecanoe reads, GeoJSON, FlatGeobuf, CSV and Geobuf, and also [GeoParquet and Arrow](../python/), shapefiles and GeoPackage. Convert other formats to FlatGeobuf first, which manby reads in parallel. The examples use GDAL's `ogr2ogr`, and other converters that write FlatGeobuf, such as DuckDB's spatial extension or terrio, work the same way.
@@ -62,6 +62,60 @@ ogr2ogr areas.fgb liechtenstein-latest.osm.pbf multipolygons
 manby -z14 --drop-densest-as-needed -o liechtenstein.pmtiles \
   -L points:points.fgb -L lines:lines.fgb -L areas:areas.fgb
 ```
+
+## Zipped downloads
+
+Most downloads come zipped, or as 7z at IGN. GDAL reads a file inside the archive as it is, through `/vsizip/` and `/vsi7z/`, so the archive needn't be unpacked. manby itself reads neither. `gdal vsi list -R` lists what an archive holds, in GDAL 3.11 and later.
+
+```sh
+gdal vsi list -R admin-express.7z
+ogr2ogr communes.fgb /vsi7z/admin-express.7z/path/in/the/archive/COMMUNE.shp
+```
+
+## File Geodatabase
+
+GDAL reads a File Geodatabase, a `.gdb` folder or a zip of one, with its OpenFileGDB driver. It holds several layers, which `ogrinfo` lists, so name the one to convert.
+
+```sh
+ogrinfo /vsizip/swissboundaries3d_2026-01_2056_5728.gdb.zip
+ogr2ogr communes.fgb /vsizip/swissboundaries3d_2026-01_2056_5728.gdb.zip TLM_HOHEITSGEBIET
+manby -zg --coalesce-densest-as-needed -o communes.pmtiles communes.fgb
+```
+
+manby reprojects from the CRS that GDAL writes into the FlatGeobuf file, here Switzerland's LV95. A column of binary data, such as the `Element` of Esri's annotation classes, stops manby as it stops tippecanoe, with `flatgeobuf has unsupported column type 14`. `-mapFieldType Binary=String` makes it text.
+
+## GML
+
+Some data is published only as GML, such as the Netherlands' BGT and cadastral map. GDAL's GML driver reads it. `ogrinfo -so` shows what it reads, with the geometry column. Where a feature has more than one geometry, GDAL keeps one, and not always the one wanted.
+
+### BGT
+
+PDOK's download API gives the BGT as CityGML, GML-light or StUF-Geo. Take GML-light. From CityGML, GDAL takes the point of a building's house number as its geometry where it has one, for 39,732 of the 62,279 buildings in 4 km² of Amersfoort. From GML-light it takes each building's footprint.
+
+```sh
+ogr2ogr -nlt CONVERT_TO_LINEAR -a_srs EPSG:28992 -where "eindRegistratie IS NULL" \
+  buildings.fgb /vsizip/extract.zip/bgt_pand.gml
+manby -zg --drop-densest-as-needed -o buildings.pmtiles buildings.fgb
+```
+
+- **`-nlt CONVERT_TO_LINEAR`** makes the arcs of the BGT's curves straight segments. Without it, ogr2ogr stops at the first curve.
+- **`-a_srs EPSG:28992`** names the CRS, RD New, which GDAL doesn't find in the file.
+- **`-where "eindRegistratie IS NULL"`** keeps the current version of each object. The extract also holds the versions before it, 26,306 of the 62,279 buildings.
+
+### Cadastral map
+
+As GDAL reads PDOK's cadastral map (BRK), a parcel's geometry is its label point, `plaatscoordinaten`. `ogrinfo` writes GDAL's description of the layer to a `.gfs` file beside the GML, where the parcel's boundary, `begrenzingPerceel`, can be named instead. That needs the GML unpacked.
+
+```sh
+unzip extract.zip kadastralekaart_perceel.gml
+ogrinfo -so kadastralekaart_perceel.gml > /dev/null
+sed -i.bak 's/>plaatscoordinaten</>begrenzingPerceel</; s/<GeometryType>1</<GeometryType>3</' \
+  kadastralekaart_perceel.gfs
+ogr2ogr parcels.fgb kadastralekaart_perceel.gml
+manby -zg --coalesce-densest-as-needed -o parcels.pmtiles parcels.fgb
+```
+
+The boundaries, `kadastralekaart_kadastralegrens.gml`, read as they are. The buildings in the download are the BGT's in CityGML, so take them from the BGT in GML-light.
 
 ## Without a file in between
 

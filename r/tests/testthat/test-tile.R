@@ -113,6 +113,14 @@ test_that("h3_sql gives the hexagons DuckDB's aggregates", {
   skip_if(webr, "webR")
   skip_if_not_installed("duckdb")
   skip_on_cran()
+  # DuckDB 2.0.1 has no h3 extension published
+  con <- DBI::dbConnect(duckdb::duckdb())
+  h3 <- tryCatch({
+    DBI::dbExecute(con, "INSTALL h3 FROM community")
+    TRUE
+  }, error = function(e) FALSE)
+  DBI::dbDisconnect(con, shutdown = TRUE)
+  skip_if_not(h3, "DuckDB's h3 extension can't be installed")
   fields <- function(path) {
     con <- file(path, "rb")
     on.exit(close(con))

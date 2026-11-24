@@ -74,7 +74,7 @@ ogr2ogr -f GeoJSONSeq /vsistdout/ natural_earth_vector.gpkg ne_10m_roads |
 
 ## Coordinates
 
-manby, like tippecanoe, reads longitude and latitude in WGS 84, unless `-s` names another CRS. `-t_srs EPSG:4326` reprojects to it, and GDAL writes newline-delimited GeoJSON in WGS 84 anyway.
+manby reprojects a FlatGeobuf file from the CRS that GDAL writes into it, as it does a GeoPackage or a shapefile. Otherwise it reads longitude and latitude in WGS 84, like tippecanoe, unless `-s` names another CRS. `-t_srs EPSG:4326` reprojects to it, and GDAL writes newline-delimited GeoJSON in WGS 84 anyway.
 
 `-s` takes Web Mercator, `EPSG:3857`, as tippecanoe does, and also any of the 9,508 EPSG and ESRI codes of [crs-defs](https://github.com/birkskyum/crs-defs), whose definitions manby carries. The coordinates are made longitude and latitude with proj4rs, within centimeters of PROJ, so a file in a national grid needs no step before manby.
 

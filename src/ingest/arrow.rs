@@ -412,7 +412,7 @@ fn json_str<'a>(j: Option<JsonRef<'a>>) -> Option<&'a str> {
 
 /// What a CRS says about the coordinates.
 #[derive(Debug, PartialEq)]
-enum Crs {
+pub(super) enum Crs {
     /// None given: longitude and latitude, unless `-s` says otherwise.
     Unknown,
     LonLat,
@@ -420,7 +420,24 @@ enum Crs {
     Other(String),
 }
 
-fn crs_from_code(authority: &str, code: &str) -> Crs {
+impl Crs {
+    /// How the coordinates become world coordinates, or the name of a CRS
+    /// that manby doesn't know.
+    pub(super) fn project(self, cfg: &Config<'_>) -> Result<Project, String> {
+        Ok(match self {
+            Crs::Unknown => cfg.project.clone(),
+            Crs::LonLat => Project::Tippecanoe(PROJECTIONS[0].project),
+            Crs::WebMercator => Project::Tippecanoe(PROJECTIONS[1].project),
+            // made longitude and latitude by crs-defs' definition of it
+            Crs::Other(name) => match Reprojection::new(&name) {
+                Ok(r) => Project::Crs(std::sync::Arc::new(r)),
+                Err(_) => return Err(name),
+            },
+        })
+    }
+}
+
+pub(super) fn crs_from_code(authority: &str, code: &str) -> Crs {
     match (authority.to_ascii_uppercase().as_str(), code) {
         ("EPSG", "4326" | "4979") | ("OGC", "CRS84" | "CRS84h") => Crs::LonLat,
         ("EPSG", "3857" | "900913" | "3785" | "102100" | "102113")
@@ -620,23 +637,17 @@ impl Table {
             ));
         }
 
-        let project = match crs {
-            Crs::Unknown => cfg.project.clone(),
-            Crs::LonLat => Project::Tippecanoe(PROJECTIONS[0].project),
-            Crs::WebMercator => Project::Tippecanoe(PROJECTIONS[1].project),
-            // made longitude and latitude by crs-defs' definition of it
-            Crs::Other(name) => match Reprojection::new(&name) {
-                Ok(r) => Project::Crs(std::sync::Arc::new(r)),
-                Err(_) => {
-                    return Err(Error::new(
-                        EXIT_IMPOSSIBLE,
-                        format!(
-                            "{}: the coordinates are in {}, which manby doesn't know. Reproject them first, with DuckDB's ST_Transform or GeoPandas' to_crs for example",
-                            fname, name
-                        ),
-                    ));
-                }
-            },
+        let project = match crs.project(cfg) {
+            Ok(p) => p,
+            Err(name) => {
+                return Err(Error::new(
+                    EXIT_IMPOSSIBLE,
+                    format!(
+                        "{}: the coordinates are in {}, which manby doesn't know. Reproject them first, with DuckDB's ST_Transform or GeoPandas' to_crs for example",
+                        fname, name
+                    ),
+                ));
+            }
         };
 
         let mut properties = Vec::new();

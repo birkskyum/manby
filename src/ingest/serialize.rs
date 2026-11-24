@@ -25,6 +25,7 @@ use crate::options::Options;
 use crate::store::{Attr, Feature};
 
 /// What reading needs from the options, worked out once.
+#[derive(Clone)]
 pub struct Config<'o> {
     pub o: &'o Options,
     pub project: crate::crs::Project,

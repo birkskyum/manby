@@ -8,7 +8,8 @@
 //! here from the GeoParquet files. The `-bbox.fgb` files hold the rows that
 //! overlap -110,30,-90,45, as DuckDB picks them by their geometries' extents,
 //! for `--bbox`. The `-5070` files are the lines in NAD83 / Conus Albers,
-//! as GeoPandas wrote them with PROJ.
+//! as GeoPandas wrote them with PROJ, and the `.fgb` of them is GDAL's of the
+//! GeoJSON file.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -160,6 +161,20 @@ fn reprojected_from_another_crs() {
             &with_s,
         );
         assert!(geojson == lonlat, "GeoJSON {:?}", flags);
+        // the CRS of the FlatGeobuf header
+        let fgb = tile(
+            &data.join(format!("{}-5070.fgb", case)),
+            &dir.join("d.pmtiles"),
+            flags,
+        );
+        assert!(fgb == lonlat, "FlatGeobuf {:?}", flags);
+        // -s over it
+        let fgb_s = tile(
+            &data.join(format!("{}-5070.fgb", case)),
+            &dir.join("e.pmtiles"),
+            &with_s,
+        );
+        assert!(fgb_s == lonlat, "FlatGeobuf with -s {:?}", flags);
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }

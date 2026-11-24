@@ -16,8 +16,10 @@ use tippecanoe::milo::dtoa_milo;
 use tippecanoe::mvt::{MVT_BOOL, MVT_DOUBLE, MVT_STRING};
 use tippecanoe::serial::SerialVal;
 
+use super::arrow::{Crs, crs_from_code};
 use super::chunk::Chunk;
 use super::serialize::{Config, InFeature, serialize_feature};
+use super::shapefile::{crs_of_prj, prj_name};
 use crate::Error;
 
 const MAGICBYTES: usize = 8;
@@ -165,6 +167,38 @@ pub struct Header<'a> {
     pub sequence_ids: bool,
     /// The features, each with its 4-byte size prefix.
     pub features: Vec<&'a [u8]>,
+    /// The CRS the header names.
+    pub(super) crs: Crs,
+}
+
+/// The CRS of a header: its authority (EPSG when it names none) and code,
+/// or its WKT, as a `.prj` file's.
+fn crs_of(header: &tippecanoe::flatgeobuf_generated::Header<'_>) -> Crs {
+    let Some(crs) = header.crs() else {
+        return Crs::Unknown;
+    };
+    let text = |b: Option<&[u8]>| {
+        b.map(|b| String::from_utf8_lossy(b).trim().to_string())
+            .filter(|t| !t.is_empty())
+    };
+    let org = text(crs.org()).unwrap_or_else(|| "EPSG".to_string());
+    if crs.code() > 0 {
+        return crs_from_code(&org, &crs.code().to_string());
+    }
+    if let Some(code) = text(crs.code_string()) {
+        return crs_from_code(&org, &code);
+    }
+    match text(crs.wkt()) {
+        Some(wkt) => match crs_of_prj(&wkt).as_deref().and_then(|c| c.split_once(':')) {
+            Some((authority, code)) => crs_from_code(authority, code),
+            None => Crs::Other(
+                prj_name(&wkt)
+                    .unwrap_or("the CRS of its header")
+                    .to_string(),
+            ),
+        },
+        None => Crs::Unknown,
+    }
 }
 
 /// `buf[start .. start + len]`, cut short at the end of `buf`.
@@ -230,6 +264,7 @@ pub fn read_header<'a>(src: &'a [u8], quiet: bool) -> crate::Result<Header<'a>> 
         column_types,
         sequence_ids,
         features,
+        crs: crs_of(&header),
     })
 }
 

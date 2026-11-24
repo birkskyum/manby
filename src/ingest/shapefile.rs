@@ -449,20 +449,54 @@ fn windows_1252(c: u8) -> char {
 // .prj
 
 /// The name a `.prj` file gives its CRS.
-fn prj_name(wkt: &str) -> Option<&str> {
+pub(super) fn prj_name(wkt: &str) -> Option<&str> {
     let start = wkt.find('"')? + 1;
     let end = start + wkt[start..].find('"')?;
     Some(&wkt[start..end])
 }
 
+/// The first CRS of a compound one, `COMPD_CS["name",PROJCS[...],VERT_CS[...]]`
+/// or WKT2's `COMPOUNDCRS`: the horizontal one, which is all the tiles use.
+fn horizontal_of(wkt: &str) -> Option<&str> {
+    let rest = wkt
+        .strip_prefix("COMPD_CS[")
+        .or_else(|| wkt.strip_prefix("COMPOUNDCRS["))?;
+    let rest = rest.strip_prefix('"')?;
+    let rest = rest[rest.find('"')? + 1..].trim_start().strip_prefix(',')?;
+    let rest = rest.trim_start();
+    let (mut depth, mut quoted) = (0, false);
+    for (i, c) in rest.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            '[' if !quoted => depth += 1,
+            ']' if !quoted => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&rest[..=i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// The CRS of a `.prj` file, as `EPSG:4326`: its own authority's code, or
 /// the code of a common CRS by the name ESRI gives it.
-fn crs_of_prj(wkt: &str) -> Option<String> {
+pub(super) fn crs_of_prj(wkt: &str) -> Option<String> {
     let wkt = wkt.trim();
-    // the CRS's own AUTHORITY is the last thing in it, closed by its bracket
+    if let Some(horizontal) = horizontal_of(wkt) {
+        return crs_of_prj(horizontal);
+    }
+    // the CRS's own AUTHORITY, or ID in WKT2, is the last thing in it, closed
+    // by its bracket
     let body = wkt.strip_suffix(']')?.trim_end();
-    if let Some(at) = body.rfind("AUTHORITY[") {
-        let tail = &body[at + "AUTHORITY[".len()..];
+    let own = ["AUTHORITY[", ",ID["]
+        .iter()
+        .filter_map(|key| body.rfind(key).map(|at| at + key.len()))
+        .max();
+    if let Some(at) = own {
+        let tail = &body[at..];
         if let Some(inner) = tail.strip_suffix(']')
             && !inner.contains(']')
         {
@@ -1197,5 +1231,19 @@ mod tests {
             Some("EPSG:26910")
         );
         assert_eq!(crs_of_prj(r#"PROJCS["Somewhere",GEOGCS["X"]]"#), None);
+        // the horizontal CRS of a compound one, as GDAL writes swisstopo's
+        assert_eq!(
+            crs_of_prj(r#"COMPD_CS["CH1903+ / LV95 + LN02 height",PROJCS["CH1903+ / LV95",GEOGCS["CH1903+",AUTHORITY["EPSG","4150"]],UNIT["metre",1],AUTHORITY["EPSG","2056"]],VERT_CS["LN02 height",VERT_DATUM["Landesnivellement 1902",2005],UNIT["metre",1],AUTHORITY["EPSG","5728"]]]"#).as_deref(),
+            Some("EPSG:2056")
+        );
+        // and in WKT2, as GDAL writes it into a FlatGeobuf file
+        assert_eq!(
+            crs_of_prj(r#"COMPOUNDCRS["CH1903+ / LV95 + LN02 height",PROJCRS["CH1903+ / LV95",BASEGEOGCRS["CH1903+",DATUM["CH1903+",ELLIPSOID["Bessel 1841",6377397.155,299.1528128,LENGTHUNIT["metre",1]]],ID["EPSG",4150]],CS[Cartesian,2],USAGE[SCOPE["Cadastre"],BBOX[45.81,5.95,47.81,10.5]],ID["EPSG",2056]],VERTCRS["LN02 height",VDATUM["Landesnivellement 1902"],CS[vertical,1],ID["EPSG",5728]]]"#).as_deref(),
+            Some("EPSG:2056")
+        );
+        assert_eq!(
+            crs_of_prj(r#"PROJCRS["Amersfoort / RD New",BASEGEOGCRS["Amersfoort",ID["EPSG",4289]],CS[Cartesian,2],ID["EPSG",28992]]"#).as_deref(),
+            Some("EPSG:28992")
+        );
     }
 }

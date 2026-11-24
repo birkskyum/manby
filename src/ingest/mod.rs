@@ -1140,7 +1140,32 @@ fn read_fgb(
     once: &mut HashSet<&'static str>,
     stderr: &mut Vec<u8>,
 ) -> crate::Result<()> {
-    let h = flatgeobuf::read_header(data, cfg.o.quiet)?;
+    let mut h = flatgeobuf::read_header(data, cfg.o.quiet)?;
+    // -s says what the coordinates are, over the file's own CRS
+    let own;
+    let cfg = if cfg.o.source_crs.is_none() && cfg.o.projection == 0 {
+        match std::mem::replace(&mut h.crs, arrow::Crs::Unknown).project(cfg) {
+            Ok(project) => {
+                own = Config {
+                    project,
+                    ..cfg.clone()
+                };
+                &own
+            }
+            Err(name) => {
+                flush(stderr);
+                return Err(Error::new(
+                    EXIT_READ,
+                    format!(
+                        "{}: the coordinates are in {}, which manby doesn't know; reproject them first, as with ogr2ogr -t_srs EPSG:4326, or give the CRS with -s",
+                        reading_name, name
+                    ),
+                ));
+            }
+        }
+    } else {
+        cfg
+    };
 
     let mut numbering = Batched::new(cpus, *overall_offset);
     let window = numbering.batch() * WINDOW_ROWS.div_ceil(numbering.batch());

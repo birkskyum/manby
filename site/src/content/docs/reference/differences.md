@@ -19,6 +19,10 @@ manby makes the same tiles on macOS, Linux and Windows, the tiles of tippecanoe'
 
 manby shows tippecanoe's progress line, `  42.3%  12/2048/1361`, or with `-u` its `{"progress":42.3}` lines, and `-q`, `-Q` and `-U` work as in tippecanoe. tippecanoe counts the features each zoom level has read, and manby counts the tiles made at the first zoom level not yet finished, so the percentages rise at a different pace. The tile named is the last one made at that zoom level. While reading, manby shows no count of the features read.
 
+## A FlatGeobuf file's CRS
+
+tippecanoe reads the coordinates of every FlatGeobuf file as longitude and latitude. manby reprojects them from the CRS that the file's header names, unless `-s` names one, so a file that GDAL wrote in a national grid needs no `-t_srs`. A file in WGS 84, or without a CRS, makes tippecanoe's tiles.
+
 ## What tippecanoe does not have
 
 [manby's own options](../options/) lists every option that tippecanoe and tile-join do not have.

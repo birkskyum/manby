@@ -136,6 +136,10 @@ def main():
         assert e.returncode != 0
     print("an error from manby raises ManbyError")
 
+    e = manby.ManbyError(1, ["-o", "x.pmtiles", "https://h/a.parquet?X-Amz-Signature=SECRET"])
+    assert "https://h/a.parquet?<redacted>" in str(e) and "SECRET" not in str(e), str(e)
+    print("an error shows no URL's query")
+
     with manby.serve(path_out := os.path.join(d, "geopandas", "points.pmtiles"), port=0, open=False) as server:
         tilejson = json.load(urllib.request.urlopen(server.tilejson["points"]))
         assert tilejson["vector_layers"][0]["id"] == "points", tilejson

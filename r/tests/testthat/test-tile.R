@@ -153,6 +153,12 @@ test_that("an error from manby is a manby_error", {
   expect_true(e$status != 0)
 })
 
+test_that("an error shows no URL's query", {
+  e <- manby_error(1, c("-o", "x.pmtiles", "https://h/a.parquet?X-Amz-Signature=SECRET"))
+  expect_match(e$message, "https://h/a.parquet?<redacted>", fixed = TRUE)
+  expect_no_match(e$message, "SECRET", fixed = TRUE)
+})
+
 test_that("options become tippecanoe's long options", {
   expect_equal(
     flags(list(maximum_zoom = 14, drop_densest_as_needed = TRUE, quiet = FALSE, include = c("a", "b"), x = NULL, r = 2.5, n = 1e6)),

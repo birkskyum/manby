@@ -44,7 +44,7 @@ Two options make tiles that are not tippecanoe's.
 
 - **`-s`, `--projection`** also takes any of the 9,508 EPSG and ESRI codes of [crs-defs](https://github.com/birkskyum/crs-defs), such as `-s EPSG:28992`.
 - **`-j`, `-J`** feature filters also take [`like`, `ilike` and `intersects`](../../guides/programs/#feature-filters).
-- **Inputs** can also be GeoParquet and Arrow files, and GeoParquet at `s3://`, `gs://`, `az://` and `https://` URLs.
+- **Inputs** can also be GeoParquet and Arrow files, and GeoParquet at `s3://`, `gs://`, `az://` and `https://` URLs, presigned ones included.
 
 ## manby merge
 

@@ -72,6 +72,57 @@ fn glob(pattern: &[u8], name: &[u8]) -> bool {
     }
 }
 
+/// An `http(s)` URL without its query and fragment, and its query, if it
+/// has one. Other URLs have no query, as a `?` in them is a pattern.
+#[cfg_attr(not(feature = "remote"), allow(dead_code))]
+fn split_query(url: &str) -> (&str, Option<&str>) {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return (url, None);
+    }
+    let url = url.split_once('#').map_or(url, |(u, _)| u);
+    match url.split_once('?') {
+        Some((u, q)) => (u, Some(q).filter(|q| !q.is_empty())),
+        None => (url, None),
+    }
+}
+
+/// `text` with the query of every `http(s)` URL in it shown as
+/// `?<redacted>`, as manby shows and records an input. A presigned URL's
+/// query is its credential, and another URL's may hold an API key.
+pub fn redact_urls(text: &str) -> std::borrow::Cow<'_, str> {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(at) = ["http://", "https://"]
+        .iter()
+        .filter_map(|s| rest.find(s))
+        .min()
+    {
+        // a URL ends where a quote or a space does, as in -L's JSON
+        let end = rest[at..]
+            .find(|c: char| c == '"' || c == '\'' || c.is_whitespace())
+            .map_or(rest.len(), |i| at + i);
+        let url = &rest[at..end];
+        let Some(q) = url.find('?') else {
+            out.push_str(&rest[..end]);
+            rest = &rest[end..];
+            continue;
+        };
+        let query_end = url[q..].find('#').map_or(url.len(), |i| q + i);
+        if query_end > q + 1 {
+            out.push_str(&rest[..at + q]);
+            out.push_str("?<redacted>");
+        } else {
+            out.push_str(&rest[..at + query_end]);
+        }
+        rest = &rest[at + query_end..];
+    }
+    if out.is_empty() {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    out.push_str(rest);
+    std::borrow::Cow::Owned(out)
+}
+
 /// A URL's part before any pattern, up to its last `/`, and the pattern
 /// after it, if there is one.
 #[cfg_attr(not(feature = "remote"), allow(dead_code))]
@@ -97,7 +148,7 @@ pub fn open_parquet(
         tippecanoe::errors::EXIT_OPEN,
         format!(
             "{}: this manby was built without reading URLs; build it with `cargo build --release --features remote`",
-            url
+            redact_urls(url)
         ),
     ))
 }
@@ -116,8 +167,13 @@ mod imp {
     use bytes::Bytes;
     use futures::future::BoxFuture;
     use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
+    use object_store::client::{
+        HttpClient, HttpConnector, HttpError, HttpErrorKind, HttpRequest, HttpResponse, HttpService,
+    };
     use object_store::path::Path;
-    use object_store::{ObjectMeta, ObjectStore, ObjectStoreExt, ObjectStoreScheme};
+    use object_store::{
+        ClientOptions, GetOptions, ObjectMeta, ObjectStore, ObjectStoreExt, ObjectStoreScheme,
+    };
     use parquet::arrow::ProjectionMask;
     use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
     use parquet::arrow::async_reader::{AsyncFileReader, ParquetRecordBatchStreamBuilder};
@@ -128,7 +184,7 @@ mod imp {
 
     use super::super::arrow::{Batches, Kept, Table, WorldBox, row_groups};
     use super::super::serialize::Config;
-    use super::{glob, split_pattern};
+    use super::{glob, redact_urls, split_pattern, split_query};
     use crate::{Error, Result};
 
     /// Row groups fetched at once.
@@ -156,10 +212,142 @@ mod imp {
         o
     }
 
-    /// The store of a URL, and the path in it.
-    async fn store(url: &Url) -> std::result::Result<(Arc<dyn ObjectStore>, Path), String> {
+    /// Whether a query signs its URL, as the query of a presigned S3 or GCS
+    /// URL or of an Azure SAS URL does.
+    fn signed(query: &str) -> bool {
+        query.split('&').any(|p| {
+            let key = p.split('=').next().unwrap_or(p);
+            ["X-Amz-Signature", "X-Goog-Signature", "Signature", "sig"]
+                .iter()
+                .any(|s| key.eq_ignore_ascii_case(s))
+        })
+    }
+
+    /// Requests that carry a URL's query, which object_store would leave
+    /// off, from a client that sends no Referer on a redirect, so that the
+    /// query reaches no other host. Neither its errors nor the bodies of the
+    /// server's error responses, which S3 fills with the canonical request,
+    /// show the query.
+    struct Query {
+        client: reqwest::Client,
+        query: String,
+    }
+
+    impl std::fmt::Debug for Query {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("Query(<redacted>)")
+        }
+    }
+
+    fn http_error(e: reqwest::Error) -> HttpError {
+        let kind = if e.is_timeout() {
+            HttpErrorKind::Timeout
+        } else if e.is_connect() {
+            HttpErrorKind::Connect
+        } else if e.is_decode() || e.is_body() {
+            HttpErrorKind::Decode
+        } else {
+            HttpErrorKind::Unknown
+        };
+        HttpError::new(kind, e.without_url())
+    }
+
+    /// An error response's body cut to its `<Code>`, such as
+    /// `SignatureDoesNotMatch`.
+    fn error_code(body: &[u8]) -> Bytes {
+        let text = String::from_utf8_lossy(body);
+        let code = text
+            .split_once("<Code>")
+            .and_then(|(_, rest)| rest.split_once("</Code>"))
+            .map(|(code, _)| code.to_string());
+        code.map(Bytes::from).unwrap_or_default()
+    }
+
+    #[async_trait::async_trait]
+    impl HttpService for Query {
+        async fn call(&self, req: HttpRequest) -> std::result::Result<HttpResponse, HttpError> {
+            let (parts, body) = req.into_parts();
+            let uri = parts.uri.to_string();
+            let joint = if uri.contains('?') { '&' } else { '?' };
+            let url = reqwest::Url::parse(&format!("{}{}{}", uri, joint, self.query))
+                .map_err(|e| HttpError::new(HttpErrorKind::Request, e))?;
+            let mut request = reqwest::Request::new(parts.method, url);
+            *request.headers_mut() = parts.headers;
+            if let Some(b) = body.as_bytes().filter(|b| !b.is_empty()) {
+                *request.body_mut() = Some(b.clone().into());
+            }
+            let response = self.client.execute(request).await.map_err(http_error)?;
+            let status = response.status();
+            let mut headers = response.headers().clone();
+            let mut bytes = response.bytes().await.map_err(http_error)?;
+            if !status.is_success() {
+                bytes = error_code(&bytes);
+                headers.remove(reqwest::header::CONTENT_LENGTH);
+            }
+            let mut out = HttpResponse::new(bytes.into());
+            *out.status_mut() = status;
+            *out.headers_mut() = headers;
+            Ok(out)
+        }
+    }
+
+    /// Connects a [`Query`], with the options manby gives object_store's own
+    /// client and object_store's timeouts.
+    struct QueryConnector {
+        query: String,
+        allow_http: bool,
+    }
+
+    impl std::fmt::Debug for QueryConnector {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("QueryConnector(<redacted>)")
+        }
+    }
+
+    impl HttpConnector for QueryConnector {
+        fn connect(&self, _: &ClientOptions) -> object_store::Result<HttpClient> {
+            let certs = webpki_root_certs::TLS_SERVER_ROOT_CERTS
+                .iter()
+                .filter_map(|c| reqwest::Certificate::from_der(c.as_ref()).ok());
+            let client = reqwest::Client::builder()
+                .user_agent(concat!("manby/", env!("CARGO_PKG_VERSION")))
+                .tls_certs_merge(certs)
+                .https_only(!self.allow_http)
+                .timeout(std::time::Duration::from_secs(30))
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .referer(false)
+                .no_gzip()
+                .no_brotli()
+                .no_zstd()
+                .no_deflate()
+                .build()
+                .map_err(|e| object_store::Error::Generic {
+                    store: "HTTP",
+                    source: Box::new(e.without_url()),
+                })?;
+            Ok(HttpClient::new(Query {
+                client,
+                query: self.query.clone(),
+            }))
+        }
+    }
+
+    /// The store of a URL, and the path in it. An `http(s)` URL's query goes
+    /// out with every request. A URL at an object storage host is read
+    /// through that storage, which leaves its query off, unless the query
+    /// signs it: then it is read over HTTP like any other.
+    pub(super) async fn store(
+        url: &Url,
+        query: Option<&str>,
+    ) -> std::result::Result<(Arc<dyn ObjectStore>, Path), String> {
         let (scheme, path) = ObjectStoreScheme::parse(url).map_err(|e| e.to_string())?;
-        let path = Path::from_url_path(path).map_err(|e| e.to_string())?;
+        let (scheme, path) = match query {
+            Some(q) if scheme == ObjectStoreScheme::Http || signed(q) => {
+                (ObjectStoreScheme::Http, Path::from_url_path(url.path()))
+            }
+            _ => (scheme, Path::from_url_path(path)),
+        };
+        let path = path.map_err(|e| e.to_string())?;
         let bucket = url.host_str().unwrap_or_default().to_string();
         let options = client_options(url.scheme() == "http");
         let store: Arc<dyn ObjectStore> = match scheme {
@@ -236,13 +424,16 @@ mod imp {
             }
             ObjectStoreScheme::Http => {
                 let origin = &url[..url::Position::BeforePath];
-                Arc::new(
-                    object_store::http::HttpBuilder::new()
-                        .with_url(origin)
-                        .with_client_options(options)
-                        .build()
-                        .map_err(|e| e.to_string())?,
-                )
+                let mut b = object_store::http::HttpBuilder::new()
+                    .with_url(origin)
+                    .with_client_options(options);
+                if let Some(q) = query {
+                    b = b.with_http_connector(QueryConnector {
+                        query: q.to_string(),
+                        allow_http: url.scheme() == "http",
+                    });
+                }
+                Arc::new(b.build().map_err(|e| e.to_string())?)
             }
             _ => return Err("not a URL of object storage or the web".to_string()),
         };
@@ -255,12 +446,28 @@ mod imp {
     async fn files(
         url: &str,
     ) -> std::result::Result<(Arc<dyn ObjectStore>, Vec<ObjectMeta>), String> {
+        let (url, query) = split_query(url);
         let (base, pattern) = split_pattern(url);
-        let parsed = Url::parse(base).map_err(|e| e.to_string())?;
-        let (store, prefix) = store(&parsed).await?;
         let listing = pattern.is_some() || base.ends_with('/');
+        if listing && query.is_some() {
+            return Err("a URL with a query names one file, not a prefix or a pattern".to_string());
+        }
+        let parsed = Url::parse(base).map_err(|e| e.to_string())?;
+        let (store, prefix) = store(&parsed, query).await?;
         if !listing {
-            let meta = store.head(&prefix).await.map_err(|e| e.to_string())?;
+            let meta = match query {
+                // a presigned URL signs only GET, so the size comes from a
+                // GET of one byte
+                Some(_) => {
+                    let one = GetOptions {
+                        range: Some((0..1).into()),
+                        ..Default::default()
+                    };
+                    let got = store.get_opts(&prefix, one).await;
+                    got.map_err(|e| e.to_string())?.meta
+                }
+                None => store.head(&prefix).await.map_err(|e| e.to_string())?,
+            };
             return Ok((store, vec![meta]));
         }
         let root = prefix.as_ref().to_string();
@@ -385,14 +592,16 @@ mod imp {
         cfg: &Config<'_>,
         bbox: Option<&WorldBox>,
     ) -> Result<(SchemaRef, Batches, Kept)> {
+        let shown = redact_urls(url);
+        let shown = shown.as_ref();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(4)
             .enable_all()
             .build()
-            .map_err(|e| open_error(url, e))?;
+            .map_err(|e| open_error(shown, e))?;
         let (store, files) = runtime
             .block_on(files(url))
-            .map_err(|e| open_error(url, e))?;
+            .map_err(|e| open_error(shown, e))?;
 
         // every file's footer, and the row groups to read of each
         let readers: Vec<Reader> = files
@@ -412,15 +621,15 @@ mod imp {
                     .buffered(CONCURRENT)
                     .try_collect(),
             )
-            .map_err(|e| open_error(url, e))?;
+            .map_err(|e| open_error(shown, e))?;
 
         let first = &metadata[0];
-        let table = Table::new(first.schema(), url, cfg)?;
+        let table = Table::new(first.schema(), shown, cfg)?;
         let schema: SchemaRef = Arc::new(
             first
                 .schema()
                 .project(&table.columns)
-                .map_err(|e| open_error(url, e))?,
+                .map_err(|e| open_error(shown, e))?,
         );
         let mut jobs = Vec::new();
         let (mut kept, mut all) = (0, 0);
@@ -430,7 +639,7 @@ mod imp {
             for f in schema.fields() {
                 let i = meta.schema().index_of(f.name()).map_err(|_| {
                     open_error(
-                        url,
+                        shown,
                         format!(
                             "{} has no column {}, which the first file has",
                             m.location,
@@ -448,7 +657,7 @@ mod imp {
                 .collect();
             let groups = match bbox {
                 Some(b) => {
-                    let t = Table::new(meta.schema(), url, cfg)?;
+                    let t = Table::new(meta.schema(), shown, cfg)?;
                     row_groups(meta.metadata(), meta.schema(), &t, b)
                 }
                 None => (0..meta.metadata().num_row_groups()).collect(),
@@ -532,6 +741,61 @@ mod tests {
             split_pattern("https://h/a.parquet"),
             ("https://h/a.parquet", None)
         );
+    }
+
+    #[test]
+    fn queries() {
+        assert_eq!(
+            split_query("https://h/a.parquet?sig=x&se=1#f"),
+            ("https://h/a.parquet", Some("sig=x&se=1"))
+        );
+        assert_eq!(
+            split_query("https://h/a.parquet?"),
+            ("https://h/a.parquet", None)
+        );
+        assert_eq!(
+            split_query("s3://b/part-?.parquet"),
+            ("s3://b/part-?.parquet", None)
+        );
+        assert_eq!(
+            redact_urls("https://h/a.parquet?sig=x#f"),
+            "https://h/a.parquet?<redacted>#f"
+        );
+        assert_eq!(
+            redact_urls(r#"-L{"file":"https://h/a?X-Amz-Signature=x","layer":"a"}"#),
+            r#"-L{"file":"https://h/a?<redacted>","layer":"a"}"#
+        );
+        assert_eq!(
+            redact_urls("a:http://h/a?k=1 b:https://h/b?k=2"),
+            "a:http://h/a?<redacted> b:https://h/b?<redacted>"
+        );
+        assert_eq!(
+            redact_urls("s3://b/part-?.parquet"),
+            "s3://b/part-?.parquet"
+        );
+        assert_eq!(redact_urls("in?.json"), "in?.json");
+        assert_eq!(redact_urls("https://h/a?"), "https://h/a?");
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn signed_cloud_urls_are_read_over_http() {
+        let store = |url: &str, query| {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let url = url::Url::parse(url).unwrap();
+            let (store, path) = runtime.block_on(imp::store(&url, query)).unwrap();
+            (store.to_string(), path.to_string())
+        };
+        let s3 = "https://bucket.s3.us-west-2.amazonaws.com/dir/a.parquet";
+        let (kind, path) = store(s3, Some("X-Amz-Expires=60&X-Amz-Signature=x"));
+        assert!(kind.starts_with("HttpStore"), "{}", kind);
+        assert_eq!(path, "dir/a.parquet");
+        let azure = "https://account.blob.core.windows.net/container/a.parquet";
+        let (kind, path) = store(azure, Some("sv=2024&se=2026&sig=x"));
+        assert!(kind.starts_with("HttpStore"), "{}", kind);
+        assert_eq!(path, "container/a.parquet");
+        let (kind, _) = store(azure, None);
+        assert!(!kind.starts_with("HttpStore"), "{}", kind);
     }
 
     #[test]

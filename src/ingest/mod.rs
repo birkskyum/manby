@@ -531,6 +531,8 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
         let src = &sources[source];
         let reading_name = if src.file.is_empty() {
             "standard input".to_string()
+        } else if remote::is_remote(&src.file) {
+            remote::redact_urls(&src.file).into_owned()
         } else {
             src.file.clone()
         };

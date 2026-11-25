@@ -1,24 +1,78 @@
 //! GeoParquet read from a URL makes the tiles that the same file makes on
 //! disk, with and without `--bbox`. The files are served here, with range
-//! requests, as object storage serves them.
+//! requests, as object storage serves them, and as a presigned URL is.
 #![cfg(feature = "remote")]
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 fn data() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/arrow")
 }
 
+/// What a test server takes: with `query`, only requests with that query,
+/// and as S3 does for a presigned GET, no HEAD; with `redirect`, a redirect
+/// of each request to that base URL.
+#[derive(Clone, Default)]
+struct Rules {
+    query: Option<&'static str>,
+    redirect: Option<String>,
+}
+
+/// A request a test server had: its method, its URL and its Referer.
+type Seen = Arc<Mutex<Vec<(String, String, Option<String>)>>>;
+
 /// Serves the files of `dir` at `http://127.0.0.1:{port}/`, with HEAD and
 /// single byte ranges.
 fn serve(dir: PathBuf) -> String {
+    serve_with(dir, Rules::default()).0
+}
+
+/// An error as S3 answers one, with the canonical request in it.
+fn refuse(request: tiny_http::Request) {
+    let body = "<Error><Code>SignatureDoesNotMatch</Code><CanonicalRequest>GET /x X-Amz-Security-Token=TOKEN</CanonicalRequest></Error>";
+    let _ = request.respond(tiny_http::Response::from_string(body).with_status_code(403));
+}
+
+fn serve_with(dir: PathBuf, rules: Rules) -> (String, Seen) {
     let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
     let port = server.server_addr().to_ip().unwrap().port();
+    let seen: Seen = Arc::default();
+    let log = seen.clone();
     std::thread::spawn(move || {
         for request in server.incoming_requests() {
-            let name = request.url().trim_start_matches('/').to_string();
+            let referer = request
+                .headers()
+                .iter()
+                .find(|h| h.field.equiv("Referer"))
+                .map(|h| h.value.to_string());
+            log.lock().unwrap().push((
+                request.method().to_string(),
+                request.url().to_string(),
+                referer,
+            ));
+            let (path, query) = request
+                .url()
+                .split_once('?')
+                .map_or((request.url(), None), |(p, q)| (p, Some(q)));
+            let name = path.trim_start_matches('/').to_string();
+            if let Some(q) = rules.query
+                && (query != Some(q) || *request.method() == tiny_http::Method::Head)
+            {
+                refuse(request);
+                continue;
+            }
+            if let Some(to) = &rules.redirect {
+                let mut response = tiny_http::Response::empty(302);
+                response.add_header(
+                    tiny_http::Header::from_bytes(&b"Location"[..], format!("{}{}", to, name))
+                        .unwrap(),
+                );
+                let _ = request.respond(response);
+                continue;
+            }
             let Ok(mut file) = File::open(dir.join(&name)) else {
                 let _ = request.respond(tiny_http::Response::empty(404));
                 continue;
@@ -67,7 +121,7 @@ fn serve(dir: PathBuf) -> String {
             let _ = request.respond(response);
         }
     });
-    format!("http://127.0.0.1:{}/", port)
+    (format!("http://127.0.0.1:{}/", port), seen)
 }
 
 fn tiles(path: &Path) -> Vec<u8> {
@@ -122,5 +176,89 @@ fn same_tiles_from_a_url() {
     }
     let missing = tile(&format!("{}nothing.parquet", base), &out, &["-z5"]);
     assert!(missing.is_err());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The metadata of a PMTiles archive, as JSON.
+fn metadata(path: &Path) -> String {
+    let mut f = File::open(path).unwrap();
+    let mut h = [0u8; 127];
+    f.read_exact(&mut h).unwrap();
+    let at = |i: usize| u64::from_le_bytes(h[i..i + 8].try_into().unwrap());
+    let mut b = vec![0u8; at(32) as usize];
+    f.seek(SeekFrom::Start(at(24))).unwrap();
+    f.read_exact(&mut b).unwrap();
+    let mut json = String::new();
+    flate2::read::GzDecoder::new(&b[..])
+        .read_to_string(&mut json)
+        .unwrap();
+    json
+}
+
+#[test]
+fn same_tiles_from_a_presigned_url() {
+    let query = "X-Amz-Expires=60&X-Amz-Signature=SECRET";
+    let rules = Rules {
+        query: Some(query),
+        ..Rules::default()
+    };
+    let (base, _) = serve_with(data(), rules);
+    let dir = std::env::temp_dir().join(format!("manby-signed-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = dir.join("t.pmtiles");
+    let local = data().join("knox.parquet");
+    let a = tile(local.to_str().unwrap(), &out, &["-z5"]).unwrap();
+    let url = format!("{}knox.parquet?{}", base, query);
+    let b = tile(&url, &out, &["-z5"]).unwrap();
+    assert!(a == b);
+    let json = metadata(&out);
+    assert!(json.contains("knox.parquet?<redacted>"), "{}", json);
+    assert!(!json.contains("SECRET"), "{}", json);
+
+    // a wrong signature, and the error says why without the query or the
+    // canonical request that S3 sends back
+    let wrong = format!("{}knox.parquet?X-Amz-Signature=WRONG", base);
+    let e = tile(&wrong, &out, &["-z5"]).unwrap_err().to_string();
+    assert!(e.contains("knox.parquet?<redacted>"), "{}", e);
+    assert!(e.contains("SignatureDoesNotMatch"), "{}", e);
+    assert!(!e.contains("WRONG") && !e.contains("TOKEN"), "{}", e);
+
+    // a presigned URL names one file
+    let listing = format!("{}?X-Amz-Signature=SECRET", base);
+    let e = tile(&listing, &out, &["-z5"]).unwrap_err().to_string();
+    assert!(
+        e.contains("names one file") && !e.contains("SECRET"),
+        "{}",
+        e
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_redirect_sends_no_referer() {
+    let (target, seen) = serve_with(data(), Rules::default());
+    let rules = Rules {
+        query: Some("sig=SECRET"),
+        redirect: Some(target),
+    };
+    let (base, _) = serve_with(data(), rules);
+    let dir = std::env::temp_dir().join(format!("manby-redirect-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = dir.join("t.pmtiles");
+    let local = data().join("knox.parquet");
+    let a = tile(local.to_str().unwrap(), &out, &["-z5"]).unwrap();
+    let b = tile(&format!("{}knox.parquet?sig=SECRET", base), &out, &["-z5"]).unwrap();
+    assert!(a == b);
+    let seen = seen.lock().unwrap();
+    assert!(!seen.is_empty());
+    for (method, url, referer) in seen.iter() {
+        assert!(
+            referer.is_none(),
+            "{} {} had Referer {:?}",
+            method,
+            url,
+            referer
+        );
+    }
     std::fs::remove_dir_all(&dir).unwrap();
 }

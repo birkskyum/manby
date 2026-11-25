@@ -169,12 +169,18 @@ run <- function(args) {
   invisible()
 }
 
+# Arguments as an error shows them, with the query of an http(s) URL, which
+# may be its credential, as ?<redacted>, as manby shows it.
+shown <- function(args) {
+  gsub("(https?://[^\\s\"'?#]*)\\?[^\\s\"'#]+", "\\1?<redacted>", args, perl = TRUE)
+}
+
 manby_error <- function(status, args, detail = character()) {
   structure(
     class = c("manby_error", "error", "condition"),
     list(
       message = paste(
-        c(paste0("manby exited with status ", status, ": ", paste(args, collapse = " ")), detail),
+        c(paste0("manby exited with status ", status, ": ", paste(shown(args), collapse = " ")), detail),
         collapse = "\n"
       ),
       call = NULL,

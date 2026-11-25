@@ -45,6 +45,12 @@ from typing import Any, Mapping, Sequence
 __all__ = ["tile", "serve", "stats", "run", "binary", "Server", "ManbyError"]
 
 
+def _shown(arg: str) -> str:
+    """An argument as an error shows it, with the query of an http(s) URL,
+    which may be its credential, as ``?<redacted>``, as manby shows it."""
+    return re.sub(r"""(https?://[^\s"'?#]*)\?[^\s"'#]+""", r"\1?<redacted>", arg)
+
+
 class ManbyError(RuntimeError):
     """manby exited with an error. ``returncode`` is its exit status, as
     tippecanoe's: 100 when the tileset is complete only to a lower zoom."""
@@ -52,7 +58,8 @@ class ManbyError(RuntimeError):
     def __init__(self, returncode: int, args: Sequence[str]):
         self.returncode = returncode
         super().__init__(
-            "manby exited with status %d: %s" % (returncode, " ".join(args))
+            "manby exited with status %d: %s"
+            % (returncode, " ".join(_shown(a) for a in args))
         )
 
 

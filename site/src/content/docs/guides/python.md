@@ -45,6 +45,7 @@ manby -zg --drop-densest-as-needed --bbox=13.08,52.33,13.76,52.68 -o berlin.pmti
 That reads 29 of the 6,144 row groups of Overture's places, 12 GB in 16 files, in 6 to 25 seconds from Europe. The layer is named after the last part of the path, here `place`.
 
 - **URLs.** `s3://`, `gs://`, `az://` and `https://`. Credentials come from the environment, as `AWS_ACCESS_KEY_ID` or `GOOGLE_APPLICATION_CREDENTIALS`. Without them, requests go unsigned, as public buckets take them, and an S3 bucket's region is looked up unless `AWS_REGION` gives it.
+- **Presigned URLs.** An `https://` URL keeps its query, so a presigned S3 or GCS URL or an Azure SAS URL reads the file it names with no credentials in the environment. The query shows as `?<redacted>` in manby's messages and in the tileset's `generator_options`, and no Referer carries it to a host the server redirects to.
 - **`--bbox=minlon,minlat,maxlon,maxlat`** keeps the rows whose geometries' bounding boxes overlap it, from local files as well. The row groups come from the statistics of GeoParquet 1.1 bounding box columns, or of Parquet's own geospatial statistics. The tiles are those of the table of the rows kept.
 - **Builds.** The releases, pip, Homebrew and R read URLs. Built with cargo, it needs `--features remote`.
 

@@ -1518,7 +1518,13 @@ pub fn parse_args(argv: &[String]) -> crate::Result<Options> {
 
     let mut o = Options {
         program: argv0.clone(),
-        commandline: tippecanoe::text::format_commandline(&without_shard_options(&argv)),
+        // with no URL's query, which may be its credential
+        commandline: tippecanoe::text::format_commandline(
+            &without_shard_options(&argv)
+                .iter()
+                .map(|a| crate::ingest::remote::redact_urls(a).into_owned())
+                .collect::<Vec<_>>(),
+        ),
         ..Default::default()
     };
 

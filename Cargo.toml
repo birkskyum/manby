@@ -48,7 +48,7 @@ tiny_http = "0.12"
 object_store = { version = "0.14", default-features = false, features = ["aws", "gcp", "azure", "http"], optional = true }
 tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
 futures = { version = "0.3", optional = true }
-url = { version = "2", optional = true }
+url = { version = "2.5.9", optional = true }
 # GeoParquet held in memory, from object storage, or on WebAssembly from a file
 bytes = "1"
 webpki-root-certs = { version = "1", optional = true }

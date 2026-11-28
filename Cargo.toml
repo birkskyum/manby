@@ -30,7 +30,7 @@ flate2 = { version = "1.1", default-features = false, features = ["zlib"] }
 libc = "0.2.191"
 libdeflater = "1.26.1"
 memmap2 = "0.9.12"
-mlt-core = { version = "0.22.0", optional = true }
+mlt-core = { version = "0.23.0", optional = true }
 rayon = "1.12.0"
 rusqlite = { version = "0.43", features = ["bundled"] }
 tippecanoe-rs = { version = "2.82.4", path = "crates/tippecanoe-rs" }

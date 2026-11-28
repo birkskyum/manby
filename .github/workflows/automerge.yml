@@ -18,7 +18,7 @@ jobs:
       - uses: dependabot/fetch-metadata@v3
         id: meta
       - if: steps.meta.outputs.update-type != 'version-update:semver-major'
-        uses: actions/create-github-app-token@v3.3.0
+        uses: actions/create-github-app-token@v3.4.0
         id: app
         with:
           client-id: Iv23li1ri6i3IgvgBd3A

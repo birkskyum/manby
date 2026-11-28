@@ -1,5 +1,18 @@
 The changes in each version of manby, from the titles of the pull requests that made them.
 
+## [0.2.12](https://github.com/birkskyum/manby/compare/v0.2.11...v0.2.12) - 2026-11-28
+
+### Fixed
+
+- *(ingest)* Read presigned URLs with their query, and show it redacted ([#103](https://github.com/birkskyum/manby/pull/103))
+- Clear RustSec advisories and audit the lockfile in CI ([#102](https://github.com/birkskyum/manby/pull/102))
+
+### Dependencies
+
+- Bump mlt-core from 0.22.2 to 0.23.0 ([#108](https://github.com/birkskyum/manby/pull/108))
+- Bump the cargo group across 1 directory with 4 updates ([#88](https://github.com/birkskyum/manby/pull/88))
+- Bump rusqlite from 0.41.1 to 0.43.0 ([#89](https://github.com/birkskyum/manby/pull/89))
+
 ## [0.2.11](https://github.com/birkskyum/manby/compare/v0.2.10...v0.2.11) - 2026-11-24
 
 ### Added
